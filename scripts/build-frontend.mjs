@@ -102,12 +102,31 @@ html = html.replace('src="app.js"', 'src="app.min.js"');
 writeFileSync(join(distDir, 'index.html'), html);
 
 // 4. Copy static assets
-for (const file of ['config.json', 'styles.css', 'monke.png']) {
+for (const file of ['styles.css', 'monke.png']) {
   const src = join(publicDir, file);
   if (existsSync(src)) {
     copyFileSync(src, join(distDir, file));
     console.log(`Copied ${file}`);
   }
+}
+
+// 5. Generate config.json — use local config.json if present, otherwise build from config.example.json + env vars
+const configPath = join(publicDir, 'config.json');
+const configExamplePath = join(publicDir, 'config.example.json');
+const configDest = join(distDir, 'config.json');
+
+if (existsSync(configPath)) {
+  copyFileSync(configPath, configDest);
+  console.log('Copied config.json (local)');
+} else if (existsSync(configExamplePath)) {
+  const config = JSON.parse(readFileSync(configExamplePath, 'utf-8'));
+  if (process.env.HELIUS_RPC_URL) {
+    config.HELIUS_RPC_URL = process.env.HELIUS_RPC_URL;
+  }
+  writeFileSync(configDest, JSON.stringify(config, null, 2) + '\n');
+  console.log(`Generated config.json from config.example.json${process.env.HELIUS_RPC_URL ? ' (HELIUS_RPC_URL from env)' : ''}`);
+} else {
+  console.warn('WARNING: No config.json or config.example.json found — frontend will fail to load config');
 }
 
 console.log(`\nBuild complete → ${distDir}/`);
