@@ -8,10 +8,13 @@
 
 export * from './acceptAuthority';
 export * from './claim';
+export * from './claimPegged';
 export * from './compostMonke';
+export * from './depositPegged';
 export * from './depositSol';
 export * from './feedMonke';
 export * from './initialize';
 export * from './pause';
+export * from './setPeggedMint';
 export * from './transferAuthority';
 export * from './unpause';

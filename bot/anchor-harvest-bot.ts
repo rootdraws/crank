@@ -4,14 +4,14 @@
  * monke.army orchestrator. Wires together:
  *   - GeyserSubscriber: gRPC stream for real-time price monitoring
  *   - HarvestExecutor: job queue for harvest/close transactions
- *   - MonkeKeeper: Saturday sequencer (swap → distribute → deposit_sol)
+ *   - MonkeKeeper: Saturday sequencer (unwrap → sweep → stake_and_forward → fee rovers → deposit_pegged → cleanup)
  *
  * The bot never holds user funds or revenue SOL.
- * Revenue SOL flows: rover_authority → dist_pool PDA → monke holders (on-chain).
- * 50/50 split: half to monke holders, half to bot (Config.bot). Hardcoded in sweep_rover.
+ * Revenue SOL flows: rover_authority → bridge_vault → $PEGGED → dist_pool ATA → monke holders (on-chain).
+ * 50/50 split: half to bridge_vault (→ $PEGGED for monke holders), half to bot (Config.bot). Hardcoded in sweep_rover.
  * The bot only cranks permissionless instructions.
  *
- * Weekly cadence: Saturday keeper sequence (claim → unwrap WSOL → sweep → fee rovers → deposit → cleanup).
+ * Weekly cadence: Saturday keeper sequence (unwrap WSOL → sweep → stake_and_forward → fee rovers → deposit_pegged → cleanup).
  */
 
 import {
@@ -177,6 +177,16 @@ const CORE_PROGRAM_ID          = requireEnvPubkey('CORE_PROGRAM_ID');
 const MONKE_BANANAS_PROGRAM_ID = requireEnvPubkey('MONKE_BANANAS_PROGRAM_ID');
 const BANANAS_MINT             = requireEnvPubkey('BANANAS_MINT');
 
+function optionalEnvPubkey(name: string): PublicKey | undefined {
+  const val = process.env[name];
+  if (!val) return undefined;
+  try { return new PublicKey(val); }
+  catch { logger.warn(`${name} is not a valid pubkey: ${val} — ignoring`); return undefined; }
+}
+
+const BRIDGE_PROGRAM_ID = optionalEnvPubkey('BRIDGE_PROGRAM_ID');
+const PEGGED_MINT       = optionalEnvPubkey('PEGGED_MINT');
+
 const COMMITMENT: Commitment    = 'confirmed';
 const KEEPER_ACTIVE_INTERVAL_MS = parseInt(process.env.KEEPER_CHECK_INTERVAL_MS || '3600000'); // 1hr during Active
 const KEEPER_PROCESSING_INTERVAL_MS = 30_000; // 30s during Saturday processing
@@ -227,6 +237,7 @@ class HarvestBot {
   private provider: AnchorProvider;
   private coreProgram!: Program;
   private monkeProgram!: Program;
+  private bridgeProgram?: Program;
 
   // Modules
   private subscriber!: GeyserSubscriber;
@@ -354,19 +365,39 @@ class HarvestBot {
       if (info && info.data.length >= 72) wsolBal = Number(info.data.readBigUInt64LE(64));
     } catch { /* no WSOL ATA */ }
 
+    // Read $PEGGED token balances for dist_pool and program_vault ATAs
+    let distPeggedBal = 0;
+    let vaultPeggedBal = 0;
+    const peggedMintStr = process.env.PEGGED_MINT;
+    if (peggedMintStr) {
+      try {
+        const { getAssociatedTokenAddressSync: getAta } = await import('@solana/spl-token');
+        const peggedMint = new PublicKey(peggedMintStr);
+        const distAta = getAta(peggedMint, dPoolPDA, true);
+        const vaultAta = getAta(peggedMint, pVaultPDA, true);
+        const [distInfo, vaultInfo] = await Promise.all([
+          this.connection.getAccountInfo(distAta).catch(() => null),
+          this.connection.getAccountInfo(vaultAta).catch(() => null),
+        ]);
+        if (distInfo && distInfo.data.length >= 72) distPeggedBal = Number(distInfo.data.readBigUInt64LE(64));
+        if (vaultInfo && vaultInfo.data.length >= 72) vaultPeggedBal = Number(vaultInfo.data.readBigUInt64LE(64));
+      } catch { /* $PEGGED ATAs not yet created */ }
+    }
+
     const ms = monkeStateInfo ? {
       totalShareWeight: (monkeStateInfo as any).totalShareWeight.toString(),
       accumulatedSolPerShare: (monkeStateInfo as any).accumulatedSolPerShare.toString(),
       totalSolDistributed: Number((monkeStateInfo as any).totalSolDistributed),
       totalBananasBurned: (monkeStateInfo as any).totalBananasBurned.toString(),
+      peggedMint: (monkeStateInfo as any).peggedMint?.toBase58() ?? null,
     } : null;
 
     return {
       roverAuthority: { address: roverPDA.toBase58(), solBalance: roverBal, wsolBalance: wsolBal },
-      distPool: { address: dPoolPDA.toBase58(), solBalance: distBal },
-      programVault: { address: pVaultPDA.toBase58(), solBalance: vaultBal },
+      distPool: { address: dPoolPDA.toBase58(), solBalance: distBal, peggedBalance: distPeggedBal },
+      programVault: { address: pVaultPDA.toBase58(), solBalance: vaultBal, peggedBalance: vaultPeggedBal },
       monkeState: ms,
-      totalInPipeline: roverBal + wsolBal + distBal + vaultBal,
+      totalInPipeline: roverBal + wsolBal + distBal + vaultBal + distPeggedBal + vaultPeggedBal,
       timestamp: Date.now(),
     };
   }
@@ -439,6 +470,16 @@ class HarvestBot {
     const monkeIdl = loadIdl('monke_bananas');
     this.monkeProgram = new Program(monkeIdl, this.provider);
 
+    if (BRIDGE_PROGRAM_ID) {
+      try {
+        const bridgeIdl = loadIdl('pegged_bridge');
+        this.bridgeProgram = new Program(bridgeIdl, this.provider);
+        logger.info(`Bridge program loaded: ${BRIDGE_PROGRAM_ID.toBase58()}`);
+      } catch (e: any) {
+        logger.warn(`Bridge IDL not found — stake_and_forward disabled: ${e.message}`);
+      }
+    }
+
     // Verify bot authorization
     const [configPDA] = coreConfigPDA();
     const config = await this.coreProgram.account.config.fetch(configPDA);
@@ -479,10 +520,12 @@ class HarvestBot {
       connection: this.connection,
       coreProgram: this.coreProgram,
       monkeProgram: this.monkeProgram,
+      bridgeProgram: this.bridgeProgram,
       botKeypair,
       coreProgramId: CORE_PROGRAM_ID,
       monkeProgramId: MONKE_BANANAS_PROGRAM_ID,
-      // Pass subscriber's pool registry to avoid position.all() in fee rovers
+      bridgeProgramId: BRIDGE_PROGRAM_ID,
+      peggedMint: PEGGED_MINT,
       getWatchedPools: () => this.subscriber.getWatchedPools(),
     });
   }
@@ -672,8 +715,8 @@ class HarvestBot {
           logger.warn(`[bot] Failed to fetch SOL balance: ${e.message}`);
         }
         const phase = await this.keeper.runSaturdaySequence();
-        // Auto-trigger deposit_sol if dist_pool exceeds threshold (Ferriss: remove yourself from the loop)
-        await this.keeper.checkAndDepositSol();
+        // Auto-trigger deposit if dist_pool exceeds threshold ($PEGGED or legacy SOL)
+        await this.keeper.checkAndDepositPegged();
         const nextInterval = phase === 'Active'
           ? KEEPER_ACTIVE_INTERVAL_MS
           : KEEPER_PROCESSING_INTERVAL_MS;

@@ -9,10 +9,12 @@ skip-lint = false
 [programs.devnet]
 bin_farm = "8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"
 monke_bananas = "myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH"
+pegged_bridge = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
 
 [programs.mainnet]
 bin_farm = "8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"
 monke_bananas = "myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH"
+pegged_bridge = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
 
 [registry]
 url = "https://api.apr.dev"

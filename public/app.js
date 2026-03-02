@@ -24,7 +24,10 @@ import {
 import {
   getFeedMonkeInstructionAsync,
   getClaimInstructionAsync,
+  getClaimPeggedInstructionAsync,
   getDepositSolInstructionAsync,
+  getDepositPeggedInstructionAsync,
+  getSetPeggedMintInstructionAsync,
   decodeMonkeBurn, decodeMonkeState,
   MONKE_BANANAS_PROGRAM_ADDRESS,
 } from '../src/generated/monke-bananas/index.js';
@@ -398,7 +401,7 @@ function getAssociatedTokenAddressSync(mint, owner, allowOwnerOffCurve = false, 
   return ata;
 }
 
-/** Build create-ATA instruction */
+/** Build create-ATA-idempotent instruction (won't fail if ATA already exists) */
 function createAssociatedTokenAccountIx(payer, ata, owner, mint, tokenProgramId = TOKEN_PROGRAM_ID) {
   return new solanaWeb3.TransactionInstruction({
     programId: ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -410,7 +413,7 @@ function createAssociatedTokenAccountIx(payer, ata, owner, mint, tokenProgramId 
       { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: tokenProgramId, isSigner: false, isWritable: false },
     ],
-    data: new Uint8Array(0),
+    data: new Uint8Array([1]),
   });
 }
 
@@ -2425,7 +2428,8 @@ function renderCarouselFrame(nfts, idx) {
 
   const nft = nfts[idx];
   const weightLabel = nft.weight > 0 ? `wt: ${nft.weight}` : '';
-  const claimLabel = nft.pendingSol > 0n ? `${(Number(nft.pendingSol) / 1e9).toFixed(4)} SOL` : '';
+  const rewardTk = CONFIG.PEGGED_MINT ? '$PEGGED' : 'SOL';
+  const claimLabel = nft.pendingSol > 0n ? `${(Number(nft.pendingSol) / 1e9).toFixed(4)} ${rewardTk}` : '';
   frame.innerHTML = `
     <img src="${escapeHtml(nft.image || '')}" alt="${escapeHtml(nft.name || 'monke')}" loading="eager" fetchpriority="high" decoding="async" onerror="this.style.display='none'">
     <span class="nft-gen-tag ${nft.gen === 2 ? 'gen2' : 'gen3'}">${nft.gen === 2 ? 'g2' : 'g3'}</span>
@@ -2480,14 +2484,15 @@ async function updateUserMonkeStats(nfts) {
   const totalClaimed = nfts.reduce((s, n) => s + Number(n.claimedSol || 0n), 0);
 
   if (el('userTotalWeight')) el('userTotalWeight').textContent = totalWeight.toLocaleString();
-  if (el('userClaimable')) el('userClaimable').textContent = (totalPending / 1e9).toFixed(4) + ' SOL';
-  if (el('userTotalClaimed')) el('userTotalClaimed').textContent = (totalClaimed / 1e9).toFixed(4) + ' SOL';
+  const rewardToken = CONFIG.PEGGED_MINT ? '$PEGGED' : 'SOL';
+  if (el('userClaimable')) el('userClaimable').textContent = (totalPending / 1e9).toFixed(4) + ' ' + rewardToken;
+  if (el('userTotalClaimed')) el('userTotalClaimed').textContent = (totalClaimed / 1e9).toFixed(4) + ' ' + rewardToken;
 
   const globalWeight = state.monkeStateData ? Number(state.monkeStateData.totalShareWeight) : 0;
   if (el('userRewardShare')) el('userRewardShare').textContent = globalWeight > 0 ? (totalWeight / globalWeight * 100).toFixed(2) + '%' : '0%';
 
   const totalFees = totalPending + totalClaimed;
-  if (el('userTotalFees')) el('userTotalFees').textContent = (totalFees / 1e9).toFixed(4) + ' SOL';
+  if (el('userTotalFees')) el('userTotalFees').textContent = (totalFees / 1e9).toFixed(4) + ' ' + rewardToken;
 
   if (state.connected && state.publicKey) {
     try {
@@ -2571,7 +2576,7 @@ async function renderMonkeList() {
       <span>${escapeHtml(nft.name || nft.mint.slice(0, 8) + '...')}</span>
       <span class="gen-badge ${nft.gen === 2 ? 'gen2' : 'gen3'}">gen${nft.gen}</span>
       <span>${nft.weight || 0}</span>
-      <span class="claimable">${nft.claimable || '0'} SOL</span>
+      <span class="claimable">${nft.claimable || '0'} ${CONFIG.PEGGED_MINT ? '$PEGGED' : 'SOL'}</span>
       <button class="action-btn-sm" data-mint="${escapeHtml(nft.mint)}" data-action="claim" ${nft.hasBurn && nft.pendingSol > 0n ? '' : 'disabled style="opacity:0.25;cursor:default;"'}>claim</button>
     </div>
   `).join('');
@@ -2699,7 +2704,8 @@ async function renderGlobalStats() {
     const el = id => document.getElementById(id);
     if (el('globalBananasBurned')) el('globalBananasBurned').textContent = (Number(ms.totalBananasBurned) / 1e6).toLocaleString() + ' $BANANAS';
     if (el('globalTotalWeight')) el('globalTotalWeight').textContent = Number(ms.totalShareWeight).toLocaleString();
-    if (el('globalSolDistributed')) el('globalSolDistributed').textContent = (Number(ms.totalSolDistributed) / 1e9).toFixed(4) + ' SOL';
+    const distToken = CONFIG.PEGGED_MINT ? '$PEGGED' : 'SOL';
+    if (el('globalSolDistributed')) el('globalSolDistributed').textContent = (Number(ms.totalSolDistributed) / 1e9).toFixed(4) + ' ' + distToken;
   } catch (err) {
     console.warn('[monke] Global stats fetch failed:', err.message);
   }
@@ -2735,7 +2741,7 @@ async function renderRoster() {
         <span class="roster-rank">${i + 1}</span>
         <span class="roster-mint">${e.mint.slice(0, 4)}...${e.mint.slice(-4)}</span>
         <span class="roster-weight">${e.weight}</span>
-        <span class="roster-claimed">${e.claimed.toFixed(4)} SOL</span>
+        <span class="roster-claimed">${e.claimed.toFixed(4)} ${CONFIG.PEGGED_MINT ? '$PEGGED' : 'SOL'}</span>
       </div>
     `).join('');
   } catch (err) {
@@ -2806,6 +2812,7 @@ async function handleClaimMonke(nftMintStr) {
   const conn = state.connection;
   const user = state.publicKey;
   const nftMint = new solanaWeb3.PublicKey(nftMintStr);
+  const usePegged = !!CONFIG.PEGGED_MINT;
 
   try {
     const [monkeBurnPDA] = getMonkeBurnPDA(nftMint);
@@ -2813,44 +2820,23 @@ async function handleClaimMonke(nftMintStr) {
 
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
-    const claimIx = await getClaimInstructionAsync({
-      user: asSigner(user),
-      monkeBurn: address(monkeBurnPDA.toBase58()),
-      userNftAccount: address(userNftAccount.toBase58()),
-    });
-    tx.add(kitIxToWeb3(claimIx));
 
-    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
-    tx.recentBlockhash = blockhash;
-    tx.lastValidBlockHeight = lastValidBlockHeight;
-    tx.feePayer = user;
-
-    showToast('Approve in wallet...', 'info');
-    const sig = await walletSendTransaction(tx);
-    showToast('Confirming claim...', 'info');
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-    showToast('SOL claimed!', 'success');
-    renderMonkeList();
-  } catch (err) {
-    console.error('[monke] claim failed:', err);
-    showToast('Claim failed: ' + (err?.message || err), 'error');
-  }
-}
-
-async function handleClaimAll() {
-  if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
-  const conn = state.connection;
-  const user = state.publicKey;
-  const claimable = (state.monkeNfts || []).filter(n => n.hasBurn && n.pendingSol > 0n);
-  if (claimable.length === 0) { showToast('Nothing to claim', 'info'); return; }
-
-  try {
-    const tx = new solanaWeb3.Transaction();
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    for (const nft of claimable) {
-      const nftMint = new solanaWeb3.PublicKey(nft.mint);
-      const [monkeBurnPDA] = getMonkeBurnPDA(nftMint);
-      const userNftAccount = getAssociatedTokenAddressSync(nftMint, user);
+    if (usePegged) {
+      const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
+      const [programVaultPDA] = getProgramVaultPDA();
+      const programVaultAta = getAssociatedTokenAddressSync(peggedMint, programVaultPDA, true);
+      const userPeggedAta = getAssociatedTokenAddressSync(peggedMint, user);
+      // Create user's $PEGGED ATA if needed
+      tx.add(createAssociatedTokenAccountIx(user, userPeggedAta, user, peggedMint));
+      const claimIx = await getClaimPeggedInstructionAsync({
+        user: asSigner(user),
+        monkeBurn: address(monkeBurnPDA.toBase58()),
+        userNftAccount: address(userNftAccount.toBase58()),
+        programVaultPeggedAta: address(programVaultAta.toBase58()),
+        userPeggedAta: address(userPeggedAta.toBase58()),
+      });
+      tx.add(kitIxToWeb3(claimIx));
+    } else {
       const claimIx = await getClaimInstructionAsync({
         user: asSigner(user),
         monkeBurn: address(monkeBurnPDA.toBase58()),
@@ -2866,9 +2852,72 @@ async function handleClaimAll() {
 
     showToast('Approve in wallet...', 'info');
     const sig = await walletSendTransaction(tx);
+    showToast('Confirming claim...', 'info');
+    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    showToast(usePegged ? '$PEGGED claimed!' : 'SOL claimed!', 'success');
+    renderMonkeList();
+  } catch (err) {
+    console.error('[monke] claim failed:', err);
+    showToast('Claim failed: ' + (err?.message || err), 'error');
+  }
+}
+
+async function handleClaimAll() {
+  if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
+  const conn = state.connection;
+  const user = state.publicKey;
+  const claimable = (state.monkeNfts || []).filter(n => n.hasBurn && n.pendingSol > 0n);
+  if (claimable.length === 0) { showToast('Nothing to claim', 'info'); return; }
+  const usePegged = !!CONFIG.PEGGED_MINT;
+
+  try {
+    const tx = new solanaWeb3.Transaction();
+    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
+
+    if (usePegged) {
+      const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
+      const [programVaultPDA] = getProgramVaultPDA();
+      const programVaultAta = getAssociatedTokenAddressSync(peggedMint, programVaultPDA, true);
+      const userPeggedAta = getAssociatedTokenAddressSync(peggedMint, user);
+      tx.add(createAssociatedTokenAccountIx(user, userPeggedAta, user, peggedMint));
+      for (const nft of claimable) {
+        const nftMint = new solanaWeb3.PublicKey(nft.mint);
+        const [monkeBurnPDA] = getMonkeBurnPDA(nftMint);
+        const userNftAccount = getAssociatedTokenAddressSync(nftMint, user);
+        const claimIx = await getClaimPeggedInstructionAsync({
+          user: asSigner(user),
+          monkeBurn: address(monkeBurnPDA.toBase58()),
+          userNftAccount: address(userNftAccount.toBase58()),
+          programVaultPeggedAta: address(programVaultAta.toBase58()),
+          userPeggedAta: address(userPeggedAta.toBase58()),
+        });
+        tx.add(kitIxToWeb3(claimIx));
+      }
+    } else {
+      for (const nft of claimable) {
+        const nftMint = new solanaWeb3.PublicKey(nft.mint);
+        const [monkeBurnPDA] = getMonkeBurnPDA(nftMint);
+        const userNftAccount = getAssociatedTokenAddressSync(nftMint, user);
+        const claimIx = await getClaimInstructionAsync({
+          user: asSigner(user),
+          monkeBurn: address(monkeBurnPDA.toBase58()),
+          userNftAccount: address(userNftAccount.toBase58()),
+        });
+        tx.add(kitIxToWeb3(claimIx));
+      }
+    }
+
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.lastValidBlockHeight = lastValidBlockHeight;
+    tx.feePayer = user;
+
+    showToast('Approve in wallet...', 'info');
+    const sig = await walletSendTransaction(tx);
     showToast('Confirming claims...', 'info');
     await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-    showToast(`Claimed from ${claimable.length} monke${claimable.length > 1 ? 's' : ''}!`, 'success');
+    const token = usePegged ? '$PEGGED' : 'SOL';
+    showToast(`Claimed ${token} from ${claimable.length} monke${claimable.length > 1 ? 's' : ''}!`, 'success');
     renderMonkeList();
   } catch (err) {
     console.error('[monke] claim_all failed:', err);
@@ -2926,7 +2975,7 @@ async function renderOpsStats() {
     if (el('opsBotStatus')) el('opsBotStatus').textContent = 'offline';
   }
 
-  // SOL balances for fee pipeline visibility
+  // Fee pipeline balances (SOL + $PEGGED)
   try {
     if (state.connection) {
       const roverAuthority = getRoverAuthorityPDA()[0];
@@ -2936,7 +2985,21 @@ async function renderOpsStats() {
         state.connection.getBalance(distPool),
       ]);
       if (el('opsSweepBalance')) el('opsSweepBalance').textContent = (roverBal / 1e9).toFixed(4) + ' SOL';
-      if (el('opsDepositBalance')) el('opsDepositBalance').textContent = (distBal / 1e9).toFixed(4) + ' SOL';
+
+      // Show $PEGGED balance if configured, otherwise show SOL
+      if (CONFIG.PEGGED_MINT) {
+        try {
+          const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
+          const distPoolAta = getAssociatedTokenAddressSync(peggedMint, distPool, true);
+          const info = await state.connection.getAccountInfo(distPoolAta);
+          const peggedBal = info && info.data.length >= 72 ? Number(info.data.readBigUInt64LE(64)) : 0;
+          if (el('opsDepositBalance')) el('opsDepositBalance').textContent = (peggedBal / 1e9).toFixed(4) + ' $PEGGED';
+        } catch {
+          if (el('opsDepositBalance')) el('opsDepositBalance').textContent = (distBal / 1e9).toFixed(4) + ' SOL';
+        }
+      } else {
+        if (el('opsDepositBalance')) el('opsDepositBalance').textContent = (distBal / 1e9).toFixed(4) + ' SOL';
+      }
     }
   } catch {}
 }
@@ -3024,7 +3087,7 @@ async function handleCrankSweep() {
     const sig = await walletSendTransaction(tx);
     showToast('Confirming sweep...', 'info');
     await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-    showToast('Swept SOL — 50% to dist pool, 50% to bot!', 'success');
+    showToast('Swept SOL — 50% to bridge vault, 50% to bot!', 'success');
     renderOpsStats();
   } catch (err) {
     console.error('[monke] sweep_rover failed:', err);
@@ -3040,13 +3103,29 @@ async function handleCrankDeposit() {
   if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
   const conn = state.connection;
   const user = state.publicKey;
+  const usePegged = !!CONFIG.PEGGED_MINT;
 
   try {
     const tx = new solanaWeb3.Transaction();
-    const depositIx = await getDepositSolInstructionAsync({
-      caller: asSigner(user),
-    });
-    tx.add(kitIxToWeb3(depositIx));
+
+    if (usePegged) {
+      const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
+      const [distPoolPDA] = getDistPoolPDA();
+      const [programVaultPDA] = getProgramVaultPDA();
+      const distPoolAta = getAssociatedTokenAddressSync(peggedMint, distPoolPDA, true);
+      const programVaultAta = getAssociatedTokenAddressSync(peggedMint, programVaultPDA, true);
+      const depositIx = await getDepositPeggedInstructionAsync({
+        caller: asSigner(user),
+        distPoolPeggedAta: address(distPoolAta.toBase58()),
+        programVaultPeggedAta: address(programVaultAta.toBase58()),
+      });
+      tx.add(kitIxToWeb3(depositIx));
+    } else {
+      const depositIx = await getDepositSolInstructionAsync({
+        caller: asSigner(user),
+      });
+      tx.add(kitIxToWeb3(depositIx));
+    }
 
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
     tx.recentBlockhash = blockhash; tx.lastValidBlockHeight = lastValidBlockHeight; tx.feePayer = user;
@@ -3055,10 +3134,10 @@ async function handleCrankDeposit() {
     const sig = await walletSendTransaction(tx);
     showToast('Confirming deposit...', 'info');
     await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-    showToast('SOL deposited to program vault!', 'success');
+    showToast(usePegged ? '$PEGGED deposited to program vault!' : 'SOL deposited to program vault!', 'success');
     renderOpsStats();
   } catch (err) {
-    console.error('[monke] deposit_sol failed:', err);
+    console.error('[monke] deposit failed:', err);
     showToast('Deposit failed: ' + (err?.message || err), 'error');
   }
 }
@@ -3340,13 +3419,14 @@ async function copyPnlCard() {
 }
 
 // ============================================================
-// UNCLAIMED SOL WARNING
+// UNCLAIMED REWARDS WARNING
 // ============================================================
 
 function showUnclaimedWarning(amount) {
   const modal = document.getElementById('unclaimedWarning');
   const amountEl = document.getElementById('unclaimedAmount');
-  if (amountEl) amountEl.textContent = amount.toFixed(4) + ' SOL';
+  const token = CONFIG.PEGGED_MINT ? '$PEGGED' : 'SOL';
+  if (amountEl) amountEl.textContent = amount.toFixed(4) + ' ' + token;
   if (modal) modal.classList.add('visible');
 }
 

@@ -46,6 +46,10 @@ export const MONKE_BANANAS_ERROR__NO_PENDING_AUTHORITY = 0x177d; // 6013
 export const MONKE_BANANAS_ERROR__INSUFFICIENT_VAULT_BALANCE = 0x177e; // 6014
 /** NftNotBurned: NFT has not been burned (supply must be 0) */
 export const MONKE_BANANAS_ERROR__NFT_NOT_BURNED = 0x177f; // 6015
+/** PeggedNotConfigured: $PEGGED mint not configured — call set_pegged_mint first */
+export const MONKE_BANANAS_ERROR__PEGGED_NOT_CONFIGURED = 0x1780; // 6016
+/** InvalidTokenAccount: Invalid token account owner */
+export const MONKE_BANANAS_ERROR__INVALID_TOKEN_ACCOUNT = 0x1781; // 6017
 
 export type MonkeBananasError =
   | typeof MONKE_BANANAS_ERROR__COLLECTION_NOT_VERIFIED
@@ -54,6 +58,7 @@ export type MonkeBananasError =
   | typeof MONKE_BANANAS_ERROR__INVALID_METADATA
   | typeof MONKE_BANANAS_ERROR__INVALID_MINT
   | typeof MONKE_BANANAS_ERROR__INVALID_NFT_MINT
+  | typeof MONKE_BANANAS_ERROR__INVALID_TOKEN_ACCOUNT
   | typeof MONKE_BANANAS_ERROR__NFT_NOT_BURNED
   | typeof MONKE_BANANAS_ERROR__NO_MONKES
   | typeof MONKE_BANANAS_ERROR__NO_PENDING_AUTHORITY
@@ -63,6 +68,7 @@ export type MonkeBananasError =
   | typeof MONKE_BANANAS_ERROR__NOT_TOKEN_OWNER
   | typeof MONKE_BANANAS_ERROR__OVERFLOW
   | typeof MONKE_BANANAS_ERROR__PAUSED
+  | typeof MONKE_BANANAS_ERROR__PEGGED_NOT_CONFIGURED
   | typeof MONKE_BANANAS_ERROR__UNAUTHORIZED;
 
 let monkeBananasErrorMessages: Record<MonkeBananasError, string> | undefined;
@@ -74,6 +80,7 @@ if (process.env.NODE_ENV !== 'production') {
     [MONKE_BANANAS_ERROR__INVALID_METADATA]: `Invalid metadata account`,
     [MONKE_BANANAS_ERROR__INVALID_MINT]: `Invalid token mint`,
     [MONKE_BANANAS_ERROR__INVALID_NFT_MINT]: `Invalid NFT mint`,
+    [MONKE_BANANAS_ERROR__INVALID_TOKEN_ACCOUNT]: `Invalid token account owner`,
     [MONKE_BANANAS_ERROR__NFT_NOT_BURNED]: `NFT has not been burned (supply must be 0)`,
     [MONKE_BANANAS_ERROR__NO_MONKES]: `No monkes exist (total share weight is 0)`,
     [MONKE_BANANAS_ERROR__NO_PENDING_AUTHORITY]: `No pending authority`,
@@ -83,6 +90,7 @@ if (process.env.NODE_ENV !== 'production') {
     [MONKE_BANANAS_ERROR__NOT_TOKEN_OWNER]: `Not the token owner`,
     [MONKE_BANANAS_ERROR__OVERFLOW]: `Arithmetic overflow`,
     [MONKE_BANANAS_ERROR__PAUSED]: `Program is paused`,
+    [MONKE_BANANAS_ERROR__PEGGED_NOT_CONFIGURED]: `$PEGGED mint not configured — call set_pegged_mint first`,
     [MONKE_BANANAS_ERROR__UNAUTHORIZED]: `Not authorized`,
   };
 }

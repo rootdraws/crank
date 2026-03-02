@@ -16,11 +16,14 @@ import {
 import {
   type ParsedAcceptAuthorityInstruction,
   type ParsedClaimInstruction,
+  type ParsedClaimPeggedInstruction,
   type ParsedCompostMonkeInstruction,
+  type ParsedDepositPeggedInstruction,
   type ParsedDepositSolInstruction,
   type ParsedFeedMonkeInstruction,
   type ParsedInitializeInstruction,
   type ParsedPauseInstruction,
+  type ParsedSetPeggedMintInstruction,
   type ParsedTransferAuthorityInstruction,
   type ParsedUnpauseInstruction,
 } from '../instructions';
@@ -67,11 +70,14 @@ export function identifyMonkeBananasAccount(
 export enum MonkeBananasInstruction {
   AcceptAuthority,
   Claim,
+  ClaimPegged,
   CompostMonke,
+  DepositPegged,
   DepositSol,
   FeedMonke,
   Initialize,
   Pause,
+  SetPeggedMint,
   TransferAuthority,
   Unpause,
 }
@@ -106,12 +112,34 @@ export function identifyMonkeBananasInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([107, 166, 187, 149, 104, 48, 236, 186])
+      ),
+      0
+    )
+  ) {
+    return MonkeBananasInstruction.ClaimPegged;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([216, 158, 136, 82, 116, 172, 244, 117])
       ),
       0
     )
   ) {
     return MonkeBananasInstruction.CompostMonke;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([165, 123, 5, 183, 200, 77, 252, 159])
+      ),
+      0
+    )
+  ) {
+    return MonkeBananasInstruction.DepositPegged;
   }
   if (
     containsBytes(
@@ -161,6 +189,17 @@ export function identifyMonkeBananasInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([2, 222, 230, 177, 221, 229, 34, 66])
+      ),
+      0
+    )
+  ) {
+    return MonkeBananasInstruction.SetPeggedMint;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([48, 169, 76, 72, 229, 180, 55, 161])
       ),
       0
@@ -194,8 +233,14 @@ export type ParsedMonkeBananasInstruction<
       instructionType: MonkeBananasInstruction.Claim;
     } & ParsedClaimInstruction<TProgram>)
   | ({
+      instructionType: MonkeBananasInstruction.ClaimPegged;
+    } & ParsedClaimPeggedInstruction<TProgram>)
+  | ({
       instructionType: MonkeBananasInstruction.CompostMonke;
     } & ParsedCompostMonkeInstruction<TProgram>)
+  | ({
+      instructionType: MonkeBananasInstruction.DepositPegged;
+    } & ParsedDepositPeggedInstruction<TProgram>)
   | ({
       instructionType: MonkeBananasInstruction.DepositSol;
     } & ParsedDepositSolInstruction<TProgram>)
@@ -208,6 +253,9 @@ export type ParsedMonkeBananasInstruction<
   | ({
       instructionType: MonkeBananasInstruction.Pause;
     } & ParsedPauseInstruction<TProgram>)
+  | ({
+      instructionType: MonkeBananasInstruction.SetPeggedMint;
+    } & ParsedSetPeggedMintInstruction<TProgram>)
   | ({
       instructionType: MonkeBananasInstruction.TransferAuthority;
     } & ParsedTransferAuthorityInstruction<TProgram>)

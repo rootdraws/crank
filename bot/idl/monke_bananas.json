@@ -172,6 +172,131 @@
       "args": []
     },
     {
+      "name": "claim_pegged",
+      "docs": [
+        "Claim accumulated $PEGGED for a monke. Replaces SOL claim after migration.",
+        "Always works even when paused — holders can never be locked out."
+      ],
+      "discriminator": [
+        107,
+        166,
+        187,
+        149,
+        104,
+        48,
+        236,
+        186
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  110,
+                  107,
+                  101,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "monke_burn",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  110,
+                  107,
+                  101,
+                  95,
+                  98,
+                  117,
+                  114,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "monke_burn.nft_mint",
+                "account": "MonkeBurn"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_nft_account",
+          "docs": [
+            "User's NFT token account — proves ownership (balance must be 1)"
+          ]
+        },
+        {
+          "name": "program_vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program_vault_pegged_ata",
+          "docs": [
+            "Program vault's $PEGGED ATA — source of claim payout"
+          ],
+          "writable": true
+        },
+        {
+          "name": "user_pegged_ata",
+          "docs": [
+            "User's $PEGGED ATA — destination"
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "compost_monke",
       "docs": [
         "Compost a dead monke — clean up MonkeBurn PDA for a burned SMB Gen2 NFT.",
@@ -285,6 +410,121 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit_pegged",
+      "docs": [
+        "Deposit $PEGGED from dist_pool ATA into program vault ATA. Permissionless.",
+        "Replaces deposit_sol for the $PEGGED flow. Same accumulator math, different transfer mechanism."
+      ],
+      "discriminator": [
+        165,
+        123,
+        5,
+        183,
+        200,
+        77,
+        252,
+        159
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Anyone can call (permissionless — keeper calls weekly)"
+          ],
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  110,
+                  107,
+                  101,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "dist_pool",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  116,
+                  95,
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "dist_pool_pegged_ata",
+          "docs": [
+            "Dist pool's $PEGGED ATA — source (receives from bridge)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "program_vault_pegged_ata",
+          "docs": [
+            "Program vault's $PEGGED ATA — destination"
+          ],
+          "writable": true
+        },
+        {
+          "name": "program_vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  103,
+                  114,
+                  97,
+                  109,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         }
       ],
       "args": []
@@ -677,6 +917,59 @@
       "args": []
     },
     {
+      "name": "set_pegged_mint",
+      "docs": [
+        "Set the $PEGGED mint address. Admin-only. Called once during migration",
+        "from raw SOL distribution to $PEGGED LST distribution."
+      ],
+      "discriminator": [
+        2,
+        222,
+        230,
+        177,
+        221,
+        229,
+        34,
+        66
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  110,
+                  107,
+                  101,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "pegged_mint",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "transfer_authority",
       "discriminator": [
         48,
@@ -932,6 +1225,16 @@
       "code": 6015,
       "name": "NftNotBurned",
       "msg": "NFT has not been burned (supply must be 0)"
+    },
+    {
+      "code": 6016,
+      "name": "PeggedNotConfigured",
+      "msg": "$PEGGED mint not configured — call set_pegged_mint first"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidTokenAccount",
+      "msg": "Invalid token account owner"
     }
   ],
   "types": [
@@ -1144,11 +1447,15 @@
             "type": "u8"
           },
           {
+            "name": "pegged_mint",
+            "type": "pubkey"
+          },
+          {
             "name": "_reserved",
             "type": {
               "array": [
                 "u8",
-                64
+                32
               ]
             }
           }

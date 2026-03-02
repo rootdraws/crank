@@ -177,7 +177,7 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════════════════
-       PAGE 2: RANK — feed your monke, claim SOL
+       PAGE 2: RANK — feed your monke, claim $PEGGED
        Sub-pages: Monke (personal) + Roster (leaderboard)
        ═══════════════════════════════════════════════════════════ -->
   <div class="site-page" id="page-rank">
@@ -218,8 +218,8 @@
                   <div class="stat-label">bananas balance</div>
                   <div class="stat-value bananas" id="bananasBalance">0</div>
                   <div class="triptych-sub-stats">
-                    <div><span class="stat-label sub-label">claimable</span><span class="stat-value green sub-value" id="userClaimable">0.0000 SOL</span></div>
-                    <div><span class="stat-label sub-label">total claimed</span><span class="stat-value sub-value" id="userTotalClaimed">0.0000 SOL</span></div>
+                    <div><span class="stat-label sub-label">claimable</span><span class="stat-value green sub-value" id="userClaimable">0.0000</span></div>
+                    <div><span class="stat-label sub-label">total claimed</span><span class="stat-value sub-value" id="userTotalClaimed">0.0000</span></div>
                   </div>
                 </div>
                 <div class="triptych-col">
@@ -227,7 +227,7 @@
                   <div class="stat-value" id="userTotalWeight">0</div>
                   <div class="triptych-sub-stats">
                     <div><span class="stat-label sub-label">your share</span><span class="stat-value sub-value" id="userRewardShare">0%</span></div>
-                    <div><span class="stat-label sub-label">fees earned</span><span class="stat-value sub-value" id="userTotalFees">0.0000 SOL</span></div>
+                    <div><span class="stat-label sub-label">fees earned</span><span class="stat-value sub-value" id="userTotalFees">0.0000</span></div>
                   </div>
                 </div>
                 <div class="triptych-col triptych-burn">
@@ -253,7 +253,7 @@
         <div class="stats-grid">
           <div><div class="stat-label">bananas burned</div><div class="stat-value bananas" id="globalBananasBurned">0</div></div>
           <div><div class="stat-label">monkes fed</div><div class="stat-value" id="globalMonkeCount">0</div></div>
-          <div><div class="stat-label">sol distributed</div><div class="stat-value green" id="globalSolDistributed">0 SOL</div></div>
+          <div><div class="stat-label">distributed</div><div class="stat-value green" id="globalSolDistributed">0</div></div>
           <div><div class="stat-label">total weight</div><div class="stat-value" id="globalTotalWeight">0</div></div>
         </div>
 
@@ -327,7 +327,7 @@
         <input type="number" class="rover-input" id="roverAmount" placeholder="amount" step="1">
         <button class="rover-btn" id="roverDepositBtn">deposit bribe</button>
       </div>
-      <div class="rover-note">tokens placed in sell-side bins above current price. upcycled to SOL through natural trading. proceeds split 50/50: monke holders + bot operations.</div>
+      <div class="rover-note">tokens placed in sell-side bins above current price. upcycled to SOL through natural trading. proceeds split 50/50: $PEGGED for monke holders + bot operations.</div>
 
       <!-- Top 5 expanded analytics cards -->
       <div id="reconTop5Cards"></div>
@@ -383,9 +383,9 @@
 
   <div class="modal-overlay" id="unclaimedWarning">
     <div class="modal-content warning-modal">
-      <div class="stat-label">unclaimed sol</div>
-      <div class="stat-value green" id="unclaimedAmount">0.00 SOL</div>
-      <div class="warning-text">you have unclaimed sol on this monke. claim before selling?</div>
+      <div class="stat-label">unclaimed rewards</div>
+      <div class="stat-value green" id="unclaimedAmount">0.00</div>
+      <div class="warning-text">you have unclaimed rewards on this monke. claim before selling?</div>
       <div class="modal-actions">
         <button class="action-btn-sm claim-now" id="warningClaimBtn">claim now</button>
         <button class="action-btn-sm" id="warningDismissBtn">continue anyway</button>

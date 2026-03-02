@@ -8,14 +8,15 @@ Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserSt
 
 | Program | Description |
 |---------|-------------|
-| `core.rs` | Position management. Open, harvest, close. All CPI via V2 variants (Token-2022 native). Performance fee on converted output — all fees → rover_authority → `sweep_rover` splits 50/50 (dist_pool + Config.bot). TOKEN fees → rover_authority (BidAskImBalanced DLMM recycling, no market dump). Permissionless fallback on harvest + close (heartbeat + staleness). Rovers use BidAskImBalanced distribution. Emergency escape hatch for deprecated pools. |
-| `monke_bananas.rs` | Feed BANANAS to your Monke. Burn $BANANAS (1M per tx, unlimited stacking) against SMB Gen2 (2x weight) or Gen3 (1x weight) NFTs. MasterChef accumulator. 50% of protocol fees flow to fed monke holders (50% to bot operations). `compost_monke`: permissionless cleanup of burned NFTs. |
+| `core.rs` (bin_farm) | Position management. Open, harvest, close. All CPI via V2 variants (Token-2022 native). Performance fee on converted output — all fees → rover_authority → `sweep_rover` splits 50/50 (bridge_vault + Config.bot). TOKEN fees → rover_authority (BidAskImBalanced DLMM recycling, no market dump). Permissionless fallback on harvest + close (heartbeat + staleness). Rovers use BidAskImBalanced distribution. Emergency escape hatch for deprecated pools. |
+| `monke_bananas.rs` | Feed BANANAS to your Monke. Burn $BANANAS (1M per tx, unlimited stacking) against SMB Gen2 (2x weight) or Gen3 (1x weight) NFTs. MasterChef accumulator distributes $PEGGED to fed monke holders. `deposit_pegged` / `claim_pegged` for token-based distribution. `compost_monke`: permissionless cleanup of burned NFTs. |
+| `pegged_bridge.rs` | SOL → $PEGGED bridge. Single permissionless crank: `stake_and_forward` deposits SOL into the MonkeDAO SPL stake pool, receives $PEGGED, forwards it to the dist_pool ATA on monke_bananas. |
 
 ## How It Works
 
 Users deposit single-sided liquidity into Meteora DLMM bins via the core program — sell the rips (tokens above price) or buy the dips (SOL below price). A vault PDA owns the Meteora position on behalf of the user. As price moves through bins, Monke's Harvester detects fully-converted bins in sub-second via Helius LaserStream gRPC and calls `harvest_bins` to withdraw them. Tokens flow Meteora → vault ATA → owner wallet in a single instruction.
 
-Performance fee (0.3%) is taken on converted output only. All fees flow through rover_authority. `sweep_rover` splits 50/50: half to dist_pool (monke holders), half to `Config.bot` (operations). Hardcoded on-chain. TOKEN fees route to rover_authority for BidAskImBalanced DLMM recycling — no market dumping on thin meme pools. Unconverted deposits return untaxed.
+Performance fee (0.3%) is taken on converted output only. All fees flow through rover_authority. `sweep_rover` splits 50/50: half to bridge_vault (→ $PEGGED for monke holders), half to `Config.bot` (operations). Hardcoded on-chain. The bridge vault's SOL is staked to the MonkeDAO validator via `stake_and_forward`, minting $PEGGED — a yield-bearing LST that appreciates each epoch. TOKEN fees route to rover_authority for BidAskImBalanced DLMM recycling — no market dumping on thin meme pools. Unconverted deposits return untaxed.
 
 ### Key Instructions
 
@@ -26,7 +27,7 @@ open_position_v2(pool, amount, min_bin, max_bin, side, max_active_bin_slippage)
   → Token-2022 native. All CPI via V2 variants.
 
 harvest_bins(bin_ids: Vec<i32>)
-  → SOL fees → rover_authority → sweep_rover → 50% dist_pool (monke holders) + 50% bot. TOKEN fees → rover_authority (DLMM recycling)
+  → SOL fees → rover_authority → sweep_rover → 50% bridge_vault (→ $PEGGED) + 50% bot. TOKEN fees → rover_authority (DLMM recycling)
   → Remainder → owner. Position stays open.
   → Permissionless fallback: anyone can call when bot is stale,
     earns a keeper tip from the fee.
@@ -56,12 +57,24 @@ open_fee_rover(amount, bin_step)
     in rover_authority ATAs. Bot pays rent.
 
 sweep_rover()
-  → Permissionless. SOL from rover_authority → 50% dist_pool (monke holders) + 50% Config.bot (operations).
+  → Permissionless. SOL from rover_authority → 50% bridge_vault + 50% Config.bot (operations).
 
 close_rover_token_account()
   → Permissionless. Closes any token account owned by rover_authority.
   → For WSOL: unwraps to native SOL on rover_authority (picked up by sweep_rover).
   → For empty ATAs: reclaims rent to rover_authority.
+
+stake_and_forward()  [pegged_bridge]
+  → Permissionless crank. bridge_vault SOL → SPL stake pool deposit
+    → $PEGGED minted → dist_pool ATA (monke_bananas).
+
+deposit_pegged()  [monke_bananas]
+  → Permissionless. dist_pool $PEGGED → program_vault $PEGGED.
+    Accumulator updated. Units shift from lamports to $PEGGED base units.
+
+claim_pegged()  [monke_bananas]
+  → Claim accrued $PEGGED from program_vault → user's $PEGGED ATA.
+    Weight-proportional via MasterChef accumulator.
 ```
 
 ### Bin Detection Logic — Sell the Rips, Buy the Dips
@@ -84,35 +97,42 @@ monke-army/
 │   ├── bin-farm/src/
 │   │   ├── lib.rs                 # Core program (positions, harvest, close, fees, rovers)
 │   │   └── meteora_dlmm_cpi.rs   # Meteora DLMM CPI wrappers (V2 only)
-│   └── monke-bananas/src/lib.rs   # Burn $BANANAS, stack weight, claim SOL, compost dead monkes
+│   ├── monke-bananas/src/lib.rs   # Burn $BANANAS, stack weight, claim $PEGGED, compost dead monkes
+│   └── pegged-bridge/src/lib.rs   # SOL → $PEGGED bridge (stake_and_forward via SPL stake pool)
 ├── src/
-│   └── generated/                 # Codama-generated TypeScript clients (bin-farm + monke-bananas)
+│   └── generated/                 # Codama-generated TypeScript clients (bin-farm + monke-bananas + pegged-bridge)
 ├── bot/                           # Monke's Harvester (off-chain infrastructure)
 │   ├── anchor-harvest-bot.ts      # Orchestrator + health endpoint + relay wiring
 │   ├── geyser-subscriber.ts       # Helius LaserStream gRPC — sub-second bin detection
 │   ├── relay-server.ts            # WebSocket + REST relay for frontend (/ws + /api/*)
 │   ├── meteora-accounts.ts        # Shared Meteora CPI account resolution + DLMM cache
 │   ├── harvest-executor.ts        # Job queue: harvest/close tx (emits events to relay)
-│   ├── keeper.ts                  # MonkeKeeper: Saturday sequencer + rover TVL computation
+│   ├── keeper.ts                  # MonkeKeeper: Saturday sequencer (incl. stake_and_forward + deposit_pegged)
 │   ├── retry.ts                   # Shared withRetry (exponential backoff, 3 retries)
 │   └── logger.ts                  # Pino structured logging
 ├── public/                        # Frontend: Trade / Positions / Rank / Ops / Recon
 │   ├── index.html                 # Navigation sigil astrolabe + all page layouts
 │   ├── styles.css                 # Military monke color palette + all page styles
 │   ├── app.js                     # Page logic, relay WebSocket client, Codama instruction builders
-│   └── config.json                # Program IDs, RPC, BOT_RELAY_URL
+│   ├── config.json                # Program IDs, RPC, BOT_RELAY_URL (gitignored — see config.example.json)
+│   └── config.example.json        # Template for config.json (no API keys)
 ├── scripts/
 │   ├── deploy-and-init.mjs        # Deploy + init programs atomically (anti-front-run)
 │   ├── build-frontend.mjs         # Frontend build: bundle app.js (Codama + @solana/kit)
 │   ├── generate-clients.mjs       # Codama client generation from IDL → src/generated/
+│   ├── init-bridge.ts             # Initialize pegged_bridge program on-chain
+│   ├── set-pegged-and-redirect.ts # set_pegged_mint + propose_revenue_dest (bridge_vault)
+│   ├── preflight-check.ts         # Pre-deployment verification of all programs, PDAs, ATAs
 │   ├── test-close-position.ts     # Close a stuck position (mainnet)
 │   └── recycle-fee-rover.ts       # Open fee rover from accumulated token fees
 ├── meteora-invent/                # Meteora DAMM v2 launch toolkit (cloned)
 │   └── studio/config/damm_v2_config.jsonc  # $BANANAS pool + Alpha Vault config
-├── Anchor.toml                    # Workspace config (2 programs, devnet + mainnet)
+├── Anchor.toml                    # Workspace config (3 programs, devnet + mainnet)
 ├── Cargo.toml                     # Workspace root
 ├── whitepaper.md                  # Product overview + mechanics
 ├── TODO.md                        # Task list
+├── docs/
+│   └── addressbook.md             # Pool discovery + address book reference (API, Phase 2)
 └── ref/dlmm-sdk/                  # Cloned Meteora DLMM SDK (source of truth for CPI layouts)
 ```
 
@@ -149,10 +169,11 @@ cargo update -p borsh@1.6.0 --precise 1.5.5
 # Generate IDL from on-chain program structs (Anchor 0.31.1)
 anchor idl build -p bin_farm -o bot/idl/bin_farm.json
 anchor idl build -p monke_bananas -o bot/idl/monke_bananas.json
+anchor idl build -p pegged_bridge -o bot/idl/pegged_bridge.json
 
 # Generate Codama TypeScript clients from IDL
 node scripts/generate-clients.mjs
-# Output: src/generated/bin-farm/ + src/generated/monke-bananas/
+# Output: src/generated/bin-farm/ + src/generated/monke-bananas/ + src/generated/pegged-bridge/
 ```
 
 Regenerate after any on-chain struct change. IDL files at `bot/idl/` are used by the bot's Anchor client. Codama clients at `src/generated/` provide typed instruction builders and account decoders for the frontend (`app.js` imports them via esbuild bundling).
@@ -165,7 +186,7 @@ cp bot/anchor-harvest-bot.env.example bot/.env
 npm run bot
 ```
 
-Sub-second harvest via LaserStream, permissionless fallback on all operations (harvest, close, sweep, deposit — anyone can crank when bot is stale and earn a tip), periodic fee sweeps, adaptive intervals, health endpoint.
+Sub-second harvest via LaserStream, permissionless fallback on all operations (harvest, close, sweep, stake_and_forward, deposit — anyone can crank when bot is stale and earn a tip), periodic fee sweeps, Saturday keeper sequence (unwrap → sweep → bridge → fee rovers → deposit_pegged → cleanup), adaptive intervals, health endpoint.
 
 ## Run Frontend
 
@@ -174,7 +195,7 @@ node scripts/build-frontend.mjs && npx serve dist   # local dev
 node scripts/build-frontend.mjs                      # production (Vercel runs this)
 ```
 
-Frontend pages: **Trade** (DLMM harvester, default SOL/USDC pool), **Positions** (all wallet positions with inline close + claim fees), **Rank** (monke feed/claim + leaderboard, sub-pages: Monke + Roster), **Ops** (bounty board + permissionless crank + live stats from relay), **Recon** (rover TVL — deferred). Sigil astrolabe navigation. Bot relay provides live data via WebSocket (`/ws`) and REST (`/api/*`) at `wss://bot.monke.army`.
+Frontend pages: **Trade** (DLMM harvester — pool discovery via token CA search + Meteora trending feed + server-side address book, default SOL/USDC pool), **Positions** (all wallet positions with inline close + claim fees), **Rank** (monke feed/claim + leaderboard, sub-pages: Monke + Roster), **Ops** (bounty board + permissionless crank + live stats from relay), **Recon** (rover TVL — deferred). Sigil astrolabe navigation. Bot relay provides live data via WebSocket (`/ws`) and REST (`/api/*`) at `wss://bot.monke.army`.
 
 ## Mainnet Addresses
 
@@ -184,12 +205,15 @@ Frontend pages: **Trade** (DLMM harvester, default SOL/USDC pool), **Positions**
 |---------|---------|
 | core (bin_farm) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` |
 | monke_bananas | `myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH` |
+| pegged_bridge | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` |
 
-### Token
+### Tokens
 
 | Item | Address |
 |------|---------|
 | $BANANAS Mint | `ABj8RJzGHxbLoB8JBea8kvBx626KwSfvbpce9xVfkK7w` |
+| $PEGGED Mint (LST) | `3wJYuCVWvNj4aWh5nBdZ782Wz8xVzW74CXr8UepZMG4j` |
+| SPL Stake Pool | `SVhYuHZMyXobKkCrcAbF2cq44amK5TiYzmNpKngfwqg` |
 
 ### PDAs
 
@@ -200,6 +224,11 @@ Frontend pages: **Trade** (DLMM harvester, default SOL/USDC pool), **Positions**
 | MonkeState | `6DZqJbD3rWzfySHyRASL5nMUsf5WroZvykdf256BNXMo` | monke_bananas |
 | Dist Pool | `2uZxacLniw264zRpr84qGW4NcYkTv3M448733t6MRK1e` | monke_bananas |
 | Program Vault | `6r63srLezrtjiYwwoVwMB82o3c7mwz3BUktGiHRq4FxX` | monke_bananas |
+| Bridge Config | PDA `[b"bridge_config"]` | pegged_bridge |
+| Bridge Vault | `B9gTfeCbN1oSXKCKgog5gGTH3VGNr3U5SYH4mL3gtqxK` | pegged_bridge |
+| Bridge Vault $PEGGED ATA | `CTeQ5r1t19hd6i1MtzB2zU73zUZidqupHJMXseZz8bxJ` | pegged_bridge |
+| Dist Pool $PEGGED ATA | `2yqzo5ZfkEBFgvyJ7c5A92MLKJqgYV9V8KDXzSqbKrx9` | monke_bananas |
+| Program Vault $PEGGED ATA | `A8tma3zNPiHTxJhYcUFFAz2GKGJmtnquo22yv5WPtVg6` | monke_bananas |
 
 ### Launch Parameters
 
@@ -217,8 +246,8 @@ Frontend pages: **Trade** (DLMM harvester, default SOL/USDC pool), **Positions**
 - **Gen3 Collection:** `8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH` — **1x weight per feed**
 - **Burn:** 1,000,000 $BANANAS per `feed_monke` call (6 decimals enforced at init)
 - **Stacking:** Unlimited. Per-NFT `MonkeBurn` PDA tracks cumulative weight.
-- **Revenue:** 50% of protocol fees flow to fed monke holders. 50% funds bot operations.
-- **Claiming:** Weight and unclaimed SOL travel with the NFT on secondary sales.
+- **Revenue:** 50% of protocol fees are converted to $PEGGED and distributed to fed monke holders. 50% funds bot operations.
+- **Claiming:** Weight and unclaimed $PEGGED travel with the NFT on secondary sales.
 - **Cleanup:** `compost_monke` — permissionless removal of dead weight when NFT is burned (supply == 0)
 
 ## Deployment
@@ -232,7 +261,7 @@ Frontend pages: **Trade** (DLMM harvester, default SOL/USDC pool), **Positions**
 
 - **Upgrade authority:** Retained by operator. Program can be upgraded.
 - **Audit status:** Unaudited. Use at your own risk.
-- **Fee split:** 50/50 hardcoded on-chain (dist_pool / Config.bot). Not governable by operator.
+- **Fee split:** 50/50 hardcoded on-chain (bridge_vault → $PEGGED for monke holders / Config.bot for operations). Not governable by operator. Revenue destination change requires 24hr timelock.
 - **Permissionless fallback:** All harvests and sweeps can be cranked by anyone when the bot is stale, preventing fund lock-up.
 
 ## Known Limitations

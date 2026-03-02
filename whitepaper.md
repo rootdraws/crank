@@ -1,6 +1,6 @@
 # monke.army
 
-**Limit orders that earn fees. Burn $BANANAS, feed your monke, earn SOL.**
+**Limit orders that earn fees. Burn $BANANAS, feed your monke, earn $PEGGED.**
 
 ---
 
@@ -74,13 +74,13 @@ The result is structural predation against existing passive LPs. Your users are 
 1. Buy an SMB Gen2 NFT
 2. Buy $BANANAS
 3. Feed your monke
-4. Claim your $SOL
+4. Claim your $PEGGED
 
 - 1M $BANANAS must be burned at a time, assigned on-chain to your specific Monke
 - Gen2 = 2x weight per feed. Gen3 = 1x weight per feed.
 - Burns stack. Feed 5M $BANANAS to the same Gen2 Monke — that NFT has a weight of 10
-- 50% of protocol fees are directed to fed Monkes, proportional to their weight. 50% funds bot operations.
-- SMB Gen2 / Gen3 NFTs are fully tradeable. Weight and unclaimed SOL travel with the NFT
+- 50% of protocol fees are converted to $PEGGED and distributed to fed Monkes, proportional to their weight. 50% funds bot operations.
+- SMB Gen2 / Gen3 NFTs are fully tradeable. Weight and unclaimed $PEGGED travel with the NFT
 
 **SMB Gen2 collection:** `SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W`
 **SMB Gen3 collection:** `8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH`
@@ -89,23 +89,30 @@ The result is structural predation against existing passive LPs. Your users are 
 
 ## Fee Flow
 
-50% of protocol fees to monke holders. 50% to operations (bot self-funding). Zero team token allocation.
+50% of protocol fees to monke holders as $PEGGED. 50% to operations (bot self-funding). Zero team token allocation.
 
 ```
 Two revenue streams → sweep_rover splits 50/50:
 
 1. Position fees (0.3% on converted output)
      SOL fees → rover_authority WSOL ATA → close_rover_token_account (unwrap)
-        → sweep_rover → 50% dist_pool (monke holders) + 50% bot (operations)
+        → sweep_rover → 50% bridge_vault + 50% bot (operations)
      TOKEN fees → rover_authority → sell-side DLMM (BidAskImBalanced)
         → natural trading converts to SOL → sweep_rover → 50/50 split
 
 2. Rover bribe proceeds
      External deposits → rover DLMM positions → converts to SOL
         → sweep_rover → 50/50 split
+
+Bridge (SOL → $PEGGED):
+     bridge_vault SOL → stake_and_forward (permissionless crank)
+        → SPL stake pool deposit → $PEGGED minted → dist_pool ATA
+        → deposit_pegged → program_vault ATA → claimable by monkes
 ```
 
 The 50/50 split is hardcoded in `sweep_rover`. The operator's share goes to `Config.bot` — the same keypair that pays for all harvest, close, and keeper transactions. The bot self-funds from protocol revenue. Effective user cost: 0.15% (half of the 0.3% fee).
+
+The monke holder's 50% flows into a bridge vault, where it is staked to the MonkeDAO validator via an SPL stake pool and converted to $PEGGED — a yield-bearing liquid staking token. $PEGGED appreciates against SOL each epoch as staking rewards accrue. Holders earn staking yield passively on top of their protocol revenue share.
 
 Token fees are never market-dumped. They become sell-side liquidity above current price. If the token pumps, they convert at better prices. If it doesn't, they sit there earning LP fees while they wait. Your protocol fees don't destroy your chart.
 
@@ -120,7 +127,7 @@ Single-sided bid-ask orders in discrete price bins. monke.army watches those bin
 monke.army is an automation cooperative for yield-bearing limit orders. Our programs are a minimalist vault wrapper on the DLMM API. Our LaserStream gRPC subscription provides an economy of scale — one connection monitoring all positions in the wrapper.
 
 **Why burn instead of stake?**
-Staking creates mercenaries. They lock, farm, unlock, dump. Burning $BANANAS is permanent — the tokens are gone forever. You stack weight on a tradeable SMB Gen2 or Gen3 NFT that earns SOL. You can sell the monke, but you can never un-burn the $BANANAS.
+Staking creates mercenaries. They lock, farm, unlock, dump. Burning $BANANAS is permanent — the tokens are gone forever. You stack weight on a tradeable SMB Gen2 or Gen3 NFT that earns $PEGGED. You can sell the monke, but you can never un-burn the $BANANAS.
 
 **Why Solana Monke Business?**
 Prefer Aesthetic.
@@ -128,14 +135,20 @@ Prefer Aesthetic.
 **Does it work with Token-2022 / pump.fun tokens?**
 Yes. Runtime detection, V1/V2 CPI branching. Zero additional configuration. Exception: Token-2022 mints with active transfer hooks are not yet supported.
 
+**What is $PEGGED?**
+$PEGGED is a yield-bearing liquid staking token (LST) backed 1:1 by SOL staked to the MonkeDAO validator via a Solana SPL stake pool. Its exchange rate against SOL increases every epoch as staking rewards accrue. You can hold $PEGGED for compounding yield, or swap it on the open market.
+
+**Why $PEGGED instead of raw SOL?**
+Raw SOL sits idle. $PEGGED earns ~7-8% APY staking yield while you hold it. It also directs stake to the MonkeDAO validator, strengthening the community's infrastructure. $PEGGED is fully liquid — sell it anytime on the DLMM pool.
+
 **What about the dev fee?**
-50% of protocol fees go to monke holders who burned $BANANAS. 50% goes to the bot keypair to fund operations (harvest transactions, keeper cranks, rover rent). Zero team token allocation — the dev participates in the Alpha Vault fair launch like everyone else, same price, same terms. The 50/50 split is hardcoded on-chain.
+50% of protocol fees go to monke holders who burned $BANANAS, distributed as $PEGGED. 50% goes to the bot keypair to fund operations (harvest transactions, keeper cranks, rover rent). Zero team token allocation — the dev participates in the Alpha Vault fair launch like everyone else, same price, same terms. The 50/50 split is hardcoded on-chain.
 
 **How was $BANANAS launched?**
 100% of supply (1B tokens, 6 decimals) into a Meteora DAMM v2 pool. Alpha Vault pro-rata fair launch — everyone deposits SOL during a 2-week window, everyone gets the same price. 420 SOL vault capacity. initPrice: 0.000001 SOL/token (1 SOL = 1 monke feed). Liquidity permanently locked — trading fees from the locked position are retained by the operator (not part of the 50/50 protocol split). 69% sniper tax decaying to 1% over 3 hours. Zero dev allocation. No pre-mine. No team tokens.
 
 ---
 
-*DLMM Limit Orders that pay you to trade. Burn $BANANAS, feed your monke.*
+*DLMM Limit Orders that pay you to trade. Burn $BANANAS, feed your monke, earn $PEGGED.*
 
 *monke.army*

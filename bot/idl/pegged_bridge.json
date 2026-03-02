@@ -1,0 +1,414 @@
+{
+  "address": "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN",
+  "metadata": {
+    "name": "pegged_bridge",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "initialize",
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  114,
+                  105,
+                  100,
+                  103,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bridge_vault",
+          "docs": [
+            "internal system_instruction::transfer works via PDA signing propagation."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  114,
+                  105,
+                  100,
+                  103,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "stake_pool",
+          "type": "pubkey"
+        },
+        {
+          "name": "pegged_mint",
+          "type": "pubkey"
+        },
+        {
+          "name": "dist_pool_pegged_ata",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "stake_and_forward",
+      "docs": [
+        "Permissionless crank. Stakes all available SOL in bridge_vault into the",
+        "SPL stake pool, mints $PEGGED to a bridge-owned ATA, then forwards all",
+        "$PEGGED to the monke_bananas dist_pool ATA. Bot never touches funds."
+      ],
+      "discriminator": [
+        152,
+        231,
+        164,
+        22,
+        220,
+        140,
+        21,
+        230
+      ],
+      "accounts": [
+        {
+          "name": "crank",
+          "docs": [
+            "Anyone can crank (permissionless — bot just does it faster)"
+          ],
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  114,
+                  105,
+                  100,
+                  103,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bridge_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  114,
+                  105,
+                  100,
+                  103,
+                  101,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bridge_pegged_ata",
+          "docs": [
+            "Bridge vault's $PEGGED ATA — receives minted tokens, then forwards to dist_pool"
+          ],
+          "writable": true
+        },
+        {
+          "name": "dist_pool_pegged_ata",
+          "docs": [
+            "Dist pool's $PEGGED ATA on monke_bananas — final destination"
+          ],
+          "writable": true
+        },
+        {
+          "name": "pegged_mint",
+          "docs": [
+            "$PEGGED mint (pool token mint from SPL stake pool)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "stake_pool",
+          "writable": true
+        },
+        {
+          "name": "stake_pool_withdraw_authority"
+        },
+        {
+          "name": "reserve_stake",
+          "writable": true
+        },
+        {
+          "name": "manager_fee_account",
+          "writable": true
+        },
+        {
+          "name": "stake_pool_program"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_config",
+      "discriminator": [
+        29,
+        158,
+        252,
+        191,
+        10,
+        83,
+        219,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  114,
+                  105,
+                  100,
+                  103,
+                  101,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_dist_pool_pegged_ata",
+          "type": {
+            "option": "pubkey"
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "BridgeConfig",
+      "discriminator": [
+        40,
+        206,
+        51,
+        233,
+        246,
+        40,
+        178,
+        85
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "StakeAndForwardEvent",
+      "discriminator": [
+        5,
+        165,
+        236,
+        238,
+        174,
+        56,
+        185,
+        134
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "Not authorized"
+    },
+    {
+      "code": 6001,
+      "name": "NothingToStake",
+      "msg": "Nothing to stake (bridge vault below minimum)"
+    },
+    {
+      "code": 6002,
+      "name": "NoPeggedMinted",
+      "msg": "No $PEGGED minted from stake pool deposit"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidTokenAccount",
+      "msg": "Invalid token account"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidMint",
+      "msg": "Invalid mint"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidDistPool",
+      "msg": "Invalid dist pool ATA"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidStakePool",
+      "msg": "Invalid stake pool"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidProgram",
+      "msg": "Invalid program"
+    }
+  ],
+  "types": [
+    {
+      "name": "BridgeConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "stake_pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "pegged_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "dist_pool_pegged_ata",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "config_bump",
+            "type": "u8"
+          },
+          {
+            "name": "_reserved",
+            "type": {
+              "array": [
+                "u8",
+                62
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "StakeAndForwardEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "stakeable",
+            "type": "u64"
+          },
+          {
+            "name": "pegged_minted",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    }
+  ]
+}

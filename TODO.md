@@ -10,20 +10,24 @@ Run with bot active and wallet connected. 0.01-0.1 SOL per test.
 - [ ] **Wait for harvest** — Watch Ops activity feed. Bot harvests when price crosses bins.
 - [ ] **Test user_close** — Positions page, click "close". Approve. Verify SOL returns minus 0.3% fee.
 - [ ] **Test claim_fees** — Open position, wait for LP fees to accrue, click "fees" on Positions page.
-- [ ] **Test sweep** — Ops page, check rover_authority balance. If > 0, click "sweep". Verify SOL splits 50/50: half to dist_pool, half to Config.bot.
-- [ ] **Test deposit** — Ops page, check dist_pool balance. If > 0, click "deposit". Verify SOL moves to program_vault.
+- [ ] **Test sweep** — Ops page, check rover_authority balance. If > 0, click "sweep". Verify SOL splits 50/50: half to bridge_vault, half to Config.bot.
+- [ ] **Test stake_and_forward** — After sweep, crank bridge. Verify $PEGGED minted to dist_pool ATA.
+- [ ] **Test deposit_pegged** — Ops page, check dist_pool $PEGGED balance. If > 0, click "deposit". Verify $PEGGED moves to program_vault ATA.
 - [ ] **Test feed_monke** — Rank page, select SMB NFT, click "Burn 1M $BANANAS to your Monke." Verify weight increments.
-- [ ] **Test claim** — After deposit_sol, click "claim" on fed monke. Verify SOL arrives.
+- [ ] **Test claim_pegged** — After deposit_pegged, click "claim" on fed monke. Verify $PEGGED arrives in wallet ATA.
 - [ ] **Test permissionless fallback** — Stop bot for 60s. Go to Ops bounty board. Click "harvest" on a pending position. Verify keeper tip.
-- [ ] **Validate Saturday keeper** — Wait for Saturday or manually trigger. Verify 5-step sequence: unwrap WSOL -> sweep_rover -> fee rovers -> deposit_sol -> cleanup.
+- [ ] **Validate Saturday keeper** — Wait for Saturday or manually trigger. Verify 6-step sequence: unwrap WSOL -> sweep_rover -> stake_and_forward -> fee rovers -> deposit_pegged -> cleanup.
 
 ---
 
 ## Feature work
 
 - [ ] **Resolve Phantom blockage** — Lighthouse still flags all txs. Pre-simulation with `sigVerify:false` added, domain review form submitted, code snippets sent to Joey (Phantom support ticket #190752). Awaiting response. If warnings persist, escalate or investigate ALTs for large txs.
-- [ ] **$PEGGED LST integration** — Replace raw SOL distribution with $PEGGED (yield-bearing LST on MonkeDAO validator). See `pegged.md` for full implementation plan. Summary: deploy SPL stake pool → write bridge program (SOL→stake→$PEGGED→dist_pool) → upgrade monke_bananas (lamports→token transfers) → redirect revenue_dest via existing timelock → add bridge crank to keeper → update frontend claim UI.
-- [x] **Pool discovery + address book** — Replace raw lb_pair paste with token CA search (Meteora DataPI) + trending feed + server-side address book (relay tracks user pools via gRPC, serves ranked/pruned history). Zero wallet interactions, unlimited capacity, dead pools auto-pruned. See `addressbook.md` for full plan. On-chain trade passport (Metaplex Core AppData NFT) deferred to Phase 2.
+- [x] **$PEGGED LST integration** — SPL stake pool deployed (`SVhYu...`), $PEGGED mint live (`3wJYu...`), bridge program deployed + initialized (`7oHSU...`), monke_bananas upgraded with deposit_pegged/claim_pegged, set_pegged_mint called, revenue_dest redirect proposed. Bot keeper + frontend + relay code updated.
+  - [ ] **apply_revenue_dest()** — 24hr timelock from propose (ran ~Mar 1 evening). Call after timelock expires to finalize the redirect.
+  - [ ] **$PEGGED token metadata** — Set name/symbol/icon via Metaplex `CreateMetadataAccountV3` on mint `3wJYuCVWvNj4aWh5nBdZ782Wz8xVzW74CXr8UepZMG4j`.
+  - [ ] **Frontend deploy to Vercel** — Code is ready, push + deploy.
+  - [ ] **$PEGGED E2E test** — Full Saturday cycle with real SOL: harvest → sweep → stake_and_forward → deposit_pegged → claim_pegged.
 - [ ] **Recon page** — Rover TVL leaderboard, top-5 analytics, bribe deposit, click-to-trade. Pure frontend, depends on relay data.
 - [ ] **Rover TVL computation** — Bot-side dollar-value computation for rover positions. Wire callback to relay.
 - [ ] **Add BANANAS/SOL to Trade page** — DAMM v2 pool is live. Add as selectable pair on Trade page (needs DLMM pool or adapter).
@@ -51,4 +55,4 @@ Run with bot active and wallet connected. 0.01-0.1 SOL per test.
 
 ---
 
-*Last updated: Mar 1, 2026.*
+*Last updated: Mar 2, 2026.*

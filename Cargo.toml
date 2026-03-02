@@ -2,6 +2,7 @@
 members = [
     "programs/bin-farm",
     "programs/monke-bananas",
+    "programs/pegged-bridge",
 ]
 resolver = "2"
 

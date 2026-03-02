@@ -56,13 +56,14 @@ export interface RoverTvlEntry {
 /** Fee pipeline state returned by the /api/fees endpoint */
 export interface FeePipelineState {
   roverAuthority: { address: string; solBalance: number; wsolBalance: number };
-  distPool: { address: string; solBalance: number };
-  programVault: { address: string; solBalance: number };
+  distPool: { address: string; solBalance: number; peggedBalance?: number };
+  programVault: { address: string; solBalance: number; peggedBalance?: number };
   monkeState: {
     totalShareWeight: string;
     accumulatedSolPerShare: string;
     totalSolDistributed: number;
     totalBananasBurned: string;
+    peggedMint?: string | null;
   } | null;
   totalInPipeline: number;
   timestamp: number;

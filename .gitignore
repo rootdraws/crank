@@ -31,6 +31,9 @@ Thumbs.db
 dist/
 build/
 
+# Frontend config (contains RPC API keys)
+public/config.json
+
 # AI session context
 claude.md
 

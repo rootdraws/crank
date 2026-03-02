@@ -2,17 +2,18 @@
  * keeper.ts
  *
  * Saturday sequencer for monke.army.
- * 5-step weekly sequence — no phases, no state machine. 50/50 split (monke holders / bot operations).
+ * 6-step weekly sequence — no phases, no state machine. 50/50 split (monke holders / bot operations).
  *
  * Saturday sequence:
- *   1. close_rover_wsol  — WSOL ATA → native SOL on rover_authority
- *   2. sweep_rover       — native SOL → dist_pool
- *   3. open_fee_rovers   — token ATAs → DLMM positions
- *   4. deposit_sol       — dist_pool → program_vault → accumulator
- *   5. close_exhausted_rovers — empty rovers → rent reclaimed
+ *   1. close_rover_wsol    — WSOL ATA → native SOL on rover_authority
+ *   2. sweep_rover         — native SOL → bridge_vault (via revenue_dest)
+ *   3. stake_and_forward   — bridge: SOL → stake pool → $PEGGED → dist_pool ATA
+ *   4. open_fee_rovers     — token ATAs → DLMM positions
+ *   5. deposit_pegged      — dist_pool $PEGGED → program_vault $PEGGED → accumulator
+ *   6. close_exhausted_rovers — empty rovers → rent reclaimed
  *
  * Plus:
- *   - checkAndDepositSol — auto-trigger deposit_sol when dist_pool > threshold
+ *   - checkAndDepositPegged — auto-trigger deposit_pegged when dist_pool $PEGGED > threshold
  *     (called after every keeper tick, not just Saturdays)
  *
  * The bot checks hourly (Active) or every 30s (during Saturday processing).
@@ -58,9 +59,12 @@ interface KeeperConfig {
   connection: Connection;
   coreProgram: Program;
   monkeProgram: Program;
+  bridgeProgram?: Program;
   botKeypair: Keypair;
   coreProgramId: PublicKey;
   monkeProgramId: PublicKey;
+  bridgeProgramId?: PublicKey;
+  peggedMint?: PublicKey;
   // Optional pool registry from subscriber to avoid position.all() in fee rovers
   getWatchedPools?: () => string[];
 }
@@ -113,9 +117,12 @@ export class MonkeKeeper {
   private connection: Connection;
   private coreProgram: Program;
   private monkeProgram: Program;
+  private bridgeProgram?: Program;
   private botKeypair: Keypair;
   private coreProgramId: PublicKey;
   private monkeProgramId: PublicKey;
+  private bridgeProgramId?: PublicKey;
+  private peggedMint?: PublicKey;
   // Track last successful Saturday for catch-up logic
   private lastSuccessfulSaturday: number = 0;
   // Cached priority fee instructions (refreshed per Saturday sequence)
@@ -129,9 +136,12 @@ export class MonkeKeeper {
     this.connection = config.connection;
     this.coreProgram = config.coreProgram;
     this.monkeProgram = config.monkeProgram;
+    this.bridgeProgram = config.bridgeProgram;
     this.botKeypair = config.botKeypair;
     this.coreProgramId = config.coreProgramId;
     this.monkeProgramId = config.monkeProgramId;
+    this.bridgeProgramId = config.bridgeProgramId;
+    this.peggedMint = config.peggedMint;
     this.getWatchedPools = config.getWatchedPools;
   }
 
@@ -140,11 +150,12 @@ export class MonkeKeeper {
    * 50/50 split — half to monke holders, half to bot (Config.bot).
    *
    * On Saturday (or whenever fees have accumulated):
-   *   1. close_rover_wsol  — WSOL ATA → native SOL on rover_authority
-   *   2. sweep_rover       — native SOL → dist_pool
-   *   3. open_fee_rovers   — token ATAs → DLMM positions
-   *   4. deposit_sol       — dist_pool → program_vault → accumulator
-   *   5. close_exhausted_rovers — empty rovers → rent reclaimed
+   *   1. close_rover_wsol    — WSOL ATA → native SOL on rover_authority
+   *   2. sweep_rover         — native SOL → bridge_vault (via revenue_dest)
+   *   3. stake_and_forward   — bridge: SOL → stake pool → $PEGGED → dist_pool ATA
+   *   4. open_fee_rovers     — token ATAs → DLMM positions
+   *   5. deposit_pegged      — dist_pool $PEGGED → program_vault $PEGGED → accumulator
+   *   6. close_exhausted_rovers — empty rovers → rent reclaimed
    *
    * Returns 'Active' or 'Processing' for adaptive interval.
    * The orchestrator uses this to set 1hr vs 30s cadence.
@@ -170,16 +181,19 @@ export class MonkeKeeper {
       // Step 1: Close WSOL ATA on rover_authority → unwrap to native SOL
       await this.crankCloseRoverWsol();
 
-      // Step 2: Sweep SOL from rover_authority to dist_pool
+      // Step 2: Sweep SOL from rover_authority → bridge_vault (via revenue_dest)
       await this.crankSweepRover();
 
-      // Step 3: Open fee rover positions from accumulated token fees
+      // Step 3: Stake bridge_vault SOL → $PEGGED → dist_pool ATA
+      await this.crankStakeAndForward();
+
+      // Step 4: Open fee rover positions from accumulated token fees
       await this.crankOpenFeeRovers();
 
-      // Step 4: Deposit SOL from dist_pool into monke program vault
-      await this.crankDepositSol();
+      // Step 5: Deposit $PEGGED from dist_pool ATA into monke program vault ATA
+      await this.crankDepositPegged();
 
-      // Step 5: Close exhausted rover positions (reclaim rent)
+      // Step 6: Close exhausted rover positions (reclaim rent)
       await this.crankCloseExhaustedRovers();
 
       this.lastSuccessfulSaturday = Date.now();
@@ -284,6 +298,102 @@ export class MonkeKeeper {
     } catch (e: any) {
       // Non-fatal — SOL just stays wrapped until next crank
       logger.warn(`[keeper] close_rover_wsol error: ${e.message?.slice(0, 120)}`);
+    }
+  }
+
+  // ─── CRANK: STAKE AND FORWARD ($PEGGED bridge) ───
+
+  /**
+   * Crank the bridge: stake SOL in bridge_vault → SPL stake pool → $PEGGED → dist_pool ATA.
+   * Permissionless — anyone can call. Requires bridge program to be configured.
+   */
+  private async crankStakeAndForward(): Promise<void> {
+    if (!this.bridgeProgram || !this.bridgeProgramId) {
+      logger.info('  [keeper] stake_and_forward skipped — bridge program not configured');
+      return;
+    }
+
+    try {
+      const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
+
+      const [bridgeConfig] = PublicKey.findProgramAddressSync(
+        [Buffer.from('bridge_config')], this.bridgeProgramId
+      );
+      const [bridgeVault] = PublicKey.findProgramAddressSync(
+        [Buffer.from('bridge_vault')], this.bridgeProgramId
+      );
+
+      // Check if bridge vault has enough SOL to stake
+      const vaultBalance = await this.connection.getBalance(bridgeVault);
+      const rent = 890880;
+      const available = vaultBalance - rent;
+      if (available < 10_000_000) { // MIN_STAKE_LAMPORTS
+        logger.info(`  [keeper] stake_and_forward skipped — bridge vault has ${available / 1e9} SOL (< 0.01)`);
+        return;
+      }
+
+      // Fetch bridge config to get stake pool details
+      const config = await (this.bridgeProgram.account as any).bridgeConfig.fetch(bridgeConfig);
+      const stakePool = config.stakePool as PublicKey;
+      const peggedMint = config.peggedMint as PublicKey;
+      const distPoolPeggedAta = config.distPoolPeggedAta as PublicKey;
+
+      // Derive stake pool withdraw authority PDA
+      const SPL_STAKE_POOL_PROGRAM = new PublicKey('SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy');
+      const [withdrawAuthority] = PublicKey.findProgramAddressSync(
+        [stakePool.toBuffer(), Buffer.from('withdraw')],
+        SPL_STAKE_POOL_PROGRAM
+      );
+
+      // Bridge vault's $PEGGED ATA
+      const bridgePeggedAta = getAssociatedTokenAddressSync(peggedMint, bridgeVault, true);
+
+      // Read stake pool state for reserve_stake and manager_fee_account
+      const stakePoolInfo = await this.connection.getAccountInfo(stakePool);
+      if (!stakePoolInfo || stakePoolInfo.data.length < 300) {
+        logger.warn('  [keeper] stake_and_forward error: could not read stake pool state');
+        return;
+      }
+      // SPL stake pool layout offsets (Borsh, v5+):
+      //   account_type(1) + manager(32) + staker(32) + stake_deposit_authority(32)
+      //   + stake_withdraw_bump(1) + validator_list(32) + reserve_stake(32) = end 162
+      //   pool_mint(32) = end 194, manager_fee_account(32) = end 226
+      const data = stakePoolInfo.data;
+      const reserveStake = new PublicKey(data.subarray(130, 162));
+      const managerFeeAccount = new PublicKey(data.subarray(194, 226));
+
+      await withRetry(
+        () => this.bridgeProgram!.methods
+          .stakeAndForward()
+          .accounts({
+            crank:                       this.botKeypair.publicKey,
+            config:                      bridgeConfig,
+            bridgeVault:                 bridgeVault,
+            bridgePeggedAta:             bridgePeggedAta,
+            distPoolPeggedAta:           distPoolPeggedAta,
+            peggedMint:                  peggedMint,
+            stakePool:                   stakePool,
+            stakePoolWithdrawAuthority:  withdrawAuthority,
+            reserveStake:                reserveStake,
+            managerFeeAccount:           managerFeeAccount,
+            stakePoolProgram:            SPL_STAKE_POOL_PROGRAM,
+            tokenProgram:                new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
+            systemProgram:               SystemProgram.programId,
+          })
+          .preInstructions(this.priorityIxs)
+          .signers([this.botKeypair])
+          .rpc(),
+        'stake_and_forward'
+      );
+
+      logger.info(`  [keeper] ✓ stake_and_forward — ${available / 1e9} SOL staked → $PEGGED → dist_pool`);
+    } catch (e: any) {
+      const isNothingToStake = e.error?.errorCode?.code === 'NothingToStake';
+      if (isNothingToStake) {
+        logger.info('  [keeper] stake_and_forward skipped — nothing to stake');
+      } else {
+        logger.warn(`[keeper] stake_and_forward error: ${e.message}`);
+      }
     }
   }
 
@@ -457,15 +567,64 @@ export class MonkeKeeper {
     }
   }
 
-  // ─── CRANK: DEPOSIT SOL TO MONKE PROGRAM ───
+  // ─── CRANK: DEPOSIT $PEGGED TO MONKE PROGRAM ───
 
   /**
-   * Single-transaction deposit. Moves all distributable SOL from dist_pool
-   * into the monke program vault and updates the global accumulator.
+   * Single-transaction deposit. Moves all $PEGGED from dist_pool ATA
+   * into the program vault ATA and updates the global accumulator.
    * Monke holders claim their share whenever they want (pull model).
    * O(1) — one tx, one instruction, regardless of holder count.
+   *
+   * Falls back to legacy deposit_sol if $PEGGED is not configured.
    */
-  private async crankDepositSol(): Promise<void> {
+  private async crankDepositPegged(): Promise<void> {
+    if (!this.peggedMint) {
+      // Legacy fallback: deposit_sol (pre-migration)
+      return this.crankDepositSolLegacy();
+    }
+
+    try {
+      const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
+      const [statePDA] = monkeStatePDA(this.monkeProgramId);
+      const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
+      const [programVault] = monkeProgramVaultPDA(this.monkeProgramId);
+
+      const distPoolPeggedAta = getAssociatedTokenAddressSync(this.peggedMint, distPool, true);
+      const programVaultPeggedAta = getAssociatedTokenAddressSync(this.peggedMint, programVault, true);
+
+      await withRetry(
+        () => this.monkeProgram.methods
+          .depositPegged()
+          .accounts({
+            caller:                 this.botKeypair.publicKey,
+            state:                  statePDA,
+            distPool:               distPool,
+            distPoolPeggedAta:      distPoolPeggedAta,
+            programVaultPeggedAta:  programVaultPeggedAta,
+            programVault:           programVault,
+            tokenProgram:           new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
+          })
+          .preInstructions(this.priorityIxs)
+          .signers([this.botKeypair])
+          .rpc(),
+        'deposit_pegged'
+      );
+
+      logger.info('  [keeper] ✓ deposit_pegged cranked — accumulator updated');
+    } catch (e: any) {
+      const isExpected = e.error?.errorCode?.code === 'NoMonkes'
+        || e.error?.errorCode?.code === 'NothingToDeposit'
+        || e.error?.errorCode?.code === 'PeggedNotConfigured';
+      if (isExpected) {
+        logger.info('  [keeper] deposit_pegged skipped — no monkes, nothing to deposit, or not configured');
+      } else {
+        logger.error(`  [keeper] deposit_pegged error: ${e.message}`);
+      }
+    }
+  }
+
+  /** Legacy deposit_sol for pre-migration backward compatibility */
+  private async crankDepositSolLegacy(): Promise<void> {
     try {
       const [statePDA] = monkeStatePDA(this.monkeProgramId);
       const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
@@ -489,7 +648,6 @@ export class MonkeKeeper {
 
       logger.info('  [keeper] ✓ deposit_sol cranked — accumulator updated');
     } catch (e: any) {
-      // NoMonkes or NothingToDeposit are expected when dist_pool is empty
       const isExpected = e.error?.errorCode?.code === 'NoMonkes'
         || e.error?.errorCode?.code === 'NothingToDeposit';
       if (isExpected) {
@@ -651,24 +809,39 @@ export class MonkeKeeper {
   }
 
   /**
-   * Check dist_pool balance and auto-trigger deposit_sol if above threshold.
-   * Call this after any operation that puts SOL into dist_pool (sweep_rover).
-   * Removes the need to wait for Saturday — monke holders get paid faster.
+   * Check dist_pool $PEGGED balance and auto-trigger deposit if above threshold.
+   * Falls back to SOL balance check if $PEGGED is not configured (pre-migration).
    */
-  async checkAndDepositSol(): Promise<void> {
+  async checkAndDepositPegged(): Promise<void> {
     try {
-      const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
-      const balance = await this.connection.getBalance(distPool);
-      const rent = 890880; // rent-exempt minimum for 0-byte account
-      const available = balance - rent;
+      if (this.peggedMint) {
+        // $PEGGED flow: check dist_pool's $PEGGED ATA balance
+        const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
+        const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
+        const distPoolAta = getAssociatedTokenAddressSync(this.peggedMint, distPool, true);
 
-      if (available >= DEPOSIT_SOL_THRESHOLD_LAMPORTS) {
-        logger.info(`[keeper] dist_pool has ${available / 1e9} SOL (threshold: ${DEPOSIT_SOL_THRESHOLD_LAMPORTS / 1e9}) — auto-triggering deposit_sol`);
-        await this.crankDepositSol();
+        const info = await this.connection.getAccountInfo(distPoolAta);
+        if (!info || info.data.length < 72) return;
+        const available = Number(info.data.readBigUInt64LE(64));
+
+        if (available >= DEPOSIT_SOL_THRESHOLD_LAMPORTS) {
+          logger.info(`[keeper] dist_pool has ${available / 1e9} $PEGGED (threshold: ${DEPOSIT_SOL_THRESHOLD_LAMPORTS / 1e9}) — auto-triggering deposit_pegged`);
+          await this.crankDepositPegged();
+        }
+      } else {
+        // Legacy SOL flow (pre-migration)
+        const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
+        const balance = await this.connection.getBalance(distPool);
+        const rent = 890880;
+        const available = balance - rent;
+
+        if (available >= DEPOSIT_SOL_THRESHOLD_LAMPORTS) {
+          logger.info(`[keeper] dist_pool has ${available / 1e9} SOL (threshold: ${DEPOSIT_SOL_THRESHOLD_LAMPORTS / 1e9}) — auto-triggering deposit_sol`);
+          await this.crankDepositSolLegacy();
+        }
       }
     } catch (e: any) {
-      // Non-fatal — will retry on next check
-      logger.warn(`[keeper] checkAndDepositSol error: ${e.message}`);
+      logger.warn(`[keeper] checkAndDepositPegged error: ${e.message}`);
     }
   }
 }

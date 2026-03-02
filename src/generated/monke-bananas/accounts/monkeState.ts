@@ -69,6 +69,7 @@ export type MonkeState = {
   stateBump: number;
   programVaultBump: number;
   distPoolBump: number;
+  peggedMint: Address;
   reserved: Array<number>;
 };
 
@@ -87,6 +88,7 @@ export type MonkeStateArgs = {
   stateBump: number;
   programVaultBump: number;
   distPoolBump: number;
+  peggedMint: Address;
   reserved: Array<number>;
 };
 
@@ -108,7 +110,8 @@ export function getMonkeStateEncoder(): FixedSizeEncoder<MonkeStateArgs> {
       ['stateBump', getU8Encoder()],
       ['programVaultBump', getU8Encoder()],
       ['distPoolBump', getU8Encoder()],
-      ['reserved', getArrayEncoder(getU8Encoder(), { size: 64 })],
+      ['peggedMint', getAddressEncoder()],
+      ['reserved', getArrayEncoder(getU8Encoder(), { size: 32 })],
     ]),
     (value) => ({ ...value, discriminator: MONKE_STATE_DISCRIMINATOR })
   );
@@ -131,7 +134,8 @@ export function getMonkeStateDecoder(): FixedSizeDecoder<MonkeState> {
     ['stateBump', getU8Decoder()],
     ['programVaultBump', getU8Decoder()],
     ['distPoolBump', getU8Decoder()],
-    ['reserved', getArrayDecoder(getU8Decoder(), { size: 64 })],
+    ['peggedMint', getAddressDecoder()],
+    ['reserved', getArrayDecoder(getU8Decoder(), { size: 32 })],
   ]);
 }
 

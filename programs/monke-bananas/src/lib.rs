@@ -32,7 +32,7 @@ use anchor_lang::prelude::*;
 // Direct lamport manipulation used instead of system_instruction + invoke_signed
 // (program-owned PDAs can't use system transfers)
 use anchor_spl::token::{
-    Burn, burn, Mint, Token, TokenAccount,
+    self, Burn, burn, Mint, Token, TokenAccount, Transfer,
 };
 
 declare_id!("myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH");
@@ -92,7 +92,8 @@ pub mod monke_bananas {
         state.total_sol_distributed = 0;
         state.total_bananas_burned = 0;
         state.paused = false;
-        state._reserved = [0u8; 64];
+        state.pegged_mint = Pubkey::default();
+        state._reserved = [0u8; 32];
 
         msg!("monke_bananas initialized");
         msg!("BANANAS mint: {}", state.bananas_mint);
@@ -239,6 +240,56 @@ pub mod monke_bananas {
         Ok(())
     }
 
+    /// Deposit $PEGGED from dist_pool ATA into program vault ATA. Permissionless.
+    /// Replaces deposit_sol for the $PEGGED flow. Same accumulator math, different transfer mechanism.
+    pub fn deposit_pegged(ctx: Context<DepositPegged>) -> Result<()> {
+        let state = &ctx.accounts.state;
+        require!(state.total_share_weight > 0, MonkeError::NoMonkes);
+        require!(state.pegged_mint != Pubkey::default(), MonkeError::PeggedNotConfigured);
+
+        let distributable = ctx.accounts.dist_pool_pegged_ata.amount;
+        require!(distributable >= MIN_DEPOSIT_LAMPORTS, MonkeError::NothingToDeposit);
+
+        // CPI token::transfer from dist_pool ATA → program_vault ATA
+        // dist_pool PDA signs as the token account authority
+        let bump = state.dist_pool_bump;
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.dist_pool_pegged_ata.to_account_info(),
+                    to: ctx.accounts.program_vault_pegged_ata.to_account_info(),
+                    authority: ctx.accounts.dist_pool.to_account_info(),
+                },
+                &[&[b"dist_pool", &[bump]]],
+            ),
+            distributable,
+        )?;
+
+        // Accumulator math unchanged — units shift from lamports to $PEGGED base units,
+        // formula is identical (both are u64 amounts, PRECISION scaling handles the rest)
+        let increment = (distributable as u128)
+            .checked_mul(PRECISION).ok_or(MonkeError::Overflow)?
+            .checked_div(state.total_share_weight as u128).ok_or(MonkeError::Overflow)?;
+
+        let state = &mut ctx.accounts.state;
+        state.accumulated_sol_per_share = state.accumulated_sol_per_share
+            .checked_add(increment).ok_or(MonkeError::Overflow)?;
+        state.total_sol_distributed = state.total_sol_distributed
+            .checked_add(distributable).ok_or(MonkeError::Overflow)?;
+
+        emit!(DepositEvent {
+            amount: distributable,
+            total_distributed: state.total_sol_distributed,
+            accumulator: state.accumulated_sol_per_share,
+            total_share_weight: state.total_share_weight,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        msg!("Deposited {} $PEGGED, accumulator={}", distributable, state.accumulated_sol_per_share);
+        Ok(())
+    }
+
     /// Claim accumulated SOL for a monke. Caller must hold the SMB Gen2 NFT.
     /// Always works even when paused — holders can never be locked out.
     pub fn claim(ctx: Context<Claim>) -> Result<()> {
@@ -305,6 +356,65 @@ pub mod monke_bananas {
         Ok(())
     }
 
+    /// Claim accumulated $PEGGED for a monke. Replaces SOL claim after migration.
+    /// Always works even when paused — holders can never be locked out.
+    pub fn claim_pegged(ctx: Context<ClaimPegged>) -> Result<()> {
+        require!(
+            ctx.accounts.user_nft_account.amount == 1,
+            MonkeError::NotNftHolder
+        );
+        require!(
+            ctx.accounts.user_nft_account.owner == ctx.accounts.user.key(),
+            MonkeError::NotNftHolder
+        );
+
+        let monke_burn = &ctx.accounts.monke_burn;
+        let state = &ctx.accounts.state;
+        require!(state.pegged_mint != Pubkey::default(), MonkeError::PeggedNotConfigured);
+
+        let pending_scaled = (monke_burn.share_weight as u128)
+            .checked_mul(state.accumulated_sol_per_share).ok_or(MonkeError::Overflow)?
+            .checked_sub(monke_burn.reward_debt).unwrap_or(0);
+
+        let owed = pending_scaled
+            .checked_div(PRECISION).unwrap_or(0) as u64;
+
+        require!(owed > 0, MonkeError::NothingToClaim);
+
+        // CPI token::transfer from program_vault ATA → user's $PEGGED ATA
+        let bump = state.program_vault_bump;
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.program_vault_pegged_ata.to_account_info(),
+                    to: ctx.accounts.user_pegged_ata.to_account_info(),
+                    authority: ctx.accounts.program_vault.to_account_info(),
+                },
+                &[&[b"program_vault", &[bump]]],
+            ),
+            owed,
+        )?;
+
+        let monke_burn = &mut ctx.accounts.monke_burn;
+        monke_burn.reward_debt = (monke_burn.share_weight as u128)
+            .checked_mul(state.accumulated_sol_per_share).ok_or(MonkeError::Overflow)?;
+        monke_burn.claimed_sol = monke_burn.claimed_sol
+            .checked_add(owed).ok_or(MonkeError::Overflow)?;
+
+        emit!(ClaimEvent {
+            user: ctx.accounts.user.key(),
+            nft_mint: monke_burn.nft_mint,
+            amount: owed,
+            total_claimed: monke_burn.claimed_sol,
+            share_weight: monke_burn.share_weight,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        msg!("Claimed {} $PEGGED for monke {}", owed, monke_burn.nft_mint);
+        Ok(())
+    }
+
     // ─── ADMIN ───
 
     pub fn pause(ctx: Context<AdminOnly>) -> Result<()> {
@@ -333,6 +443,14 @@ pub mod monke_bananas {
         state.authority = state.pending_authority;
         state.pending_authority = Pubkey::default();
         msg!("Authority accepted");
+        Ok(())
+    }
+
+    /// Set the $PEGGED mint address. Admin-only. Called once during migration
+    /// from raw SOL distribution to $PEGGED LST distribution.
+    pub fn set_pegged_mint(ctx: Context<AdminOnly>, pegged_mint: Pubkey) -> Result<()> {
+        ctx.accounts.state.pegged_mint = pegged_mint;
+        msg!("Pegged mint set to {}", pegged_mint);
         Ok(())
     }
 
@@ -518,7 +636,8 @@ pub struct MonkeState {
     pub state_bump: u8,                      // PDA bump for MonkeState
     pub program_vault_bump: u8,              // PDA bump for program_vault
     pub dist_pool_bump: u8,                  // PDA bump for dist_pool
-    pub _reserved: [u8; 64],                 // Reserved for future fields (avoids realloc)
+    pub pegged_mint: Pubkey,                 // $PEGGED mint (set via set_pegged_mint after migration)
+    pub _reserved: [u8; 32],                 // Reserved for future fields (avoids realloc)
 }
 
 impl MonkeState {
@@ -537,7 +656,8 @@ impl MonkeState {
         1 +  // state_bump
         1 +  // program_vault_bump
         1 +  // dist_pool_bump
-        64;  // _reserved
+        32 + // pegged_mint
+        32;  // _reserved
 }
 
 #[account]
@@ -682,6 +802,51 @@ pub struct DepositSol<'info> {
 }
 
 #[derive(Accounts)]
+pub struct DepositPegged<'info> {
+    /// Anyone can call (permissionless — keeper calls weekly)
+    pub caller: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"monke_state"],
+        bump = state.state_bump
+    )]
+    pub state: Account<'info, MonkeState>,
+
+    /// CHECK: dist_pool PDA — authority for the dist_pool $PEGGED ATA
+    #[account(
+        seeds = [b"dist_pool"],
+        bump = state.dist_pool_bump
+    )]
+    pub dist_pool: AccountInfo<'info>,
+
+    /// Dist pool's $PEGGED ATA — source (receives from bridge)
+    #[account(
+        mut,
+        constraint = dist_pool_pegged_ata.owner == dist_pool.key() @ MonkeError::InvalidTokenAccount,
+        constraint = dist_pool_pegged_ata.mint == state.pegged_mint @ MonkeError::InvalidMint,
+    )]
+    pub dist_pool_pegged_ata: Account<'info, TokenAccount>,
+
+    /// Program vault's $PEGGED ATA — destination
+    #[account(
+        mut,
+        constraint = program_vault_pegged_ata.owner == program_vault.key() @ MonkeError::InvalidTokenAccount,
+        constraint = program_vault_pegged_ata.mint == state.pegged_mint @ MonkeError::InvalidMint,
+    )]
+    pub program_vault_pegged_ata: Account<'info, TokenAccount>,
+
+    /// CHECK: program_vault PDA — for ATA ownership validation
+    #[account(
+        seeds = [b"program_vault"],
+        bump = state.program_vault_bump
+    )]
+    pub program_vault: AccountInfo<'info>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
 pub struct Claim<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
@@ -716,6 +881,58 @@ pub struct Claim<'info> {
     pub program_vault: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ClaimPegged<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(
+        seeds = [b"monke_state"],
+        bump = state.state_bump
+    )]
+    pub state: Account<'info, MonkeState>,
+
+    #[account(
+        mut,
+        seeds = [b"monke_burn", monke_burn.nft_mint.as_ref()],
+        bump
+    )]
+    pub monke_burn: Account<'info, MonkeBurn>,
+
+    /// User's NFT token account — proves ownership (balance must be 1)
+    #[account(
+        constraint = user_nft_account.mint == monke_burn.nft_mint @ MonkeError::InvalidNftMint,
+        constraint = user_nft_account.owner == user.key() @ MonkeError::NotNftHolder,
+        constraint = user_nft_account.amount == 1 @ MonkeError::NotNftHolder,
+    )]
+    pub user_nft_account: Account<'info, TokenAccount>,
+
+    /// CHECK: program_vault PDA — authority for the vault $PEGGED ATA
+    #[account(
+        seeds = [b"program_vault"],
+        bump = state.program_vault_bump
+    )]
+    pub program_vault: AccountInfo<'info>,
+
+    /// Program vault's $PEGGED ATA — source of claim payout
+    #[account(
+        mut,
+        constraint = program_vault_pegged_ata.owner == program_vault.key() @ MonkeError::InvalidTokenAccount,
+        constraint = program_vault_pegged_ata.mint == state.pegged_mint @ MonkeError::InvalidMint,
+    )]
+    pub program_vault_pegged_ata: Account<'info, TokenAccount>,
+
+    /// User's $PEGGED ATA — destination
+    #[account(
+        mut,
+        constraint = user_pegged_ata.owner == user.key() @ MonkeError::InvalidTokenAccount,
+        constraint = user_pegged_ata.mint == state.pegged_mint @ MonkeError::InvalidMint,
+    )]
+    pub user_pegged_ata: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -858,4 +1075,10 @@ pub enum MonkeError {
 
     #[msg("NFT has not been burned (supply must be 0)")]
     NftNotBurned,
+
+    #[msg("$PEGGED mint not configured — call set_pegged_mint first")]
+    PeggedNotConfigured,
+
+    #[msg("Invalid token account owner")]
+    InvalidTokenAccount,
 }
