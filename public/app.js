@@ -81,6 +81,18 @@ const phantomSDK = new BrowserSDK({
 
 const DEFAULT_PRIORITY_MICROLAMPORTS = 100_000;
 
+/** Build SetComputeUnitPrice ix without Buffer (web3.js u64 path needs Buffer which browsers lack) */
+function makeComputeUnitPriceIx(microLamports) {
+  const data = new Uint8Array(9);
+  data[0] = 3;
+  new DataView(data.buffer).setBigUint64(1, BigInt(microLamports), true);
+  return new solanaWeb3.TransactionInstruction({
+    programId: new solanaWeb3.PublicKey('ComputeBudget111111111111111111111111111111'),
+    keys: [],
+    data,
+  });
+}
+
 /** Convert @solana/kit Instruction -> @solana/web3.js TransactionInstruction */
 function kitIxToWeb3(ix) {
   return new solanaWeb3.TransactionInstruction({
@@ -1852,7 +1864,7 @@ async function createPosition() {
 
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
 
     const initBinArrayIxs = await ensureBinArraysExist(cpi.lbPair, minBin, maxBin, user, cpi.dlmmProgram);
     for (const ix of initBinArrayIxs) tx.add(ix);
@@ -2040,7 +2052,7 @@ async function closePosition(index) {
 
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
 
     const [userXInfo, userYInfo, roverFeeXInfo, roverFeeYInfo] = await Promise.all([
       conn.getAccountInfo(userTokenX),
@@ -2130,7 +2142,7 @@ async function closePositionDirect(pos) {
 
   const tx = new solanaWeb3.Transaction();
   tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
   const [userXInfo, userYInfo, roverFeeXInfo, roverFeeYInfo] = await Promise.all([
     conn.getAccountInfo(userTokenX),
     conn.getAccountInfo(userTokenY),
@@ -2204,7 +2216,7 @@ async function claimFeesDirect(pos) {
 
   const tx = new solanaWeb3.Transaction();
   tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }));
-  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
   const [userXInfo, userYInfo] = await Promise.all([conn.getAccountInfo(userTokenX), conn.getAccountInfo(userTokenY)]);
   if (!userXInfo) tx.add(createAssociatedTokenAccountIx(user, userTokenX, user, cpi.tokenXMint, cpi.tokenXProgramId));
   if (!userYInfo) tx.add(createAssociatedTokenAccountIx(user, userTokenY, user, cpi.tokenYMint, cpi.tokenYProgramId));
@@ -2717,7 +2729,7 @@ async function handleFeedMonke(nftMintStr) {
 
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
     const feedIx = await getFeedMonkeInstructionAsync({
       user: asSigner(user),
       nftMint: address(nftMint.toBase58()),
@@ -2762,7 +2774,7 @@ async function handleClaimMonke(nftMintStr) {
 
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
 
     if (usePegged) {
       const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
@@ -2816,7 +2828,7 @@ async function handleClaimAll() {
   try {
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
 
     if (usePegged) {
       const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
@@ -3018,7 +3030,7 @@ async function handleCrankSweep() {
 
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
     const sweepIx = await getSweepRoverInstructionAsync({
       caller: asSigner(user),
       revenueDest: address(distPoolPDA.toBase58()),
@@ -3054,7 +3066,7 @@ async function handleCrankDeposit() {
   try {
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
 
     if (usePegged) {
       const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
@@ -3134,7 +3146,7 @@ async function handleHarvestPosition(positionPDAStr, lbPairStr, ownerStr, side) 
 
   const tx = new solanaWeb3.Transaction();
   tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: DEFAULT_PRIORITY_MICROLAMPORTS }));
+  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
 
   const [ownerXInfo, ownerYInfo, roverFeeXInfo, roverFeeYInfo] = await Promise.all([
     conn.getAccountInfo(ownerTokenX),
