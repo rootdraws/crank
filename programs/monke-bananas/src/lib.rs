@@ -591,6 +591,22 @@ fn validate_collection_and_weight(
     // is_mutable: 1 byte
     offset = offset.checked_add(1).ok_or(MonkeError::Overflow)?;
 
+    // edition_nonce: Option<u8>
+    require!(data.len() > offset, MonkeError::InvalidMetadata);
+    if data[offset] == 1 {
+        offset = offset.checked_add(2).ok_or(MonkeError::Overflow)?;
+    } else {
+        offset = offset.checked_add(1).ok_or(MonkeError::Overflow)?;
+    }
+
+    // token_standard: Option<TokenStandard> (u8 enum)
+    require!(data.len() > offset, MonkeError::InvalidMetadata);
+    if data[offset] == 1 {
+        offset = offset.checked_add(2).ok_or(MonkeError::Overflow)?;
+    } else {
+        offset = offset.checked_add(1).ok_or(MonkeError::Overflow)?;
+    }
+
     // collection: Option<Collection>
     require!(data.len() > offset, MonkeError::InvalidMetadata);
     let has_collection = data[offset] == 1;
