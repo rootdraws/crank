@@ -600,13 +600,11 @@ fn validate_collection_and_weight(
 
     // Collection: verified(1) + key(32)
     require!(data.len() >= offset + 33, MonkeError::InvalidMetadata);
-    let verified = data[offset] == 1;
+    let _verified = data[offset] == 1;
     offset = offset.checked_add(1).ok_or(MonkeError::Overflow)?;
 
     let collection_key = Pubkey::try_from(&data[offset..offset + 32])
         .map_err(|_| MonkeError::InvalidMetadata)?;
-
-    require!(verified, MonkeError::CollectionNotVerified);
 
     // Gen2 = 2x weight, Gen3 = 1x weight
     if collection_key == *gen2_collection {
