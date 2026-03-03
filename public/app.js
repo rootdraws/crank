@@ -10,6 +10,9 @@
  * once programs are deployed. Until then, demo mode simulates responses.
  */
 
+// Phantom Connect Browser SDK
+import { BrowserSDK, AddressType } from '@phantom/browser-sdk';
+
 // Codama-generated clients (bundled by esbuild)
 import { address } from '@solana/kit';
 import {
@@ -63,6 +66,15 @@ async function loadConfig() {
 }
 
 // ============================================================
+// PHANTOM CONNECT SDK
+// ============================================================
+
+const phantomSDK = new BrowserSDK({
+  providers: ['injected'],
+  addressTypes: [AddressType.solana],
+});
+
+// ============================================================
 // CODAMA ADAPTERS — bridge @solana/kit types ↔ @solana/web3.js
 // ============================================================
 
@@ -89,22 +101,10 @@ function asSigner(pubkeyOrAddress) {
   };
 }
 
-/** Pre-simulate unsigned tx before presenting to Phantom.
- *  web3.js v1 sends sigVerify:false automatically for unsigned legacy txs.
- *  Catches on-chain failures early — failed simulations trigger Lighthouse warnings. */
-async function preSimulate(tx) {
-  const sim = await state.connection.simulateTransaction(tx);
-  if (sim.value.err) {
-    const errStr = JSON.stringify(sim.value.err);
-    if (CONFIG.DEBUG) console.error('[monke] Pre-simulation failed:', errStr, sim.value.logs);
-    throw new Error('Transaction would fail on-chain: ' + errStr);
-  }
-}
-
-/** Sign + send: let Phantom handle simulation + signing + submission. */
+/** Sign + send via Phantom Connect SDK. */
 async function walletSendTransaction(tx) {
-  const { signature } = await state.wallet.signAndSendTransaction(tx);
-  return signature;
+  const result = await phantomSDK.solana.signAndSendTransaction(tx);
+  return result.hash;
 }
 
 /** Wrap RPC account data as an EncodedAccount for Codama decoders */
@@ -618,8 +618,6 @@ const state = {
   // Wallet
   connected: false,
   publicKey: null,
-  wallet: null,
-  walletName: null,
   connection: null,
 
   // Pool
@@ -784,92 +782,31 @@ function updateBinStrip() {
 // WALLET — multi-wallet support
 // ============================================================
 
-const WALLETS = {
-  phantom: {
-    name: 'Phantom',
-    check: () => window.solana?.isPhantom,
-    get: () => window.solana,
-  },
-  solflare: {
-    name: 'Solflare',
-    check: () => window.solflare?.isSolflare,
-    get: () => window.solflare,
-  },
-  backpack: {
-    name: 'Backpack',
-    check: () => window.backpack,
-    get: () => window.backpack,
-  },
-};
-
-function detectWallets() {
-  const available = [];
-  Object.entries(WALLETS).forEach(([id, w]) => {
-    const option = document.querySelector(`.wallet-option[data-wallet="${id}"]`);
-    if (option) {
-      if (w.check()) {
-        option.style.display = 'flex';
-        available.push(id);
-      } else {
-        option.style.display = 'none';
-      }
-    }
-  });
-  return available;
-}
-
 function toggleWalletMenu() {
-  const menu = document.getElementById('walletOptions');
-  if (!menu) return;
-
   if (state.connected) {
     disconnectWallet();
     return;
   }
-
-  const available = detectWallets();
-
-  if (available.length === 0) {
-    showToast('No wallets detected. Install Phantom, Solflare, or Backpack.', 'error');
-    window.open('https://phantom.app/', '_blank');
-    return;
-  }
-
-  if (available.length === 1) {
-    connectWallet(available[0]);
-    return;
-  }
-
-  menu.classList.toggle('visible');
+  connectWallet();
 }
 
-async function connectWallet(walletId) {
-  const menu = document.getElementById('walletOptions');
-  if (menu) menu.classList.remove('visible');
-
-  const w = WALLETS[walletId];
-  if (!w || !w.check()) {
-    showToast(`${w?.name || walletId} not found`, 'error');
-    return;
-  }
-
+async function connectWallet() {
   const btn = document.getElementById('connectWallet');
   if (btn) btn.textContent = 'connecting...';
 
   try {
-    const provider = w.get();
-    const resp = await provider.connect();
-    const pubkey = resp.publicKey || provider.publicKey;
+    const { addresses } = await phantomSDK.connect({ provider: 'injected' });
+    const solAddress = addresses.find(a => a.addressType === 'solana');
+    if (!solAddress) throw new Error('No Solana address returned');
+    const pubkey = new solanaWeb3.PublicKey(solAddress.address);
 
-    state.wallet = provider;
-    state.walletName = walletId;
     state.publicKey = pubkey;
     state.connected = true;
     state.connection = new solanaWeb3.Connection(
       CONFIG.HELIUS_RPC_URL || CONFIG.RPC_URL, 'confirmed'
     );
 
-    window.__monkeWallet = { publicKey: pubkey, adapter: provider };
+    window.__monkeWallet = { publicKey: pubkey };
     window.dispatchEvent(new Event('monke:walletChanged'));
 
     await loadOnChainFeeBps();
@@ -880,7 +817,7 @@ async function connectWallet(walletId) {
       btn.classList.add('connected');
     }
 
-    showToast(`Connected via ${w.name}`, 'success');
+    showToast('Connected', 'success');
     refreshPositionsList();
     loadBinVizData();
     renderMonkeList();
@@ -894,18 +831,13 @@ async function connectWallet(walletId) {
 }
 
 async function disconnectWallet() {
-  try {
-    if (state.wallet?.disconnect) await state.wallet.disconnect();
-  } catch (_) {}
+  try { await phantomSDK.disconnect(); } catch (_) {}
 
   state.connected = false;
   state.publicKey = null;
-  state.wallet = null;
-  state.walletName = null;
   state.addressBook = { active: [], recent: [] };
   renderAddressBook();
 
-  // Clear wallet bridge
   window.__monkeWallet = null;
   window.dispatchEvent(new Event('monke:walletChanged'));
 
@@ -918,14 +850,6 @@ async function disconnectWallet() {
   updatePositionsList();
   renderMonkeList();
 }
-
-document.addEventListener('click', e => {
-  const menu = document.getElementById('walletOptions');
-  const btn = document.getElementById('connectWallet');
-  if (menu && !menu.contains(e.target) && e.target !== btn) {
-    menu.classList.remove('visible');
-  }
-});
 
 // ============================================================
 // POOL LOADING
@@ -1982,7 +1906,8 @@ async function createPosition() {
 
     tx.partialSign(meteoraPositionKeypair);
     showToast('Approve in wallet...', 'info');
-    const { signature: sig } = await state.wallet.signAndSendTransaction(tx);
+    const openResult = await phantomSDK.solana.signAndSendTransaction(tx);
+    const sig = openResult.hash;
     showToast('Confirming...', 'info');
     await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
 
