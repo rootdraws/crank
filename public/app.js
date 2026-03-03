@@ -127,6 +127,19 @@ async function walletSendTransaction(tx) {
   return sig;
 }
 
+/** Confirm tx AND check for on-chain errors (confirmTransaction alone doesn't throw on program failures) */
+async function confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight) {
+  const confirmation = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+  if (confirmation.value.err) {
+    const logs = await conn.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+      .then(tx => tx?.meta?.logMessages || []).catch(() => []);
+    const anchorErr = logs.find(l => l.includes('Error Number:') || l.includes('AnchorError') || l.includes('failed:'));
+    console.error('[monke] tx failed on-chain:', confirmation.value.err, '\nLogs:', logs.join('\n'));
+    throw new Error(anchorErr || 'Transaction failed on-chain: ' + JSON.stringify(confirmation.value.err));
+  }
+  return confirmation;
+}
+
 /** Wrap RPC account data as an EncodedAccount for Codama decoders */
 function toEncodedAccount(pubkeyOrStr, data, programAddr) {
   return {
@@ -1939,9 +1952,9 @@ async function createPosition() {
     tx.partialSign(meteoraPositionKeypair);
     showToast('Approve in wallet...', 'info');
     const openResult = await phantomSDK.solana.signAndSendTransaction(tx);
-    const sig = openResult.hash;
+    const sig = openResult?.signature || openResult?.hash || openResult;
     showToast('Confirming...', 'info');
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
 
     showToast('Position created!', 'success');
     if (CONFIG.DEBUG) console.log(`[monke] Position tx: ${sig}`);
@@ -2111,7 +2124,7 @@ async function closePosition(index) {
     showToast('Approve in wallet...', 'info');
     const sig = await walletSendTransaction(tx);
     showToast('Confirming...', 'info');
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
 
     showToast('Position closed', 'success');
     if (CONFIG.DEBUG) console.log(`[monke] Close tx: ${sig}`);
@@ -2200,7 +2213,7 @@ async function closePositionDirect(pos) {
   showToast('Approve in wallet...', 'info');
   const sig = await walletSendTransaction(tx);
   showToast('Confirming...', 'info');
-  await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+  await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
   if (CONFIG.DEBUG) console.log(`[monke] Close tx: ${sig}`);
 }
 
@@ -2258,7 +2271,7 @@ async function claimFeesDirect(pos) {
   showToast('Approve in wallet...', 'info');
   const sig = await walletSendTransaction(tx);
   showToast('Confirming fee claim...', 'info');
-  await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+  await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
   if (CONFIG.DEBUG) console.log(`[monke] Claim fees tx: ${sig}`);
 }
 
@@ -2753,7 +2766,7 @@ async function handleFeedMonke(nftMintStr) {
     showToast('Approve in wallet...', 'info');
     const sig = await walletSendTransaction(tx);
     showToast('Confirming burn...', 'info');
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
     showToast('1M $BANANAS burned to your Monke!', 'success');
     renderMonkeList();
   } catch (err) {
@@ -2813,7 +2826,7 @@ async function handleClaimMonke(nftMintStr) {
     showToast('Approve in wallet...', 'info');
     const sig = await walletSendTransaction(tx);
     showToast('Confirming claim...', 'info');
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
     showToast(usePegged ? '$PEGGED claimed!' : 'SOL claimed!', 'success');
     renderMonkeList();
   } catch (err) {
@@ -2876,7 +2889,7 @@ async function handleClaimAll() {
     showToast('Approve in wallet...', 'info');
     const sig = await walletSendTransaction(tx);
     showToast('Confirming claims...', 'info');
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
     const token = usePegged ? '$PEGGED' : 'SOL';
     showToast(`Claimed ${token} from ${claimable.length} monke${claimable.length > 1 ? 's' : ''}!`, 'success');
     renderMonkeList();
@@ -3049,7 +3062,7 @@ async function handleCrankSweep() {
     showToast('Approve sweep...', 'info');
     const sig = await walletSendTransaction(tx);
     showToast('Confirming sweep...', 'info');
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
     showToast('Swept SOL — 50% to bridge vault, 50% to bot!', 'success');
     renderOpsStats();
   } catch (err) {
@@ -3098,7 +3111,7 @@ async function handleCrankDeposit() {
     showToast('Approve deposit...', 'info');
     const sig = await walletSendTransaction(tx);
     showToast('Confirming deposit...', 'info');
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
     showToast(usePegged ? '$PEGGED deposited to program vault!' : 'SOL deposited to program vault!', 'success');
     renderOpsStats();
   } catch (err) {
@@ -3205,7 +3218,7 @@ async function handleHarvestPosition(positionPDAStr, lbPairStr, ownerStr, side) 
   showToast('Approve harvest...', 'info');
   const sig = await walletSendTransaction(tx);
   showToast('Confirming harvest...', 'info');
-  await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+  await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
 }
 
 async function handleHarvestAll() {
