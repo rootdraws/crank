@@ -795,10 +795,9 @@ async function connectWallet() {
   if (btn) btn.textContent = 'connecting...';
 
   try {
-    const { addresses } = await phantomSDK.connect({ provider: 'injected' });
-    const solAddress = addresses.find(a => a.addressType === 'solana');
-    if (!solAddress) throw new Error('No Solana address returned');
-    const pubkey = new solanaWeb3.PublicKey(solAddress.address);
+    await phantomSDK.connect({ provider: 'injected' });
+    const pubkeyStr = await phantomSDK.solana.getPublicKey();
+    const pubkey = new solanaWeb3.PublicKey(pubkeyStr);
 
     state.publicKey = pubkey;
     state.connected = true;
@@ -3505,9 +3504,6 @@ async function init() {
 
   // Wallet
   document.getElementById('connectWallet')?.addEventListener('click', toggleWalletMenu);
-  document.querySelectorAll('.wallet-option').forEach(opt => {
-    opt.addEventListener('click', () => connectWallet(opt.dataset.wallet));
-  });
 
   // Pool
   document.getElementById('loadPool')?.addEventListener('click', loadPool);
@@ -3677,14 +3673,9 @@ async function init() {
 
   // Auto-connect if wallet was previously connected
   setTimeout(() => {
-    for (const [id, w] of Object.entries(WALLETS)) {
-      try {
-        if (w.check() && w.get().isConnected) {
-          connectWallet(id);
-          break;
-        }
-      } catch (_) {}
-    }
+    try {
+      if (phantomSDK.solana?.isConnected?.()) connectWallet();
+    } catch (_) {}
   }, 500);
 }
 
