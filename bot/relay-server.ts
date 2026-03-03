@@ -186,8 +186,7 @@ export class RelayServer {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     const path = url.pathname;
 
-    // CORS headers for all API responses
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS — nginx handles Access-Control-Allow-Origin; app sets methods/headers only
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 

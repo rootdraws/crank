@@ -795,8 +795,20 @@ async function connectWallet() {
   if (btn) btn.textContent = 'connecting...';
 
   try {
-    await phantomSDK.connect({ provider: 'injected' });
-    const pubkeyStr = await phantomSDK.solana.getPublicKey();
+    const { addresses } = await phantomSDK.connect({ provider: 'injected' });
+    if (CONFIG.DEBUG) console.log('[monke] SDK connect addresses:', JSON.stringify(addresses));
+
+    let pubkeyStr;
+    if (addresses && addresses.length > 0) {
+      const solAddr = addresses.find(a =>
+        a.addressType === 'solana' || a.addressType === AddressType.solana || a.chain === 'solana'
+      );
+      pubkeyStr = solAddr ? (solAddr.address || solAddr.publicKey) : addresses[0].address || addresses[0].publicKey;
+    }
+    if (!pubkeyStr && window.solana?.publicKey) {
+      pubkeyStr = window.solana.publicKey.toString();
+    }
+    if (!pubkeyStr) throw new Error('No Solana address returned from wallet');
     const pubkey = new solanaWeb3.PublicKey(pubkeyStr);
 
     state.publicKey = pubkey;
