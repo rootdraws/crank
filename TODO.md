@@ -13,7 +13,9 @@ Run with bot active and wallet connected. 0.01-0.1 SOL per test.
 - [ ] **Test sweep** — Ops page, check rover_authority balance. If > 0, click "sweep". Verify SOL splits 50/50: half to bridge_vault, half to Config.bot.
 - [ ] **Test stake_and_forward** — After sweep, crank bridge. Verify $PEGGED minted to dist_pool ATA.
 - [ ] **Test deposit_pegged** — Ops page, check dist_pool $PEGGED balance. If > 0, click "deposit". Verify $PEGGED moves to program_vault ATA.
-- [ ] **Test feed_monke** — Rank page, select SMB NFT, click "Burn 1M $BANANAS to your Monke." Verify weight increments.
+- [ ] **Test feed_monke** — Rank page, select SMB Gen2 or Gen3 NFT, click "Burn 1M $BANANAS to your Monke." Verify weight increments by 1.
+- [ ] **Test feed_goose** — Rank page, connect wallet with GooseDAO Core membership + gooseswtf pixel goose. Verify goose appears in carousel. Click feed. Verify weight increments. Then test with a wallet that has a gooseswtf but NO GooseDAO membership and no prior feed — verify goose is excluded from carousel.
+- [ ] **Test once-in-always-in** — Feed a gooseswtf once (with GooseDAO membership). Remove GooseDAO membership (transfer Core NFT out). Reload page. Verify the already-fed goose still appears in carousel and can still feed + claim.
 - [ ] **Test claim_pegged** — After deposit_pegged, click "claim" on fed monke. Verify $PEGGED arrives in wallet ATA.
 - [ ] **Test permissionless fallback** — Stop bot for 60s. Go to Ops bounty board. Click "harvest" on a pending position. Verify keeper tip.
 - [ ] **Validate Saturday keeper** — Wait for Saturday or manually trigger. Verify 6-step sequence: unwrap WSOL -> sweep_rover -> stake_and_forward -> fee rovers -> deposit_pegged -> cleanup.
@@ -55,4 +57,4 @@ Run with bot active and wallet connected. 0.01-0.1 SOL per test.
 
 ---
 
-*Last updated: Mar 2, 2026.*
+*Last updated: Mar 4, 2026.*
