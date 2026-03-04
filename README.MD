@@ -2,14 +2,14 @@
 
 **Limit orders that earn fees, instead of paying them.** Sell the rips. Buy the dips. Monke's Harvester protects your position against round-trip loss.
 
-Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream and SMB Gen2/Gen3 monke revenue sharing on Solana.
+Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream and NFT revenue sharing (SMB Gen2/Gen3 + GooseDAO pixel geese) on Solana.
 
 ## Programs
 
 | Program | Description |
 |---------|-------------|
 | `core.rs` (bin_farm) | Position management. Open, harvest, close. All CPI via V2 variants (Token-2022 native). Performance fee on converted output — all fees → rover_authority → `sweep_rover` splits 50/50 (bridge_vault + Config.bot). TOKEN fees → rover_authority (BidAskImBalanced DLMM recycling, no market dump). Permissionless fallback on harvest + close (heartbeat + staleness). Rovers use BidAskImBalanced distribution. Emergency escape hatch for deprecated pools. |
-| `monke_bananas.rs` | Feed BANANAS to your Monke. Burn $BANANAS (1M per tx, unlimited stacking) against SMB Gen2 (2x weight) or Gen3 (1x weight) NFTs. MasterChef accumulator distributes $PEGGED to fed monke holders. `deposit_pegged` / `claim_pegged` for token-based distribution. `compost_monke`: permissionless cleanup of burned NFTs. |
+| `monke_bananas.rs` | Feed BANANAS to your Monke (or Goose). Burn $BANANAS (1M per tx, unlimited stacking) against SMB Gen2, Gen3, or gooseswtf pixel goose NFTs — all 1x weight. gooseswtf requires GooseDAO Core membership on first feed only (once in, always in). MasterChef accumulator distributes $PEGGED to all fed NFT holders. `deposit_pegged` / `claim_pegged` for token-based distribution. `compost_monke`: permissionless cleanup of burned NFTs. |
 | `pegged_bridge.rs` | SOL → $PEGGED bridge. Single permissionless crank: `stake_and_forward` deposits SOL into the MonkeDAO SPL stake pool, receives $PEGGED, forwards it to the dist_pool ATA on monke_bananas. |
 
 ## How It Works
@@ -41,7 +41,13 @@ user_close()
 
 feed_monke(nft_mint)
   → Burn 1M $BANANAS, assigned to an SMB Gen2 or Gen3 NFT you hold.
-  → Gen2 = +2 weight, Gen3 = +1 weight per feed. Burns stack. No cap.
+  → All collections = +1 weight per feed. Burns stack. No cap.
+
+feed_goose(goose_nft_mint)
+  → Burn 1M $BANANAS, assigned to a gooseswtf pixel goose NFT you hold.
+  → Requires GooseDAO Core membership on first feed only (once in, always in).
+  → +1 weight per feed. Same MasterChef accumulator as monkes.
+  → On subsequent feeds, GooseDAO membership is not re-checked.
 
 compost_monke()
   → Permissionless. Clean up MonkeBurn PDA for burned NFTs (supply == 0).
@@ -240,13 +246,21 @@ Frontend pages: **Trade** (DLMM harvester — pool discovery via token CA search
 - **Liquidity:** 100% permanently locked (DAMM v2 position NFT held by operator). Trading fees from the locked liquidity position are private to the operator — not part of the 50/50 protocol split.
 - **Supply:** 1,000,000,000 BANANAS (6 decimals). Mint/freeze/update authorities revoked.
 
-## SMB Integration — Feed Your Monke
+## NFT Integration — Feed Your Monke (or Goose)
 
-- **Gen2 Collection:** `SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W` — **2x weight per feed**
-- **Gen3 Collection:** `8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH` — **1x weight per feed**
-- **Burn:** 1,000,000 $BANANAS per `feed_monke` call (6 decimals enforced at init)
+Three eligible collections, all **1x weight per feed**:
+
+| Collection | Address | Standard | Gate |
+|------------|---------|----------|------|
+| SMB Gen2 | `SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W` | Token Metadata (V1_NFT) | Hold NFT |
+| SMB Gen3 | `8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH` | Token Metadata (V1_NFT) | Hold NFT |
+| gooseswtf (pixel goose) | `6ubyyuUz3EVFwZrBh3C2ezSXXfyjxP4jhemLPyGgdL6Y` | Token Metadata (pNFT) | Hold NFT + GooseDAO membership (first feed only) |
+
+**GooseDAO membership** is verified via a Metaplex Core asset from collection `XkH2QVN9AKNi1AGnaEYdEHCHxFjTjs8BdbTJfcRW2rY` (Core program `CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d`). The membership check only runs on the first `feed_goose` call for a given pixel goose. Once a gooseswtf has a MonkeBurn PDA (`share_weight > 0`), subsequent feeds and claims work forever — even if the wallet later loses GooseDAO membership. **Once in, always in.**
+
+- **Burn:** 1,000,000 $BANANAS per `feed_monke` / `feed_goose` call (6 decimals enforced at init)
 - **Stacking:** Unlimited. Per-NFT `MonkeBurn` PDA tracks cumulative weight.
-- **Revenue:** 50% of protocol fees are converted to $PEGGED and distributed to fed monke holders. 50% funds bot operations.
+- **Revenue:** 50% of protocol fees are converted to $PEGGED and distributed to all fed NFT holders. 50% funds bot operations.
 - **Claiming:** Weight and unclaimed $PEGGED travel with the NFT on secondary sales.
 - **Cleanup:** `compost_monke` — permissionless removal of dead weight when NFT is burned (supply == 0)
 
