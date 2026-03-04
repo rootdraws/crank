@@ -69,21 +69,29 @@ The result is structural predation against existing passive LPs. Your users are 
 
 ---
 
-## Burn $BANANAS, Feed Your Monke
+## Burn $BANANAS, Feed Your Monke (or Goose)
 
-1. Buy an SMB Gen2 NFT
+1. Hold an eligible NFT — SMB Gen2, SMB Gen3, or a gooseswtf pixel goose (with GooseDAO membership)
 2. Buy $BANANAS
-3. Feed your monke
+3. Feed your monke (or goose)
 4. Claim your $PEGGED
 
-- 1M $BANANAS must be burned at a time, assigned on-chain to your specific Monke
-- Gen2 = 2x weight per feed. Gen3 = 1x weight per feed.
-- Burns stack. Feed 5M $BANANAS to the same Gen2 Monke — that NFT has a weight of 10
-- 50% of protocol fees are converted to $PEGGED and distributed to fed Monkes, proportional to their weight. 50% funds bot operations.
-- SMB Gen2 / Gen3 NFTs are fully tradeable. Weight and unclaimed $PEGGED travel with the NFT
+- 1M $BANANAS burned per feed, assigned on-chain to your specific NFT
+- All collections = 1x weight per feed. Burns stack. Feed 5M to the same NFT — weight of 5
+- 50% of protocol fees are converted to $PEGGED and distributed to all fed NFT holders, proportional to weight. 50% funds bot operations.
+- SMB Gen2 / Gen3 / gooseswtf NFTs are fully tradeable. Weight and unclaimed $PEGGED travel with the NFT
 
-**SMB Gen2 collection:** `SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W`
-**SMB Gen3 collection:** `8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH`
+### Eligible Collections
+
+| Collection | Address | Gate |
+|------------|---------|------|
+| SMB Gen2 | `SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W` | Hold NFT |
+| SMB Gen3 | `8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH` | Hold NFT |
+| gooseswtf (pixel goose) | `6ubyyuUz3EVFwZrBh3C2ezSXXfyjxP4jhemLPyGgdL6Y` | Hold NFT + GooseDAO Core membership |
+
+### GooseDAO Integration
+
+GooseDAO members can burn $BANANAS against their gooseswtf pixel goose NFTs. The GooseDAO Core membership NFT (collection `XkH2QVN9AKNi1AGnaEYdEHCHxFjTjs8BdbTJfcRW2rY`, Metaplex Core standard) serves as a one-time gate — membership is only checked on the first feed for a given pixel goose. **Once in, always in.** If a member loses their GooseDAO NFT after feeding, they can still feed and claim on any pixel goose they already activated. The pixel goose is the burn target and the weight holder; the GooseDAO NFT is just the key that opens the door.
 
 ---
 
@@ -127,10 +135,10 @@ Single-sided bid-ask orders in discrete price bins. monke.army watches those bin
 monke.army is an automation cooperative for yield-bearing limit orders. Our programs are a minimalist vault wrapper on the DLMM API. Our LaserStream gRPC subscription provides an economy of scale — one connection monitoring all positions in the wrapper.
 
 **Why burn instead of stake?**
-Staking creates mercenaries. They lock, farm, unlock, dump. Burning $BANANAS is permanent — the tokens are gone forever. You stack weight on a tradeable SMB Gen2 or Gen3 NFT that earns $PEGGED. You can sell the monke, but you can never un-burn the $BANANAS.
+Staking creates mercenaries. They lock, farm, unlock, dump. Burning $BANANAS is permanent — the tokens are gone forever. You stack weight on a tradeable NFT that earns $PEGGED. You can sell the monke (or the goose), but you can never un-burn the $BANANAS.
 
-**Why Solana Monke Business?**
-Prefer Aesthetic.
+**Why Solana Monke Business + GooseDAO?**
+Prefer Aesthetic. GooseDAO brings 100 vetted DLMM traders who generate real volume — the GooseDAO Core membership NFT gates access so the revenue share goes to active participants, not anyone who can buy a 0.11 SOL pixel goose off the floor.
 
 **Does it work with Token-2022 / pump.fun tokens?**
 Yes. Runtime detection, V1/V2 CPI branching. Zero additional configuration. Exception: Token-2022 mints with active transfer hooks are not yet supported.
@@ -149,6 +157,6 @@ Raw SOL sits idle. $PEGGED earns ~7-8% APY staking yield while you hold it. It a
 
 ---
 
-*DLMM Limit Orders that pay you to trade. Burn $BANANAS, feed your monke, earn $PEGGED.*
+*DLMM Limit Orders that pay you to trade. Burn $BANANAS, feed your monke (or goose), earn $PEGGED.*
 
 *monke.army*
