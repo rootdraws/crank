@@ -268,6 +268,18 @@
       ],
       "args": [
         {
+          "name": "new_stake_pool",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
+          "name": "new_pegged_mint",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
           "name": "new_dist_pool_pegged_ata",
           "type": {
             "option": "pubkey"

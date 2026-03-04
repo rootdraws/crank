@@ -10,7 +10,7 @@ Run with bot active and wallet connected. 0.01-0.1 SOL per test.
 - [ ] **Wait for harvest** — Watch Ops activity feed. Bot harvests when price crosses bins.
 - [ ] **Test user_close** — Positions page, click "close". Approve. Verify SOL returns minus 0.3% fee.
 - [ ] **Test claim_fees** — Open position, wait for LP fees to accrue, click "fees" on Positions page.
-- [ ] **Test sweep** — Ops page, check rover_authority balance. If > 0, click "sweep". Verify SOL splits 50/50: half to bridge_vault, half to Config.bot.
+- [ ] **Test sweep** — Ops page, check rover_authority balance. If > 0, click "sweep". Verify SOL splits 60/40: 60% to bridge_vault, 40% to Config.bot.
 - [ ] **Test stake_and_forward** — After sweep, crank bridge. Verify $PEGGED minted to dist_pool ATA.
 - [ ] **Test deposit_pegged** — Ops page, check dist_pool $PEGGED balance. If > 0, click "deposit". Verify $PEGGED moves to program_vault ATA.
 - [ ] **Test feed_monke** — Rank page, select SMB Gen2 or Gen3 NFT, click "Burn 1M $BANANAS to your Monke." Verify weight increments by 1.
@@ -25,9 +25,10 @@ Run with bot active and wallet connected. 0.01-0.1 SOL per test.
 ## Feature work
 
 - [x] **Resolve Phantom blockage** — Switched all single-signer flows to `signAndSendTransaction`, fixed `preSimulate` to pass `sigVerify: false`, refactored open-position multi-signer to `partialSign` keypair first then `signAndSendTransaction`, removed all `skipPreflight: true`. Per Phantom support ticket #190752 (Joey). Verify warning is gone in E2E.
-- [x] **$PEGGED LST integration** — SPL stake pool deployed (`SVhYu...`), $PEGGED mint live (`3wJYu...`), bridge program deployed + initialized (`7oHSU...`), monke_bananas upgraded with deposit_pegged/claim_pegged, set_pegged_mint called, revenue_dest redirect proposed. Bot keeper + frontend + relay code updated.
-  - [ ] **apply_revenue_dest()** — 24hr timelock from propose (ran ~Mar 1 evening). Call after timelock expires to finalize the redirect.
-  - [ ] **$PEGGED token metadata** — Set name/symbol/icon via Metaplex `CreateMetadataAccountV3` on mint `3wJYuCVWvNj4aWh5nBdZ782Wz8xVzW74CXr8UepZMG4j`.
+- [x] **$PEGGED LST integration** — SPL stake pool deployed (`SVhYu...`), $PEGGED mint live (`GmqNK...`), bridge program deployed + initialized (`7oHSU...`), monke_bananas upgraded with deposit_pegged/claim_pegged, set_pegged_mint called, revenue_dest redirect proposed. Bot keeper + frontend + relay code updated.
+  - [x] **apply_revenue_dest()** — Applied Mar 4. revenue_dest now points to bridge_vault (`B9gTfe...`). sweep_rover 60% flows through bridge → Sanctum pool → $PEGGED.
+  - [ ] **$PEGGED token metadata** — Set name/symbol/icon via Metaplex `CreateMetadataAccountV3` on mint `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1`.
+  - [ ] **Register $PEGGED with Sanctum** — Contact Sanctum team (Discord/partnerships) to whitelist pool `9tkzwS...` for Infinity routing. Enables Jupiter swaps, instant unstaking, LST-to-LST conversion. Requires token metadata first.
   - [ ] **Frontend deploy to Vercel** — Code is ready, push + deploy.
   - [ ] **$PEGGED E2E test** — Full Saturday cycle with real SOL: harvest → sweep → stake_and_forward → deposit_pegged → claim_pegged.
 - [ ] **Recon page** — Rover TVL leaderboard, top-5 analytics, bribe deposit, click-to-trade. Pure frontend, depends on relay data.

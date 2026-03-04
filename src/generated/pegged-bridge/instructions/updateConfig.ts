@@ -71,10 +71,14 @@ export type UpdateConfigInstruction<
 
 export type UpdateConfigInstructionData = {
   discriminator: ReadonlyUint8Array;
+  newStakePool: Option<Address>;
+  newPeggedMint: Option<Address>;
   newDistPoolPeggedAta: Option<Address>;
 };
 
 export type UpdateConfigInstructionDataArgs = {
+  newStakePool: OptionOrNullable<Address>;
+  newPeggedMint: OptionOrNullable<Address>;
   newDistPoolPeggedAta: OptionOrNullable<Address>;
 };
 
@@ -82,6 +86,8 @@ export function getUpdateConfigInstructionDataEncoder(): Encoder<UpdateConfigIns
   return transformEncoder(
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
+      ['newStakePool', getOptionEncoder(getAddressEncoder())],
+      ['newPeggedMint', getOptionEncoder(getAddressEncoder())],
       ['newDistPoolPeggedAta', getOptionEncoder(getAddressEncoder())],
     ]),
     (value) => ({ ...value, discriminator: UPDATE_CONFIG_DISCRIMINATOR })
@@ -91,6 +97,8 @@ export function getUpdateConfigInstructionDataEncoder(): Encoder<UpdateConfigIns
 export function getUpdateConfigInstructionDataDecoder(): Decoder<UpdateConfigInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
+    ['newStakePool', getOptionDecoder(getAddressDecoder())],
+    ['newPeggedMint', getOptionDecoder(getAddressDecoder())],
     ['newDistPoolPeggedAta', getOptionDecoder(getAddressDecoder())],
   ]);
 }
@@ -111,6 +119,8 @@ export type UpdateConfigAsyncInput<
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config?: Address<TAccountConfig>;
+  newStakePool: UpdateConfigInstructionDataArgs['newStakePool'];
+  newPeggedMint: UpdateConfigInstructionDataArgs['newPeggedMint'];
   newDistPoolPeggedAta: UpdateConfigInstructionDataArgs['newDistPoolPeggedAta'];
 };
 
@@ -178,6 +188,8 @@ export type UpdateConfigInput<
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config: Address<TAccountConfig>;
+  newStakePool: UpdateConfigInstructionDataArgs['newStakePool'];
+  newPeggedMint: UpdateConfigInstructionDataArgs['newPeggedMint'];
   newDistPoolPeggedAta: UpdateConfigInstructionDataArgs['newDistPoolPeggedAta'];
 };
 

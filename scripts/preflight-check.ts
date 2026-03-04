@@ -41,27 +41,27 @@ async function main() {
   });
 
   await check("bridge_vault $PEGGED ATA", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("CTeQ5r1t19hd6i1MtzB2zU73zUZidqupHJMXseZz8bxJ"));
+    const info = await conn.getAccountInfo(new PublicKey("Ft1TzupfeAKMvYXg9GfcotK1VFTq2nqvJsq2XCYXpqKB"));
     return info ? "OK" : "MISSING";
   });
 
   await check("dist_pool $PEGGED ATA", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("2yqzo5ZfkEBFgvyJ7c5A92MLKJqgYV9V8KDXzSqbKrx9"));
+    const info = await conn.getAccountInfo(new PublicKey("3NBqb4nRadQqe3wwffmwCwP4SLWA19jhxdm85ZhAjTMB"));
     return info ? "OK" : "MISSING";
   });
 
   await check("program_vault $PEGGED ATA", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("A8tma3zNPiHTxJhYcUFFAz2GKGJmtnquo22yv5WPtVg6"));
+    const info = await conn.getAccountInfo(new PublicKey("9ZsSHkbzziVwRLuR4uT9KAR6CVu1WoL23xk8rNvpyiXM"));
     return info ? "OK" : "MISSING";
   });
 
   await check("SPL stake pool", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("SVhYuHZMyXobKkCrcAbF2cq44amK5TiYzmNpKngfwqg"));
+    const info = await conn.getAccountInfo(new PublicKey("9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg"));
     return info ? `OK (${info.data.length} bytes)` : "MISSING";
   });
 
   await check("$PEGGED mint", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("3wJYuCVWvNj4aWh5nBdZ782Wz8xVzW74CXr8UepZMG4j"));
+    const info = await conn.getAccountInfo(new PublicKey("GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1"));
     return info ? "OK" : "MISSING";
   });
 

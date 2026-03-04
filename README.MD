@@ -8,7 +8,7 @@ Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserSt
 
 | Program | Description |
 |---------|-------------|
-| `core.rs` (bin_farm) | Position management. Open, harvest, close. All CPI via V2 variants (Token-2022 native). Performance fee on converted output — all fees → rover_authority → `sweep_rover` splits 50/50 (bridge_vault + Config.bot). TOKEN fees → rover_authority (BidAskImBalanced DLMM recycling, no market dump). Permissionless fallback on harvest + close (heartbeat + staleness). Rovers use BidAskImBalanced distribution. Emergency escape hatch for deprecated pools. |
+| `core.rs` (bin_farm) | Position management. Open, harvest, close. All CPI via V2 variants (Token-2022 native). Performance fee on converted output — all fees → rover_authority → `sweep_rover` splits 60/40 (bridge_vault + Config.bot). TOKEN fees → rover_authority (BidAskImBalanced DLMM recycling, no market dump). Permissionless fallback on harvest + close (heartbeat + staleness). Rovers use BidAskImBalanced distribution. Emergency escape hatch for deprecated pools. |
 | `monke_bananas.rs` | Feed BANANAS to your Monke (or Goose). Burn $BANANAS (1M per tx, unlimited stacking) against SMB Gen2, Gen3, or gooseswtf pixel goose NFTs — all 1x weight. gooseswtf requires GooseDAO Core membership on first feed only (once in, always in). MasterChef accumulator distributes $PEGGED to all fed NFT holders. `deposit_pegged` / `claim_pegged` for token-based distribution. `compost_monke`: permissionless cleanup of burned NFTs. |
 | `pegged_bridge.rs` | SOL → $PEGGED bridge. Single permissionless crank: `stake_and_forward` deposits SOL into the MonkeDAO SPL stake pool, receives $PEGGED, forwards it to the dist_pool ATA on monke_bananas. |
 
@@ -16,7 +16,7 @@ Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserSt
 
 Users deposit single-sided liquidity into Meteora DLMM bins via the core program — sell the rips (tokens above price) or buy the dips (SOL below price). A vault PDA owns the Meteora position on behalf of the user. As price moves through bins, Monke's Harvester detects fully-converted bins in sub-second via Helius LaserStream gRPC and calls `harvest_bins` to withdraw them. Tokens flow Meteora → vault ATA → owner wallet in a single instruction.
 
-Performance fee (0.3%) is taken on converted output only. All fees flow through rover_authority. `sweep_rover` splits 50/50: half to bridge_vault (→ $PEGGED for monke holders), half to `Config.bot` (operations). Hardcoded on-chain. The bridge vault's SOL is staked to the MonkeDAO validator via `stake_and_forward`, minting $PEGGED — a yield-bearing LST that appreciates each epoch. TOKEN fees route to rover_authority for BidAskImBalanced DLMM recycling — no market dumping on thin meme pools. Unconverted deposits return untaxed.
+Performance fee (0.3%) is taken on converted output only. All fees flow through rover_authority. `sweep_rover` splits 60/40: half to bridge_vault (→ $PEGGED for monke holders), half to `Config.bot` (operations). Hardcoded on-chain. The bridge vault's SOL is staked to the MonkeDAO validator via `stake_and_forward`, minting $PEGGED — a yield-bearing LST that appreciates each epoch. TOKEN fees route to rover_authority for BidAskImBalanced DLMM recycling — no market dumping on thin meme pools. Unconverted deposits return untaxed.
 
 ### Key Instructions
 
@@ -27,7 +27,7 @@ open_position_v2(pool, amount, min_bin, max_bin, side, max_active_bin_slippage)
   → Token-2022 native. All CPI via V2 variants.
 
 harvest_bins(bin_ids: Vec<i32>)
-  → SOL fees → rover_authority → sweep_rover → 50% bridge_vault (→ $PEGGED) + 50% bot. TOKEN fees → rover_authority (DLMM recycling)
+  → SOL fees → rover_authority → sweep_rover → 60% bridge_vault (→ $PEGGED) + 40% bot. TOKEN fees → rover_authority (DLMM recycling)
   → Remainder → owner. Position stays open.
   → Permissionless fallback: anyone can call when bot is stale,
     earns a keeper tip from the fee.
@@ -63,7 +63,7 @@ open_fee_rover(amount, bin_step)
     in rover_authority ATAs. Bot pays rent.
 
 sweep_rover()
-  → Permissionless. SOL from rover_authority → 50% bridge_vault + 50% Config.bot (operations).
+  → Permissionless. SOL from rover_authority → 60% bridge_vault + 40% Config.bot (operations).
 
 close_rover_token_account()
   → Permissionless. Closes any token account owned by rover_authority.
@@ -218,8 +218,8 @@ Frontend pages: **Trade** (DLMM harvester — pool discovery via token CA search
 | Item | Address |
 |------|---------|
 | $BANANAS Mint | `ABj8RJzGHxbLoB8JBea8kvBx626KwSfvbpce9xVfkK7w` |
-| $PEGGED Mint (LST) | `3wJYuCVWvNj4aWh5nBdZ782Wz8xVzW74CXr8UepZMG4j` |
-| SPL Stake Pool | `SVhYuHZMyXobKkCrcAbF2cq44amK5TiYzmNpKngfwqg` |
+| $PEGGED Mint (LST) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` |
+| SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` |
 
 ### PDAs
 
@@ -232,9 +232,9 @@ Frontend pages: **Trade** (DLMM harvester — pool discovery via token CA search
 | Program Vault | `6r63srLezrtjiYwwoVwMB82o3c7mwz3BUktGiHRq4FxX` | monke_bananas |
 | Bridge Config | PDA `[b"bridge_config"]` | pegged_bridge |
 | Bridge Vault | `B9gTfeCbN1oSXKCKgog5gGTH3VGNr3U5SYH4mL3gtqxK` | pegged_bridge |
-| Bridge Vault $PEGGED ATA | `CTeQ5r1t19hd6i1MtzB2zU73zUZidqupHJMXseZz8bxJ` | pegged_bridge |
-| Dist Pool $PEGGED ATA | `2yqzo5ZfkEBFgvyJ7c5A92MLKJqgYV9V8KDXzSqbKrx9` | monke_bananas |
-| Program Vault $PEGGED ATA | `A8tma3zNPiHTxJhYcUFFAz2GKGJmtnquo22yv5WPtVg6` | monke_bananas |
+| Bridge Vault $PEGGED ATA | `Ft1TzupfeAKMvYXg9GfcotK1VFTq2nqvJsq2XCYXpqKB` | pegged_bridge |
+| Dist Pool $PEGGED ATA | `3NBqb4nRadQqe3wwffmwCwP4SLWA19jhxdm85ZhAjTMB` | monke_bananas |
+| Program Vault $PEGGED ATA | `9ZsSHkbzziVwRLuR4uT9KAR6CVu1WoL23xk8rNvpyiXM` | monke_bananas |
 
 ### Launch Parameters
 
@@ -243,7 +243,7 @@ Frontend pages: **Trade** (DLMM harvester — pool discovery via token CA search
 - **Activation:** March 1, 2026 00:00 UTC (trading live)
 - **Vesting:** Instant (1s after activation)
 - **Fee Decay:** 69% → 1% over 3 hours (sniper tax)
-- **Liquidity:** 100% permanently locked (DAMM v2 position NFT held by operator). Trading fees from the locked liquidity position are private to the operator — not part of the 50/50 protocol split.
+- **Liquidity:** 100% permanently locked (DAMM v2 position NFT held by operator). Trading fees from the locked liquidity position are private to the operator — not part of the 60/40 protocol split.
 - **Supply:** 1,000,000,000 BANANAS (6 decimals). Mint/freeze/update authorities revoked.
 
 ## NFT Integration — Feed Your Monke (or Goose)
@@ -260,7 +260,7 @@ Three eligible collections, all **1x weight per feed**:
 
 - **Burn:** 1,000,000 $BANANAS per `feed_monke` / `feed_goose` call (6 decimals enforced at init)
 - **Stacking:** Unlimited. Per-NFT `MonkeBurn` PDA tracks cumulative weight.
-- **Revenue:** 50% of protocol fees are converted to $PEGGED and distributed to all fed NFT holders. 50% funds bot operations.
+- **Revenue:** 60% of protocol fees are converted to $PEGGED and distributed to all fed NFT holders. 40% funds bot operations.
 - **Claiming:** Weight and unclaimed $PEGGED travel with the NFT on secondary sales.
 - **Cleanup:** `compost_monke` — permissionless removal of dead weight when NFT is burned (supply == 0)
 
@@ -275,7 +275,7 @@ Three eligible collections, all **1x weight per feed**:
 
 - **Upgrade authority:** Retained by operator. Program can be upgraded.
 - **Audit status:** Unaudited. Use at your own risk.
-- **Fee split:** 50/50 hardcoded on-chain (bridge_vault → $PEGGED for monke holders / Config.bot for operations). Not governable by operator. Revenue destination change requires 24hr timelock.
+- **Fee split:** 60/40 hardcoded on-chain (bridge_vault → $PEGGED for monke holders / Config.bot for operations). Not governable by operator. Revenue destination change requires 24hr timelock.
 - **Permissionless fallback:** All harvests and sweeps can be cranked by anyone when the bot is stale, preventing fund lock-up.
 
 ## Known Limitations

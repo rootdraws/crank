@@ -1,8 +1,9 @@
 // pegged_bridge — SOL-to-$PEGGED staking bridge for monke.army
 //
 // Receives SOL from sweep_rover (via revenue_dest redirect to bridge_vault PDA),
-// stakes it into the SPL stake pool (MonkeDAO validator), and forwards the minted
-// $PEGGED to the monke_bananas dist_pool ATA. Permissionless crank.
+// stakes it into the Sanctum SPL stake pool (multi-validator: MonkeDAO, LP Army,
+// Helius), and forwards the minted $PEGGED to the monke_bananas dist_pool ATA.
+// Permissionless crank.
 //
 // bridge_vault PDA intentionally stays system-owned (never init'd as program account)
 // so the SPL stake pool's internal system_instruction::transfer works. PDA signing
@@ -24,9 +25,9 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN");
 
-/// SPL Stake Pool program (mainnet)
+/// SPL Stake Pool program — Sanctum fork (mainnet)
 pub const SPL_STAKE_POOL_PROGRAM: Pubkey =
-    anchor_lang::solana_program::pubkey!("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy");
+    anchor_lang::solana_program::pubkey!("SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY");
 
 /// Minimum SOL to trigger staking (0.01 SOL — below this, tx cost isn't worth it)
 pub const MIN_STAKE_LAMPORTS: u64 = 10_000_000;
@@ -157,10 +158,21 @@ pub mod pegged_bridge {
 
     pub fn update_config(
         ctx: Context<UpdateConfig>,
+        new_stake_pool: Option<Pubkey>,
+        new_pegged_mint: Option<Pubkey>,
         new_dist_pool_pegged_ata: Option<Pubkey>,
     ) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        if let Some(pool) = new_stake_pool {
+            config.stake_pool = pool;
+            msg!("Updated stake_pool to {}", pool);
+        }
+        if let Some(mint) = new_pegged_mint {
+            config.pegged_mint = mint;
+            msg!("Updated pegged_mint to {}", mint);
+        }
         if let Some(ata) = new_dist_pool_pegged_ata {
-            ctx.accounts.config.dist_pool_pegged_ata = ata;
+            config.dist_pool_pegged_ata = ata;
             msg!("Updated dist_pool_pegged_ata to {}", ata);
         }
         Ok(())

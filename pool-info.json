@@ -1,0 +1,12 @@
+{
+  "pool": "9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg",
+  "mint": "GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1",
+  "validatorList": "4qzxuM5yvQfpiZrPGH8PmwtvPeHAJJomrWxcS3sjKDbC",
+  "reserveStake": "3T4u92E8LqEYJQuFNHtewdrBp3ZX9eFM3zjeuSHJQB9z",
+  "withdrawAuthority": "AnmuhSsKondKVDAWTLc57joeMA7K6vHNNxrnLkjyTJLJ",
+  "managerFeeAccount": "JBWGdKPTpvW2mznC5FCZXLhzDozr5bVMT1kexoRYiBWA",
+  "program": "SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY",
+  "bridgeVaultAta": "Ft1TzupfeAKMvYXg9GfcotK1VFTq2nqvJsq2XCYXpqKB",
+  "distPoolAta": "3NBqb4nRadQqe3wwffmwCwP4SLWA19jhxdm85ZhAjTMB",
+  "programVaultAta": "9ZsSHkbzziVwRLuR4uT9KAR6CVu1WoL23xk8rNvpyiXM"
+}

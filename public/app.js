@@ -3152,7 +3152,7 @@ async function handleCrankSweep() {
     const sig = await walletSendTransaction(tx);
     showToast('Confirming sweep...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
-    showToast('Swept SOL — 50% to bridge vault, 50% to bot!', 'success');
+    showToast('Swept SOL — 60% to bridge vault, 40% to bot!', 'success');
     renderOpsStats();
   } catch (err) {
     console.error('[monke] sweep_rover failed:', err);

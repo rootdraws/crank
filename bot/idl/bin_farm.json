@@ -1967,7 +1967,7 @@
     {
       "name": "sweep_rover",
       "docs": [
-        "Sweep SOL from rover_authority — 50% to dist_pool (monke holders), 50% to bot (operations).",
+        "Sweep SOL from rover_authority — 60% to bridge_vault (monke holders), 40% to bot (operations).",
         "Hardcoded split. Permissionless — anyone can call."
       ],
       "discriminator": [
@@ -3223,7 +3223,7 @@
       "name": "RoverAuthority",
       "docs": [
         "Rover authority PDA — owns rover (bribe) positions.",
-        "Harvest proceeds accumulate here. sweep_rover splits SOL 50/50: half to revenue_dest (dist_pool), half to Config.bot."
+        "Harvest proceeds accumulate here. sweep_rover splits SOL 60/40: 60% to revenue_dest (bridge_vault), 40% to Config.bot."
       ],
       "type": {
         "kind": "struct",

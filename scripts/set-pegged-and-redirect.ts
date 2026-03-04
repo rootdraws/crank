@@ -21,7 +21,7 @@ const coreIdl = JSON.parse(fs.readFileSync(idlDir + "/bin_farm.json", "utf-8"));
 const monkeProgram = new Program(monkeIdl, provider);
 const coreProgram = new Program(coreIdl, provider);
 
-const PEGGED_MINT = new PublicKey("3wJYuCVWvNj4aWh5nBdZ782Wz8xVzW74CXr8UepZMG4j");
+const PEGGED_MINT = new PublicKey("GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1");
 const MONKE_PROGRAM_ID = new PublicKey("myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH");
 const CORE_PROGRAM_ID = new PublicKey("8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia");
 const BRIDGE_PROGRAM_ID = new PublicKey("7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN");

@@ -8,7 +8,7 @@
  *
  * The bot never holds user funds or revenue SOL.
  * Revenue SOL flows: rover_authority → bridge_vault → $PEGGED → dist_pool ATA → monke holders (on-chain).
- * 50/50 split: half to bridge_vault (→ $PEGGED for monke holders), half to bot (Config.bot). Hardcoded in sweep_rover.
+ * 60/40 split: 60% to bridge_vault (→ $PEGGED for monke holders), 40% to bot (Config.bot). Hardcoded in sweep_rover.
  * The bot only cranks permissionless instructions.
  *
  * Weekly cadence: Saturday keeper sequence (unwrap WSOL → sweep → stake_and_forward → fee rovers → deposit_pegged → cleanup).

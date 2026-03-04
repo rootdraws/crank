@@ -18,9 +18,9 @@ const idlDir = new URL("../bot/idl", import.meta.url).pathname;
 const idl = JSON.parse(fs.readFileSync(idlDir + "/pegged_bridge.json", "utf-8"));
 const program = new Program(idl, provider);
 
-const STAKE_POOL = new PublicKey("SVhYuHZMyXobKkCrcAbF2cq44amK5TiYzmNpKngfwqg");
-const PEGGED_MINT = new PublicKey("3wJYuCVWvNj4aWh5nBdZ782Wz8xVzW74CXr8UepZMG4j");
-const DIST_POOL_PEGGED_ATA = new PublicKey("2yqzo5ZfkEBFgvyJ7c5A92MLKJqgYV9V8KDXzSqbKrx9");
+const STAKE_POOL = new PublicKey("9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg");
+const PEGGED_MINT = new PublicKey("GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1");
+const DIST_POOL_PEGGED_ATA = new PublicKey("3NBqb4nRadQqe3wwffmwCwP4SLWA19jhxdm85ZhAjTMB");
 
 const BRIDGE_PROGRAM_ID = new PublicKey("7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN");
 const [config] = PublicKey.findProgramAddressSync([Buffer.from("bridge_config")], BRIDGE_PROGRAM_ID);

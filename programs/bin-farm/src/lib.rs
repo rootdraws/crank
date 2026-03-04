@@ -7,7 +7,7 @@
 // SECURITY FIXES applied:
 // - Vault PDA is per-position (not per-pool) — prevents cross-position drainage
 // - All token accounts validated for correct owner
-// - All fees route to rover_authority ATAs (sweep_rover splits 50/50: monke holders + bot)
+// - All fees route to rover_authority ATAs (sweep_rover splits 60/40: monke holders + bot)
 // - Meteora accounts explicit in contexts (not remaining_accounts)
 // - claim_fees fully wired (was a stub)
 // - All 4 CPI TODOs replaced with verified Meteora CPI calls
@@ -466,7 +466,7 @@ pub mod bin_farm {
             }
         }
 
-        // Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50: monke holders + bot)
+        // Fee routing: all fees → rover_authority ATAs (sweep_rover splits 60/40: monke holders + bot)
         //   TOKEN fees (Buy side) → rover_fee_token_x for DLMM recycling
         //   SOL fees (Sell side)  → rover_fee_token_y (WSOL, unwrapped later via close_rover_token_account)
         if x_to_protocol > 0 {
@@ -1415,7 +1415,7 @@ pub mod bin_farm {
         Ok(())
     }
 
-    /// Sweep SOL from rover_authority — 50% to dist_pool (monke holders), 50% to bot (operations).
+    /// Sweep SOL from rover_authority — 60% to bridge_vault (monke holders), 40% to bot (operations).
     /// Hardcoded split. Permissionless — anyone can call.
     pub fn sweep_rover(ctx: Context<SweepRover>) -> Result<()> {
         let is_authorized_bot = ctx.accounts.caller.key() == ctx.accounts.config.bot;
@@ -1429,8 +1429,8 @@ pub mod bin_farm {
 
         require!(sweepable > 0, CoreError::NothingToSweep);
 
-        let monke_share = sweepable / 2;
-        let operator_share = sweepable - monke_share;
+        let monke_share = sweepable * 3 / 5;   // 60%
+        let operator_share = sweepable - monke_share; // 40%
 
         **ctx.accounts.rover_authority.to_account_info().try_borrow_mut_lamports()? -= sweepable;
         **ctx.accounts.revenue_dest.try_borrow_mut_lamports()? += monke_share;
@@ -1729,7 +1729,7 @@ fn execute_close_transfers<'info>(
     let x_to_recipient = vault_x_balance.checked_sub(x_fee).ok_or(CoreError::Overflow)?;
     let y_to_recipient = vault_y_balance.checked_sub(y_fee).ok_or(CoreError::Overflow)?;
 
-    // Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50: monke holders + bot)
+    // Fee routing: all fees → rover_authority ATAs (sweep_rover splits 60/40: monke holders + bot)
     //   TOKEN fees (Buy side, x_fee) → rover_fee_token_x for DLMM recycling
     //   SOL fees (Sell side, y_fee)  → rover_fee_token_y (WSOL, unwrapped later)
     // B2 FIX: Prepend memo before each transfer (supports Memo Transfer extension)
@@ -1946,10 +1946,10 @@ impl Vault {
 }
 
 /// Rover authority PDA — owns rover (bribe) positions.
-/// Harvest proceeds accumulate here. sweep_rover splits SOL 50/50: half to revenue_dest (dist_pool), half to Config.bot.
+/// Harvest proceeds accumulate here. sweep_rover splits SOL 60/40: 60% to revenue_dest (bridge_vault), 40% to Config.bot.
 #[account]
 pub struct RoverAuthority {
-    pub revenue_dest: Pubkey,              // Where monke share goes (dist_pool PDA — 50% of swept SOL)
+    pub revenue_dest: Pubkey,              // Where monke share goes (bridge_vault PDA — 60% of swept SOL)
     pub total_rover_positions: u64,        // Lifetime count
     pub bump: u8,
     pub pending_revenue_dest: Pubkey,      // Timelocked: proposed new revenue_dest
@@ -2157,7 +2157,7 @@ pub struct ClosePosition<'info> {
     #[account(mut, constraint = owner_token_y.owner == position.owner @ CoreError::InvalidTokenOwner)]
     pub owner_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
+    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 60/40) ---
     #[account(seeds = [b"rover_authority"], bump = rover_authority.bump)]
     pub rover_authority: Box<Account<'info, RoverAuthority>>,
 
@@ -2267,7 +2267,7 @@ pub struct BotHarvest<'info> {
     #[account(mut, constraint = owner_token_y.owner == position.owner @ CoreError::InvalidTokenOwner)]
     pub owner_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
+    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 60/40) ---
     #[account(seeds = [b"rover_authority"], bump = rover_authority.bump)]
     pub rover_authority: Box<Account<'info, RoverAuthority>>,
 
@@ -2369,7 +2369,7 @@ pub struct UserClose<'info> {
     #[account(mut, constraint = user_token_y.owner == user.key() @ CoreError::InvalidTokenOwner)]
     pub user_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
+    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 60/40) ---
     #[account(seeds = [b"rover_authority"], bump = rover_authority.bump)]
     pub rover_authority: Box<Account<'info, RoverAuthority>>,
 
@@ -2736,7 +2736,7 @@ pub struct SweepRover<'info> {
     )]
     pub rover_authority: Account<'info, RoverAuthority>,
 
-    /// CHECK: Revenue destination — dist_pool PDA (50% to monke holders)
+    /// CHECK: Revenue destination — bridge_vault PDA (60% to monke holders)
     #[account(
         mut,
         constraint = revenue_dest.key() == rover_authority.revenue_dest @ CoreError::InvalidPool,
@@ -2744,7 +2744,7 @@ pub struct SweepRover<'info> {
     )]
     pub revenue_dest: AccountInfo<'info>,
 
-    /// CHECK: Operator destination — bot keypair from Config (50% to operations)
+    /// CHECK: Operator destination — bot keypair from Config (40% to operations)
     #[account(
         mut,
         constraint = bot_dest.key() == config.bot @ CoreError::InvalidBot,

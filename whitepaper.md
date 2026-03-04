@@ -78,7 +78,7 @@ The result is structural predation against existing passive LPs. Your users are 
 
 - 1M $BANANAS burned per feed, assigned on-chain to your specific NFT
 - All collections = 1x weight per feed. Burns stack. Feed 5M to the same NFT — weight of 5
-- 50% of protocol fees are converted to $PEGGED and distributed to all fed NFT holders, proportional to weight. 50% funds bot operations.
+- 60% of protocol fees are converted to $PEGGED and distributed to all fed NFT holders, proportional to weight. 40% funds bot operations.
 - SMB Gen2 / Gen3 / gooseswtf NFTs are fully tradeable. Weight and unclaimed $PEGGED travel with the NFT
 
 ### Eligible Collections
@@ -97,20 +97,20 @@ GooseDAO members can burn $BANANAS against their gooseswtf pixel goose NFTs. The
 
 ## Fee Flow
 
-50% of protocol fees to monke holders as $PEGGED. 50% to operations (bot self-funding). Zero team token allocation.
+60% of protocol fees to monke holders as $PEGGED. 40% to operations (bot self-funding). Zero team token allocation.
 
 ```
-Two revenue streams → sweep_rover splits 50/50:
+Two revenue streams → sweep_rover splits 60/40:
 
 1. Position fees (0.3% on converted output)
      SOL fees → rover_authority WSOL ATA → close_rover_token_account (unwrap)
-        → sweep_rover → 50% bridge_vault + 50% bot (operations)
+        → sweep_rover → 60% bridge_vault + 40% bot (operations)
      TOKEN fees → rover_authority → sell-side DLMM (BidAskImBalanced)
-        → natural trading converts to SOL → sweep_rover → 50/50 split
+        → natural trading converts to SOL → sweep_rover → 60/40 split
 
 2. Rover bribe proceeds
      External deposits → rover DLMM positions → converts to SOL
-        → sweep_rover → 50/50 split
+        → sweep_rover → 60/40 split
 
 Bridge (SOL → $PEGGED):
      bridge_vault SOL → stake_and_forward (permissionless crank)
@@ -118,9 +118,9 @@ Bridge (SOL → $PEGGED):
         → deposit_pegged → program_vault ATA → claimable by monkes
 ```
 
-The 50/50 split is hardcoded in `sweep_rover`. The operator's share goes to `Config.bot` — the same keypair that pays for all harvest, close, and keeper transactions. The bot self-funds from protocol revenue. Effective user cost: 0.15% (half of the 0.3% fee).
+The 60/40 split is hardcoded in `sweep_rover`. The operator's share goes to `Config.bot` — the same keypair that pays for all harvest, close, and keeper transactions. The bot self-funds from protocol revenue. Effective user cost: 0.12% (40% of the 0.3% fee).
 
-The monke holder's 50% flows into a bridge vault, where it is staked to the MonkeDAO validator via an SPL stake pool and converted to $PEGGED — a yield-bearing liquid staking token. $PEGGED appreciates against SOL each epoch as staking rewards accrue. Holders earn staking yield passively on top of their protocol revenue share.
+The monke holder's 60% flows into a bridge vault, where it is staked to the MonkeDAO validator via an SPL stake pool and converted to $PEGGED — a yield-bearing liquid staking token. $PEGGED appreciates against SOL each epoch as staking rewards accrue. Holders earn staking yield passively on top of their protocol revenue share.
 
 Token fees are never market-dumped. They become sell-side liquidity above current price. If the token pumps, they convert at better prices. If it doesn't, they sit there earning LP fees while they wait. Your protocol fees don't destroy your chart.
 
@@ -150,10 +150,10 @@ $PEGGED is a yield-bearing liquid staking token (LST) backed 1:1 by SOL staked t
 Raw SOL sits idle. $PEGGED earns ~7-8% APY staking yield while you hold it. It also directs stake to the MonkeDAO validator, strengthening the community's infrastructure. $PEGGED is fully liquid — sell it anytime on the DLMM pool.
 
 **What about the dev fee?**
-50% of protocol fees go to monke holders who burned $BANANAS, distributed as $PEGGED. 50% goes to the bot keypair to fund operations (harvest transactions, keeper cranks, rover rent). Zero team token allocation — the dev participates in the Alpha Vault fair launch like everyone else, same price, same terms. The 50/50 split is hardcoded on-chain.
+60% of protocol fees go to monke holders who burned $BANANAS, distributed as $PEGGED. 40% goes to the bot keypair to fund operations (harvest transactions, keeper cranks, rover rent). Zero team token allocation — the dev participates in the Alpha Vault fair launch like everyone else, same price, same terms. The 60/40 split is hardcoded on-chain.
 
 **How was $BANANAS launched?**
-100% of supply (1B tokens, 6 decimals) into a Meteora DAMM v2 pool. Alpha Vault pro-rata fair launch — everyone deposits SOL during a 2-week window, everyone gets the same price. 420 SOL vault capacity. initPrice: 0.000001 SOL/token (1 SOL = 1 monke feed). Liquidity permanently locked — trading fees from the locked position are retained by the operator (not part of the 50/50 protocol split). 69% sniper tax decaying to 1% over 3 hours. Zero dev allocation. No pre-mine. No team tokens.
+100% of supply (1B tokens, 6 decimals) into a Meteora DAMM v2 pool. Alpha Vault pro-rata fair launch — everyone deposits SOL during a 2-week window, everyone gets the same price. 420 SOL vault capacity. initPrice: 0.000001 SOL/token (1 SOL = 1 monke feed). Liquidity permanently locked — trading fees from the locked position are retained by the operator (not part of the 60/40 protocol split). 69% sniper tax decaying to 1% over 3 hours. Zero dev allocation. No pre-mine. No team tokens.
 
 ---
 
