@@ -144,6 +144,49 @@ async function confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight) {
   return confirmation;
 }
 
+/**
+ * Ensure required ATAs exist (and optionally init bin arrays / wrap SOL) in a
+ * separate "setup" TX that contains ONLY standard SPL / System ops.
+ *
+ * Keeps the real execute TX down to compute-budget + one program instruction,
+ * which dramatically reduces Blowfish per-transaction risk scoring.
+ *
+ * @param {Connection} conn
+ * @param {PublicKey}   payer
+ * @param {{ ata: PublicKey, owner: PublicKey, mint: PublicKey, tokenProgram: PublicKey }[]} ataChecks
+ * @param {TransactionInstruction[]} [extraSetupIxs] - bin array inits, SOL wrapping, etc.
+ * @returns {Promise<void>}
+ */
+async function ensureAccountsSetup(conn, payer, ataChecks, extraSetupIxs = []) {
+  const accounts = ataChecks.map(c => c.ata);
+  const infos = await conn.getMultipleAccountsInfo(accounts);
+
+  const setupIxs = [];
+  for (let i = 0; i < ataChecks.length; i++) {
+    if (!infos[i]) {
+      const c = ataChecks[i];
+      setupIxs.push(createAssociatedTokenAccountIx(payer, c.ata, c.owner, c.mint, c.tokenProgram));
+    }
+  }
+  setupIxs.push(...extraSetupIxs);
+
+  if (setupIxs.length === 0) return;
+
+  const setupTx = new solanaWeb3.Transaction();
+  setupTx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+  setupTx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
+  for (const ix of setupIxs) setupTx.add(ix);
+
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+  setupTx.recentBlockhash = blockhash;
+  setupTx.lastValidBlockHeight = lastValidBlockHeight;
+  setupTx.feePayer = payer;
+
+  showToast('Preparing accounts...', 'info');
+  const sig = await walletSendTransaction(setupTx);
+  await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
+}
+
 /** Wrap RPC account data as an EncodedAccount for Codama decoders */
 function toEncodedAccount(pubkeyOrStr, data, programAddr) {
   return {
@@ -1884,35 +1927,24 @@ async function createPosition() {
 
     const userTokenAccount = getAssociatedTokenAddressSync(depositMint, user, false, depositTokenProgramId);
 
-    const tx = new solanaWeb3.Transaction();
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
-
-    const initBinArrayIxs = await ensureBinArraysExist(cpi.lbPair, minBin, maxBin, user, cpi.dlmmProgram);
-    for (const ix of initBinArrayIxs) tx.add(ix);
-
-    const isNativeSol = depositMint.equals(NATIVE_MINT);
-    const userAtaInfo = await conn.getAccountInfo(userTokenAccount);
-    if (!userAtaInfo) {
-      tx.add(createAssociatedTokenAccountIx(user, userTokenAccount, user, depositMint, depositTokenProgramId));
-    }
-    if (isNativeSol) {
-      for (const ix of buildWrapSolIxs(user, userTokenAccount, depositAmount)) tx.add(ix);
-    }
-
-    const slippage = state.binStep >= 80 ? 15 : 5;
-    const bitmapExtWritable = !cpi.binArrayBitmapExt.equals(cpi.dlmmProgram);
-
     const vaultTokenX = getAssociatedTokenAddressSync(cpi.tokenXMint, vaultPDA, true, cpi.tokenXProgramId);
     const vaultTokenY = getAssociatedTokenAddressSync(cpi.tokenYMint, vaultPDA, true, cpi.tokenYProgramId);
 
-    for (const [mint, ata, prog] of [
-      [cpi.tokenXMint, vaultTokenX, cpi.tokenXProgramId],
-      [cpi.tokenYMint, vaultTokenY, cpi.tokenYProgramId],
-    ]) {
-      const info = await conn.getAccountInfo(ata);
-      if (!info) tx.add(createAssociatedTokenAccountIx(user, ata, vaultPDA, mint, prog));
-    }
+    // --- Setup TX: ATAs, bin arrays, SOL wrapping (standard SPL ops only) ---
+    const isNativeSol = depositMint.equals(NATIVE_MINT);
+    const initBinArrayIxs = await ensureBinArraysExist(cpi.lbPair, minBin, maxBin, user, cpi.dlmmProgram);
+    const extraSetupIxs = [...initBinArrayIxs];
+    if (isNativeSol) extraSetupIxs.push(...buildWrapSolIxs(user, userTokenAccount, depositAmount));
+
+    await ensureAccountsSetup(conn, user, [
+      { ata: userTokenAccount, owner: user, mint: depositMint, tokenProgram: depositTokenProgramId },
+      { ata: vaultTokenX, owner: vaultPDA, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+      { ata: vaultTokenY, owner: vaultPDA, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+    ], extraSetupIxs);
+
+    // --- Execute TX: compute budget + openPositionV2 only ---
+    const slippage = state.binStep >= 80 ? 15 : 5;
+    const bitmapExtWritable = !cpi.binArrayBitmapExt.equals(cpi.dlmmProgram);
 
     if (CONFIG.DEBUG) console.log('[monke] Open position V2:', { amount: depositAmount.toString(), minBin, maxBin });
 
@@ -1945,9 +1977,12 @@ async function createPosition() {
       const bmIdx = openWeb3Ix.keys.findIndex(k => k.pubkey.equals(cpi.binArrayBitmapExt));
       if (bmIdx >= 0) openWeb3Ix.keys[bmIdx].isWritable = true;
     }
+
+    const tx = new solanaWeb3.Transaction();
+    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
     tx.add(openWeb3Ix);
 
-    // Set tx metadata
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
     tx.recentBlockhash = blockhash;
     tx.lastValidBlockHeight = lastValidBlockHeight;
@@ -2072,21 +2107,15 @@ async function closePosition(index) {
     const roverFeeTokenX = getAssociatedTokenAddressSync(cpi.tokenXMint, roverAuthorityPDA, true, cpi.tokenXProgramId);
     const roverFeeTokenY = getAssociatedTokenAddressSync(cpi.tokenYMint, roverAuthorityPDA, true, cpi.tokenYProgramId);
 
-    const tx = new solanaWeb3.Transaction();
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
-
-    const [userXInfo, userYInfo, roverFeeXInfo, roverFeeYInfo] = await Promise.all([
-      conn.getAccountInfo(userTokenX),
-      conn.getAccountInfo(userTokenY),
-      conn.getAccountInfo(roverFeeTokenX),
-      conn.getAccountInfo(roverFeeTokenY),
+    // --- Setup TX: ensure all ATAs exist (standard SPL ops only) ---
+    await ensureAccountsSetup(conn, user, [
+      { ata: userTokenX, owner: user, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+      { ata: userTokenY, owner: user, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+      { ata: roverFeeTokenX, owner: roverAuthorityPDA, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+      { ata: roverFeeTokenY, owner: roverAuthorityPDA, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
     ]);
-    if (!userXInfo) tx.add(createAssociatedTokenAccountIx(user, userTokenX, user, cpi.tokenXMint, cpi.tokenXProgramId));
-    if (!userYInfo) tx.add(createAssociatedTokenAccountIx(user, userTokenY, user, cpi.tokenYMint, cpi.tokenYProgramId));
-    if (!roverFeeXInfo) tx.add(createAssociatedTokenAccountIx(user, roverFeeTokenX, roverAuthorityPDA, cpi.tokenXMint, cpi.tokenXProgramId));
-    if (!roverFeeYInfo) tx.add(createAssociatedTokenAccountIx(user, roverFeeTokenY, roverAuthorityPDA, cpi.tokenYMint, cpi.tokenYProgramId));
 
+    // --- Execute TX: compute budget + userClose only ---
     const closeIx = await getUserCloseInstructionAsync({
       user: asSigner(user),
       position: address(pos.pubkey.toBase58()),
@@ -2118,6 +2147,10 @@ async function closePosition(index) {
       const bmIdx = closeWeb3Ix.keys.findIndex(k => k.pubkey.equals(cpi.binArrayBitmapExt));
       if (bmIdx >= 0) closeWeb3Ix.keys[bmIdx].isWritable = true;
     }
+
+    const tx = new solanaWeb3.Transaction();
+    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
     tx.add(closeWeb3Ix);
 
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
@@ -2162,20 +2195,15 @@ async function closePositionDirect(pos) {
   const roverFeeTokenX = getAssociatedTokenAddressSync(cpi.tokenXMint, roverAuthorityPDA, true, cpi.tokenXProgramId);
   const roverFeeTokenY = getAssociatedTokenAddressSync(cpi.tokenYMint, roverAuthorityPDA, true, cpi.tokenYProgramId);
 
-  const tx = new solanaWeb3.Transaction();
-  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
-  const [userXInfo, userYInfo, roverFeeXInfo, roverFeeYInfo] = await Promise.all([
-    conn.getAccountInfo(userTokenX),
-    conn.getAccountInfo(userTokenY),
-    conn.getAccountInfo(roverFeeTokenX),
-    conn.getAccountInfo(roverFeeTokenY),
+  // --- Setup TX: ensure all ATAs exist (standard SPL ops only) ---
+  await ensureAccountsSetup(conn, user, [
+    { ata: userTokenX, owner: user, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+    { ata: userTokenY, owner: user, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+    { ata: roverFeeTokenX, owner: roverAuthorityPDA, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+    { ata: roverFeeTokenY, owner: roverAuthorityPDA, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
   ]);
-  if (!userXInfo) tx.add(createAssociatedTokenAccountIx(user, userTokenX, user, cpi.tokenXMint, cpi.tokenXProgramId));
-  if (!userYInfo) tx.add(createAssociatedTokenAccountIx(user, userTokenY, user, cpi.tokenYMint, cpi.tokenYProgramId));
-  if (!roverFeeXInfo) tx.add(createAssociatedTokenAccountIx(user, roverFeeTokenX, roverAuthorityPDA, cpi.tokenXMint, cpi.tokenXProgramId));
-  if (!roverFeeYInfo) tx.add(createAssociatedTokenAccountIx(user, roverFeeTokenY, roverAuthorityPDA, cpi.tokenYMint, cpi.tokenYProgramId));
 
+  // --- Execute TX: compute budget + userClose only ---
   const closeIx = await getUserCloseInstructionAsync({
     user: asSigner(user),
     position: address(pos.pubkey.toBase58()),
@@ -2207,6 +2235,10 @@ async function closePositionDirect(pos) {
     const bmIdx = ucWeb3Ix.keys.findIndex(k => k.pubkey.equals(cpi.binArrayBitmapExt));
     if (bmIdx >= 0) ucWeb3Ix.keys[bmIdx].isWritable = true;
   }
+
+  const tx = new solanaWeb3.Transaction();
+  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
+  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
   tx.add(ucWeb3Ix);
 
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
@@ -2236,13 +2268,13 @@ async function claimFeesDirect(pos) {
   const userTokenX = getAssociatedTokenAddressSync(cpi.tokenXMint, user, false, cpi.tokenXProgramId);
   const userTokenY = getAssociatedTokenAddressSync(cpi.tokenYMint, user, false, cpi.tokenYProgramId);
 
-  const tx = new solanaWeb3.Transaction();
-  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }));
-  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
-  const [userXInfo, userYInfo] = await Promise.all([conn.getAccountInfo(userTokenX), conn.getAccountInfo(userTokenY)]);
-  if (!userXInfo) tx.add(createAssociatedTokenAccountIx(user, userTokenX, user, cpi.tokenXMint, cpi.tokenXProgramId));
-  if (!userYInfo) tx.add(createAssociatedTokenAccountIx(user, userTokenY, user, cpi.tokenYMint, cpi.tokenYProgramId));
+  // --- Setup TX: ensure user ATAs exist (standard SPL ops only) ---
+  await ensureAccountsSetup(conn, user, [
+    { ata: userTokenX, owner: user, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+    { ata: userTokenY, owner: user, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+  ]);
 
+  // --- Execute TX: compute budget + claimFees only ---
   const claimFeesIx = getClaimFeesInstruction({
     user: asSigner(user),
     position: address(positionPDA.toBase58()),
@@ -2265,6 +2297,9 @@ async function claimFeesDirect(pos) {
     tokenYProgram: address(cpi.tokenYProgramId.toBase58()),
     memoProgram: address(SPL_MEMO_PROGRAM_ID.toBase58()),
   });
+  const tx = new solanaWeb3.Transaction();
+  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }));
+  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
   tx.add(kitIxToWeb3(claimFeesIx));
 
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
@@ -2888,8 +2923,9 @@ async function handleClaimMonke(nftMintStr) {
       const [programVaultPDA] = getProgramVaultPDA();
       const programVaultAta = getAssociatedTokenAddressSync(peggedMint, programVaultPDA, true);
       const userPeggedAta = getAssociatedTokenAddressSync(peggedMint, user);
-      // Create user's $PEGGED ATA if needed
-      tx.add(createAssociatedTokenAccountIx(user, userPeggedAta, user, peggedMint));
+      await ensureAccountsSetup(conn, user, [
+        { ata: userPeggedAta, owner: user, mint: peggedMint, tokenProgram: TOKEN_PROGRAM_ID },
+      ]);
       const claimIx = await getClaimPeggedInstructionAsync({
         user: asSigner(user),
         monkeBurn: address(monkeBurnPDA.toBase58()),
@@ -2942,7 +2978,9 @@ async function handleClaimAll() {
       const [programVaultPDA] = getProgramVaultPDA();
       const programVaultAta = getAssociatedTokenAddressSync(peggedMint, programVaultPDA, true);
       const userPeggedAta = getAssociatedTokenAddressSync(peggedMint, user);
-      tx.add(createAssociatedTokenAccountIx(user, userPeggedAta, user, peggedMint));
+      await ensureAccountsSetup(conn, user, [
+        { ata: userPeggedAta, owner: user, mint: peggedMint, tokenProgram: TOKEN_PROGRAM_ID },
+      ]);
       for (const nft of claimable) {
         const nftMint = new solanaWeb3.PublicKey(nft.mint);
         const [monkeBurnPDA] = getMonkeBurnPDA(nftMint);
@@ -3251,21 +3289,15 @@ async function handleHarvestPosition(positionPDAStr, lbPairStr, ownerStr, side) 
   const roverFeeTokenX = getAssociatedTokenAddressSync(cpi.tokenXMint, roverAuthorityPDA, true, cpi.tokenXProgramId);
   const roverFeeTokenY = getAssociatedTokenAddressSync(cpi.tokenYMint, roverAuthorityPDA, true, cpi.tokenYProgramId);
 
-  const tx = new solanaWeb3.Transaction();
-  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
-
-  const [ownerXInfo, ownerYInfo, roverFeeXInfo, roverFeeYInfo] = await Promise.all([
-    conn.getAccountInfo(ownerTokenX),
-    conn.getAccountInfo(ownerTokenY),
-    conn.getAccountInfo(roverFeeTokenX),
-    conn.getAccountInfo(roverFeeTokenY),
+  // --- Setup TX: ensure all ATAs exist (standard SPL ops only) ---
+  await ensureAccountsSetup(conn, user, [
+    { ata: ownerTokenX, owner: owner, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+    { ata: ownerTokenY, owner: owner, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+    { ata: roverFeeTokenX, owner: roverAuthorityPDA, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+    { ata: roverFeeTokenY, owner: roverAuthorityPDA, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
   ]);
-  if (!ownerXInfo) tx.add(createAssociatedTokenAccountIx(user, ownerTokenX, owner, cpi.tokenXMint, cpi.tokenXProgramId));
-  if (!ownerYInfo) tx.add(createAssociatedTokenAccountIx(user, ownerTokenY, owner, cpi.tokenYMint, cpi.tokenYProgramId));
-  if (!roverFeeXInfo) tx.add(createAssociatedTokenAccountIx(user, roverFeeTokenX, roverAuthorityPDA, cpi.tokenXMint, cpi.tokenXProgramId));
-  if (!roverFeeYInfo) tx.add(createAssociatedTokenAccountIx(user, roverFeeTokenY, roverAuthorityPDA, cpi.tokenYMint, cpi.tokenYProgramId));
 
+  // --- Execute TX: compute budget + harvestBins only ---
   const harvestIx = await getHarvestBinsInstructionAsync({
     bot: asSigner(user),
     position: address(positionPubkey.toBase58()),
@@ -3299,6 +3331,9 @@ async function handleHarvestPosition(positionPDAStr, lbPairStr, ownerStr, side) 
     const bmIdx = harvestWeb3Ix.keys.findIndex(k => k.pubkey.equals(cpi.binArrayBitmapExt));
     if (bmIdx >= 0) harvestWeb3Ix.keys[bmIdx].isWritable = true;
   }
+  const tx = new solanaWeb3.Transaction();
+  tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
+  tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
   tx.add(harvestWeb3Ix);
 
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
