@@ -120,8 +120,18 @@ function asSigner(pubkeyOrAddress) {
   };
 }
 
-/** Sign + send via Phantom Connect SDK. */
+/** Pre-simulate with sigVerify: false to catch failures before wallet prompt. */
+async function preSimulate(tx) {
+  const sim = await state.connection.simulateTransaction(tx);
+  if (sim.value.err) {
+    console.error('[monke] pre-sim failed:', sim.value.err, sim.value.logs?.join('\n'));
+    throw new Error('Transaction simulation failed: ' + JSON.stringify(sim.value.err));
+  }
+}
+
+/** Sign + send via Phantom Connect SDK (single-signer). Pre-simulates first. */
 async function walletSendTransaction(tx) {
+  await preSimulate(tx);
   const result = await phantomSDK.solana.signAndSendTransaction(tx);
   const sig = result?.signature || result?.hash || (typeof result === 'string' ? result : undefined);
   if (!sig) {
@@ -1490,7 +1500,6 @@ async function renderPositionsPage() {
   const countEl = document.getElementById('posPageCount');
   const depositEl = document.getElementById('posPageDeposited');
   const harvestEl = document.getElementById('posPageHarvested');
-  const avgFillEl = document.getElementById('posPageAvgFill');
   if (!listEl) return;
 
   if (!state.connected) {
@@ -1513,26 +1522,34 @@ async function renderPositionsPage() {
     if (countEl) countEl.textContent = '0';
     if (depositEl) depositEl.textContent = '0 SOL';
     if (harvestEl) harvestEl.textContent = '0 SOL';
-    if (avgFillEl) avgFillEl.textContent = '0%';
     return;
   }
 
   let totalDeposited = 0;
   let totalHarvested = 0;
 
-  // Resolve pool names for unique lb_pairs
   const uniquePools = [...new Set(positions.map(p => p.lbPair))];
-  const poolNames = {};
+  const poolMeta = {};
   for (const pool of uniquePools) {
     try {
       const info = await parseLbPair(pool);
-      const [symX, symY] = await Promise.all([
+      const [symX, symY, decX, decY] = await Promise.all([
         resolveTokenSymbol(info.tokenXMint),
         resolveTokenSymbol(info.tokenYMint),
+        getMintDecimals(info.tokenXMint.toBase58()),
+        getMintDecimals(info.tokenYMint.toBase58()),
       ]);
-      poolNames[pool] = `${symX}/${symY}`;
+      poolMeta[pool] = {
+        name: `${symX}/${symY}`,
+        binStep: info.binStep,
+        decimalsX: decX,
+        decimalsY: decY,
+      };
     } catch {
-      poolNames[pool] = pool.slice(0, 4) + '...' + pool.slice(-4);
+      poolMeta[pool] = {
+        name: pool.slice(0, 4) + '...' + pool.slice(-4),
+        binStep: 0, decimalsX: 9, decimalsY: 9,
+      };
     }
   }
 
@@ -1541,13 +1558,16 @@ async function renderPositionsPage() {
     totalDeposited += pos.initialAmount;
     totalHarvested += pos.harvestedAmount;
     const fillPct = pos.initialAmount > 0 ? Math.min(100, Math.round((pos.harvestedAmount / pos.initialAmount) * 100)) : 0;
-    const poolName = poolNames[pos.lbPair] || pos.lbPair.slice(0, 8) + '...';
+    const meta = poolMeta[pos.lbPair] || { name: pos.lbPair.slice(0, 8) + '...', binStep: 0 };
+    const poolName = meta.name;
     const status = fillPct >= 100 ? 'harvested' : 'active';
+    const minPrice = meta.binStep ? formatPrice(binToPrice(pos.minBinId, meta.binStep, meta.decimalsX, meta.decimalsY)) : pos.minBinId;
+    const maxPrice = meta.binStep ? formatPrice(binToPrice(pos.maxBinId, meta.binStep, meta.decimalsX, meta.decimalsY)) : pos.maxBinId;
 
     html += `<div class="pos-page-row">
       <span class="pos-pool">${escapeHtml(poolName)}</span>
       <span class="pos-side ${pos.side}">${pos.side}</span>
-      <span class="pos-range">${pos.minBinId} → ${pos.maxBinId}</span>
+      <span class="pos-range">${minPrice} → ${maxPrice}</span>
       <span class="pos-filled">${fillPct}%<div class="pos-fill-bar"><div class="pos-fill-bar-inner ${pos.side}" style="width:${fillPct}%"></div></div></span>
       <span class="pos-amount">${(pos.initialAmount / 1e9).toFixed(4)}</span>
       <span class="pos-status ${status}">${status}</span>
@@ -1560,8 +1580,6 @@ async function renderPositionsPage() {
   if (countEl) countEl.textContent = positions.length;
   if (depositEl) depositEl.textContent = (totalDeposited / 1e9).toFixed(4) + ' SOL';
   if (harvestEl) harvestEl.textContent = (totalHarvested / 1e9).toFixed(4) + ' SOL';
-  const avgFill = positions.reduce((sum, p) => sum + (p.initialAmount > 0 ? p.harvestedAmount / p.initialAmount : 0), 0) / positions.length;
-  if (avgFillEl) avgFillEl.textContent = Math.round(avgFill * 100) + '%';
 
   listEl.querySelectorAll('.close-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -1989,6 +2007,7 @@ async function createPosition() {
     tx.feePayer = user;
 
     tx.partialSign(meteoraPositionKeypair);
+    await preSimulate(tx);
     showToast('Approve in wallet...', 'info');
     const openResult = await phantomSDK.solana.signAndSendTransaction(tx);
     const sig = openResult?.signature || openResult?.hash || openResult;
@@ -2967,12 +2986,9 @@ async function handleClaimAll() {
   const claimable = (state.monkeNfts || []).filter(n => n.hasBurn && n.pendingSol > 0n);
   if (claimable.length === 0) { showToast('Nothing to claim', 'info'); return; }
   const usePegged = !!CONFIG.PEGGED_MINT;
+  const MAX_CLAIMS_PER_TX = 3;
 
   try {
-    const tx = new solanaWeb3.Transaction();
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
-
     if (usePegged) {
       const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
       const [programVaultPDA] = getProgramVaultPDA();
@@ -2981,44 +2997,62 @@ async function handleClaimAll() {
       await ensureAccountsSetup(conn, user, [
         { ata: userPeggedAta, owner: user, mint: peggedMint, tokenProgram: TOKEN_PROGRAM_ID },
       ]);
-      for (const nft of claimable) {
-        const nftMint = new solanaWeb3.PublicKey(nft.mint);
-        const [monkeBurnPDA] = getMonkeBurnPDA(nftMint);
-        const userNftAccount = getAssociatedTokenAddressSync(nftMint, user);
-        const claimIx = await getClaimPeggedInstructionAsync({
+    }
+
+    const claimIxs = [];
+    for (const nft of claimable) {
+      const nftMint = new solanaWeb3.PublicKey(nft.mint);
+      const [monkeBurnPDA] = getMonkeBurnPDA(nftMint);
+      const userNftAccount = getAssociatedTokenAddressSync(nftMint, user);
+      if (usePegged) {
+        const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
+        const [programVaultPDA] = getProgramVaultPDA();
+        const programVaultAta = getAssociatedTokenAddressSync(peggedMint, programVaultPDA, true);
+        const userPeggedAta = getAssociatedTokenAddressSync(peggedMint, user);
+        const ix = await getClaimPeggedInstructionAsync({
           user: asSigner(user),
           monkeBurn: address(monkeBurnPDA.toBase58()),
           userNftAccount: address(userNftAccount.toBase58()),
           programVaultPeggedAta: address(programVaultAta.toBase58()),
           userPeggedAta: address(userPeggedAta.toBase58()),
         });
-        tx.add(kitIxToWeb3(claimIx));
-      }
-    } else {
-      for (const nft of claimable) {
-        const nftMint = new solanaWeb3.PublicKey(nft.mint);
-        const [monkeBurnPDA] = getMonkeBurnPDA(nftMint);
-        const userNftAccount = getAssociatedTokenAddressSync(nftMint, user);
-        const claimIx = await getClaimInstructionAsync({
+        claimIxs.push(kitIxToWeb3(ix));
+      } else {
+        const ix = await getClaimInstructionAsync({
           user: asSigner(user),
           monkeBurn: address(monkeBurnPDA.toBase58()),
           userNftAccount: address(userNftAccount.toBase58()),
         });
-        tx.add(kitIxToWeb3(claimIx));
+        claimIxs.push(kitIxToWeb3(ix));
       }
     }
 
-    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
-    tx.recentBlockhash = blockhash;
-    tx.lastValidBlockHeight = lastValidBlockHeight;
-    tx.feePayer = user;
+    const chunks = [];
+    for (let i = 0; i < claimIxs.length; i += MAX_CLAIMS_PER_TX) {
+      chunks.push(claimIxs.slice(i, i + MAX_CLAIMS_PER_TX));
+    }
 
-    showToast('Approve in wallet...', 'info');
-    const sig = await walletSendTransaction(tx);
-    showToast('Confirming claims...', 'info');
-    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
+    let claimed = 0;
+    for (let c = 0; c < chunks.length; c++) {
+      const tx = new solanaWeb3.Transaction();
+      tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
+      tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
+      for (const ix of chunks[c]) tx.add(ix);
+
+      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+      tx.feePayer = user;
+
+      showToast(chunks.length > 1 ? `Approve batch ${c + 1}/${chunks.length}...` : 'Approve in wallet...', 'info');
+      const sig = await walletSendTransaction(tx);
+      showToast(chunks.length > 1 ? `Confirming batch ${c + 1}/${chunks.length}...` : 'Confirming claims...', 'info');
+      await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
+      claimed += chunks[c].length;
+    }
+
     const token = usePegged ? '$PEGGED' : 'SOL';
-    showToast(`Claimed ${token} from ${claimable.length} monke${claimable.length > 1 ? 's' : ''}!`, 'success');
+    showToast(`Claimed ${token} from ${claimed} monke${claimed > 1 ? 's' : ''}!`, 'success');
     renderMonkeList();
   } catch (err) {
     console.error('[monke] claim_all failed:', err);
