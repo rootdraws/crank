@@ -2021,9 +2021,9 @@ async function createPosition() {
 
     await preSimulate(tx);
     showToast('Approve in wallet...', 'info');
-    const signedTx = await phantomSDK.solana.signTransaction(tx);
-    signedTx.partialSign(meteoraPositionKeypair);
-    const sig = await conn.sendRawTransaction(signedTx.serialize());
+    tx.partialSign(meteoraPositionKeypair);
+    const result = await phantomSDK.solana.signAndSendTransaction(tx);
+    const sig = result?.signature || result?.hash;
     showToast('Confirming...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
 
