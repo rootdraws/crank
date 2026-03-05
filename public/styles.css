@@ -477,6 +477,11 @@
 
     /* ─── POSITIONS PAGE ─── all wallet positions */
 
+    #allPositionsList {
+      max-height: 336px;
+      overflow-y: auto;
+    }
+
     .pos-page-header {
       display: grid; grid-template-columns: 1.5fr 0.7fr 1.2fr 0.8fr 0.8fr 0.7fr auto auto;
       gap: 10px; padding: 10px 0;

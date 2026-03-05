@@ -2595,8 +2595,8 @@ async function renderMonkeList() {
   state.monkeNfts = nfts;
 
   if (nfts.length === 0) {
-    container.innerHTML = '<div class="empty-state">no eligible NFTs found — <a href="https://magiceden.us/marketplace/solana_monkey_business" target="_blank" rel="noopener" style="color:var(--bananas);text-decoration:none;">buy Gen2</a> · <a href="https://magiceden.us/marketplace/smb_gen3" target="_blank" rel="noopener" style="color:var(--bananas);text-decoration:none;">buy Gen3</a> · <a href="https://magiceden.io/marketplace/gooseswtf" target="_blank" rel="noopener" style="color:var(--bananas);text-decoration:none;">gooseswtf</a></div>';
-    if (frame) frame.innerHTML = '<div class="carousel-filler"><img src="/filler.svg" alt="no eligible NFTs" style="max-width:100%;border-radius:12px;opacity:0.6;" /></div>';
+    container.innerHTML = '';
+    if (frame) frame.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;"><span style="font-size:13px;color:var(--dim);line-height:1.6;font-weight:300;letter-spacing:0.3px;">Monke.Army works best if you own a monke. May we suggest purchasing an <a href="https://magiceden.io/marketplace/smb_gen3" target="_blank" rel="noopener" style="color:var(--bananas);text-decoration:none;">SMB GEN3 on Magic Eden</a>.</span></div>';
     hideCarouselNav();
     return;
   }
