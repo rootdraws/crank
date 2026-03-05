@@ -121,10 +121,24 @@ function asSigner(pubkeyOrAddress) {
 }
 
 async function preSimulate(tx) {
-  const sim = await state.connection.simulateTransaction(tx, { sigVerify: false });
-  if (sim.value.err) {
-    console.error('[monke] pre-sim failed:', sim.value.err, sim.value.logs?.join('\n'));
-    throw new Error('Transaction simulation failed: ' + JSON.stringify(sim.value.err));
+  const raw = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+  const encoded = raw.toString('base64');
+  const res = await fetch(state.connection.rpcEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'simulateTransaction',
+      params: [encoded, { sigVerify: false, encoding: 'base64', commitment: 'confirmed' }],
+    }),
+  });
+  const json = await res.json();
+  if (json.error) throw new Error('Simulation RPC error: ' + JSON.stringify(json.error));
+  const sim = json.result?.value;
+  if (sim?.err) {
+    console.error('[monke] pre-sim failed:', sim.err, sim.logs?.join('\n'));
+    throw new Error('Transaction simulation failed: ' + JSON.stringify(sim.err));
   }
 }
 
@@ -2008,8 +2022,9 @@ async function createPosition() {
     await preSimulate(tx);
     tx.partialSign(meteoraPositionKeypair);
     showToast('Approve in wallet...', 'info');
-    const openResult = await phantomSDK.solana.signAndSendTransaction(tx);
-    const sig = openResult?.signature || openResult?.hash || openResult;
+    const provider = window.phantom?.solana || window.solana;
+    const signedTx = await provider.signTransaction(tx);
+    const sig = await conn.sendRawTransaction(signedTx.serialize());
     showToast('Confirming...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
 
@@ -3310,7 +3325,7 @@ async function handleHarvestPosition(positionPDAStr, lbPairStr, ownerStr, side) 
     else if (sideEnum === 0 && b > activeId) binIds.push(b);
   }
   if (binIds.length === 0) throw new Error('No safe bins to harvest');
-  if (binIds.length > 70) binIds.length = 70;
+  if (binIds.length > 40) binIds.length = 40;
 
   const [vaultPDA] = getVaultPDA(meteoraPosition);
   const [roverAuthorityPDA] = getRoverAuthorityPDA();
