@@ -154,6 +154,38 @@ async function walletSendTransaction(tx) {
   return sig;
 }
 
+/** Fetch and cache the pool Address Lookup Table for v0 transactions */
+let _cachedALT = null;
+async function getPoolALT() {
+  if (_cachedALT) return _cachedALT;
+  const altPubkey = new solanaWeb3.PublicKey(CONFIG.POOL_ALT);
+  const res = await state.connection.getAddressLookupTable(altPubkey);
+  if (!res.value) throw new Error('ALT not found: ' + CONFIG.POOL_ALT);
+  _cachedALT = res.value;
+  return _cachedALT;
+}
+
+/** Pre-simulate a VersionedTransaction (base64-encoded, sigVerify: false) */
+async function preSimulateVersioned(vtx) {
+  const encoded = btoa(String.fromCharCode(...vtx.serialize()));
+  const res = await fetch(state.connection.rpcEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1,
+      method: 'simulateTransaction',
+      params: [encoded, { sigVerify: false, encoding: 'base64', commitment: 'confirmed' }],
+    }),
+  });
+  const json = await res.json();
+  if (json.error) throw new Error('Simulation RPC error: ' + JSON.stringify(json.error));
+  const sim = json.result?.value;
+  if (sim?.err) {
+    console.error('[monke] pre-sim (versioned) failed:', sim.err, sim.logs?.join('\n'));
+    throw new Error('Transaction simulation failed: ' + JSON.stringify(sim.err));
+  }
+}
+
 /** Confirm tx AND check for on-chain errors (confirmTransaction alone doesn't throw on program failures) */
 async function confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight) {
   const confirmation = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
@@ -2009,21 +2041,30 @@ async function createPosition() {
       if (bmIdx >= 0) openWeb3Ix.keys[bmIdx].isWritable = true;
     }
 
-    const tx = new solanaWeb3.Transaction();
-    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
-    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
-    tx.add(openWeb3Ix);
+    const altAccount = await getPoolALT();
+
+    const ixs = [
+      solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS),
+      openWeb3Ix,
+    ];
 
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
-    tx.recentBlockhash = blockhash;
-    tx.lastValidBlockHeight = lastValidBlockHeight;
-    tx.feePayer = user;
+    const messageV0 = new solanaWeb3.TransactionMessage({
+      payerKey: user,
+      recentBlockhash: blockhash,
+      instructions: ixs,
+    }).compileToV0Message([altAccount]);
 
-    await preSimulate(tx);
+    const vtx = new solanaWeb3.VersionedTransaction(messageV0);
+
+    vtx.sign([meteoraPositionKeypair]);
+
+    await preSimulateVersioned(vtx);
     showToast('Approve in wallet...', 'info');
-    tx.partialSign(meteoraPositionKeypair);
-    const result = await phantomSDK.solana.signAndSendTransaction(tx);
-    const sig = result?.signature || result?.hash;
+    const result = await phantomSDK.solana.signAndSendTransaction(vtx);
+    const sig = result?.signature || result?.hash || (typeof result === 'string' ? result : undefined);
+    if (!sig) throw new Error('Wallet returned no transaction signature');
     showToast('Confirming...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
 
