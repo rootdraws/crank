@@ -1426,9 +1426,73 @@
           "writable": true
         },
         {
+          "name": "position_counter",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  95,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              },
+              {
+                "kind": "account",
+                "path": "lb_pair"
+              }
+            ]
+          }
+        },
+        {
           "name": "meteora_position",
           "writable": true,
-          "signer": true
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  101,
+                  116,
+                  101,
+                  111,
+                  114,
+                  97,
+                  95,
+                  112,
+                  111,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              },
+              {
+                "kind": "account",
+                "path": "lb_pair"
+              },
+              {
+                "kind": "account",
+                "path": "position_counter.count",
+                "account": "PositionCounter"
+              }
+            ]
+          }
         },
         {
           "name": "bin_array_bitmap_ext"
@@ -2486,6 +2550,19 @@
       ]
     },
     {
+      "name": "PositionCounter",
+      "discriminator": [
+        218,
+        67,
+        231,
+        60,
+        108,
+        121,
+        38,
+        234
+      ]
+    },
+    {
       "name": "RoverAuthority",
       "discriminator": [
         65,
@@ -3167,6 +3244,26 @@
           {
             "name": "created_at",
             "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PositionCounter",
+      "docs": [
+        "Per-user-per-pool counter for deterministic meteora position PDA derivation.",
+        "Enables multiple positions per pool without requiring a keypair signer."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "count",
+            "type": "u64"
           },
           {
             "name": "bump",

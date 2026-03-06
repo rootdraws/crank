@@ -64,6 +64,7 @@ export type OpenPositionV2Instruction<
   TAccountUser extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountLbPair extends string | AccountMeta<string> = string,
+  TAccountPositionCounter extends string | AccountMeta<string> = string,
   TAccountMeteoraPosition extends string | AccountMeta<string> = string,
   TAccountBinArrayBitmapExt extends string | AccountMeta<string> = string,
   TAccountReserveX extends string | AccountMeta<string> = string,
@@ -97,9 +98,11 @@ export type OpenPositionV2Instruction<
       TAccountLbPair extends string
         ? WritableAccount<TAccountLbPair>
         : TAccountLbPair,
+      TAccountPositionCounter extends string
+        ? WritableAccount<TAccountPositionCounter>
+        : TAccountPositionCounter,
       TAccountMeteoraPosition extends string
-        ? WritableSignerAccount<TAccountMeteoraPosition> &
-            AccountSignerMeta<TAccountMeteoraPosition>
+        ? WritableAccount<TAccountMeteoraPosition>
         : TAccountMeteoraPosition,
       TAccountBinArrayBitmapExt extends string
         ? ReadonlyAccount<TAccountBinArrayBitmapExt>
@@ -212,6 +215,7 @@ export type OpenPositionV2AsyncInput<
   TAccountUser extends string = string,
   TAccountConfig extends string = string,
   TAccountLbPair extends string = string,
+  TAccountPositionCounter extends string = string,
   TAccountMeteoraPosition extends string = string,
   TAccountBinArrayBitmapExt extends string = string,
   TAccountReserveX extends string = string,
@@ -234,7 +238,8 @@ export type OpenPositionV2AsyncInput<
   user: TransactionSigner<TAccountUser>;
   config?: Address<TAccountConfig>;
   lbPair: Address<TAccountLbPair>;
-  meteoraPosition: TransactionSigner<TAccountMeteoraPosition>;
+  positionCounter?: Address<TAccountPositionCounter>;
+  meteoraPosition: Address<TAccountMeteoraPosition>;
   binArrayBitmapExt: Address<TAccountBinArrayBitmapExt>;
   reserveX: Address<TAccountReserveX>;
   reserveY: Address<TAccountReserveY>;
@@ -263,6 +268,7 @@ export async function getOpenPositionV2InstructionAsync<
   TAccountUser extends string,
   TAccountConfig extends string,
   TAccountLbPair extends string,
+  TAccountPositionCounter extends string,
   TAccountMeteoraPosition extends string,
   TAccountBinArrayBitmapExt extends string,
   TAccountReserveX extends string,
@@ -287,6 +293,7 @@ export async function getOpenPositionV2InstructionAsync<
     TAccountUser,
     TAccountConfig,
     TAccountLbPair,
+    TAccountPositionCounter,
     TAccountMeteoraPosition,
     TAccountBinArrayBitmapExt,
     TAccountReserveX,
@@ -313,6 +320,7 @@ export async function getOpenPositionV2InstructionAsync<
     TAccountUser,
     TAccountConfig,
     TAccountLbPair,
+    TAccountPositionCounter,
     TAccountMeteoraPosition,
     TAccountBinArrayBitmapExt,
     TAccountReserveX,
@@ -341,6 +349,7 @@ export async function getOpenPositionV2InstructionAsync<
     user: { value: input.user ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
+    positionCounter: { value: input.positionCounter ?? null, isWritable: true },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
     binArrayBitmapExt: {
       value: input.binArrayBitmapExt ?? null,
@@ -383,6 +392,18 @@ export async function getOpenPositionV2InstructionAsync<
       ],
     });
   }
+  if (!accounts.positionCounter.value) {
+    accounts.positionCounter.value = await getProgramDerivedAddress({
+      programAddress,
+      seeds: [
+        getBytesEncoder().encode(
+          new Uint8Array([112, 111, 115, 95, 99, 111, 117, 110, 116, 101, 114])
+        ),
+        getAddressEncoder().encode(expectAddress(accounts.user.value)),
+        getAddressEncoder().encode(expectAddress(accounts.lbPair.value)),
+      ],
+    });
+  }
   if (!accounts.position.value) {
     accounts.position.value = await getProgramDerivedAddress({
       programAddress,
@@ -418,6 +439,7 @@ export async function getOpenPositionV2InstructionAsync<
       getAccountMeta(accounts.user),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.lbPair),
+      getAccountMeta(accounts.positionCounter),
       getAccountMeta(accounts.meteoraPosition),
       getAccountMeta(accounts.binArrayBitmapExt),
       getAccountMeta(accounts.reserveX),
@@ -446,6 +468,7 @@ export async function getOpenPositionV2InstructionAsync<
     TAccountUser,
     TAccountConfig,
     TAccountLbPair,
+    TAccountPositionCounter,
     TAccountMeteoraPosition,
     TAccountBinArrayBitmapExt,
     TAccountReserveX,
@@ -471,6 +494,7 @@ export type OpenPositionV2Input<
   TAccountUser extends string = string,
   TAccountConfig extends string = string,
   TAccountLbPair extends string = string,
+  TAccountPositionCounter extends string = string,
   TAccountMeteoraPosition extends string = string,
   TAccountBinArrayBitmapExt extends string = string,
   TAccountReserveX extends string = string,
@@ -493,7 +517,8 @@ export type OpenPositionV2Input<
   user: TransactionSigner<TAccountUser>;
   config: Address<TAccountConfig>;
   lbPair: Address<TAccountLbPair>;
-  meteoraPosition: TransactionSigner<TAccountMeteoraPosition>;
+  positionCounter: Address<TAccountPositionCounter>;
+  meteoraPosition: Address<TAccountMeteoraPosition>;
   binArrayBitmapExt: Address<TAccountBinArrayBitmapExt>;
   reserveX: Address<TAccountReserveX>;
   reserveY: Address<TAccountReserveY>;
@@ -522,6 +547,7 @@ export function getOpenPositionV2Instruction<
   TAccountUser extends string,
   TAccountConfig extends string,
   TAccountLbPair extends string,
+  TAccountPositionCounter extends string,
   TAccountMeteoraPosition extends string,
   TAccountBinArrayBitmapExt extends string,
   TAccountReserveX extends string,
@@ -546,6 +572,7 @@ export function getOpenPositionV2Instruction<
     TAccountUser,
     TAccountConfig,
     TAccountLbPair,
+    TAccountPositionCounter,
     TAccountMeteoraPosition,
     TAccountBinArrayBitmapExt,
     TAccountReserveX,
@@ -571,6 +598,7 @@ export function getOpenPositionV2Instruction<
   TAccountUser,
   TAccountConfig,
   TAccountLbPair,
+  TAccountPositionCounter,
   TAccountMeteoraPosition,
   TAccountBinArrayBitmapExt,
   TAccountReserveX,
@@ -598,6 +626,7 @@ export function getOpenPositionV2Instruction<
     user: { value: input.user ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
+    positionCounter: { value: input.positionCounter ?? null, isWritable: true },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
     binArrayBitmapExt: {
       value: input.binArrayBitmapExt ?? null,
@@ -643,6 +672,7 @@ export function getOpenPositionV2Instruction<
       getAccountMeta(accounts.user),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.lbPair),
+      getAccountMeta(accounts.positionCounter),
       getAccountMeta(accounts.meteoraPosition),
       getAccountMeta(accounts.binArrayBitmapExt),
       getAccountMeta(accounts.reserveX),
@@ -671,6 +701,7 @@ export function getOpenPositionV2Instruction<
     TAccountUser,
     TAccountConfig,
     TAccountLbPair,
+    TAccountPositionCounter,
     TAccountMeteoraPosition,
     TAccountBinArrayBitmapExt,
     TAccountReserveX,
@@ -701,24 +732,25 @@ export type ParsedOpenPositionV2Instruction<
     user: TAccountMetas[0];
     config: TAccountMetas[1];
     lbPair: TAccountMetas[2];
-    meteoraPosition: TAccountMetas[3];
-    binArrayBitmapExt: TAccountMetas[4];
-    reserveX: TAccountMetas[5];
-    reserveY: TAccountMetas[6];
-    position: TAccountMetas[7];
-    vault: TAccountMetas[8];
-    userTokenAccount: TAccountMetas[9];
-    vaultTokenX: TAccountMetas[10];
-    vaultTokenY: TAccountMetas[11];
-    tokenXProgram: TAccountMetas[12];
-    tokenYProgram: TAccountMetas[13];
-    systemProgram: TAccountMetas[14];
-    binArrayLower: TAccountMetas[15];
-    binArrayUpper: TAccountMetas[16];
-    eventAuthority: TAccountMetas[17];
-    dlmmProgram: TAccountMetas[18];
-    tokenXMint: TAccountMetas[19];
-    tokenYMint: TAccountMetas[20];
+    positionCounter: TAccountMetas[3];
+    meteoraPosition: TAccountMetas[4];
+    binArrayBitmapExt: TAccountMetas[5];
+    reserveX: TAccountMetas[6];
+    reserveY: TAccountMetas[7];
+    position: TAccountMetas[8];
+    vault: TAccountMetas[9];
+    userTokenAccount: TAccountMetas[10];
+    vaultTokenX: TAccountMetas[11];
+    vaultTokenY: TAccountMetas[12];
+    tokenXProgram: TAccountMetas[13];
+    tokenYProgram: TAccountMetas[14];
+    systemProgram: TAccountMetas[15];
+    binArrayLower: TAccountMetas[16];
+    binArrayUpper: TAccountMetas[17];
+    eventAuthority: TAccountMetas[18];
+    dlmmProgram: TAccountMetas[19];
+    tokenXMint: TAccountMetas[20];
+    tokenYMint: TAccountMetas[21];
   };
   data: OpenPositionV2InstructionData;
 };
@@ -731,7 +763,7 @@ export function parseOpenPositionV2Instruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedOpenPositionV2Instruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 21) {
+  if (instruction.accounts.length < 22) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -747,6 +779,7 @@ export function parseOpenPositionV2Instruction<
       user: getNextAccount(),
       config: getNextAccount(),
       lbPair: getNextAccount(),
+      positionCounter: getNextAccount(),
       meteoraPosition: getNextAccount(),
       binArrayBitmapExt: getNextAccount(),
       reserveX: getNextAccount(),

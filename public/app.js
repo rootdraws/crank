@@ -463,6 +463,22 @@ function getVaultPDA(meteoraPosition) {
   );
 }
 
+function getPositionCounterPDA(user, lbPair) {
+  return solanaWeb3.PublicKey.findProgramAddressSync(
+    [new TextEncoder().encode('pos_counter'), user.toBytes(), lbPair.toBytes()],
+    new solanaWeb3.PublicKey(CONFIG.CORE_PROGRAM_ID)
+  );
+}
+
+function getMeteoraPosiitonPDA(user, lbPair, count) {
+  const countBuf = new Uint8Array(8);
+  new DataView(countBuf.buffer).setBigUint64(0, BigInt(count), true);
+  return solanaWeb3.PublicKey.findProgramAddressSync(
+    [new TextEncoder().encode('meteora_pos'), user.toBytes(), lbPair.toBytes(), countBuf],
+    new solanaWeb3.PublicKey(CONFIG.CORE_PROGRAM_ID)
+  );
+}
+
 function getRoverAuthorityPDA() {
   return solanaWeb3.PublicKey.findProgramAddressSync(
     [new TextEncoder().encode('rover_authority')],
@@ -1983,10 +1999,20 @@ async function createPosition() {
     const depositMint = state.side === 'sell' ? cpi.tokenXMint : cpi.tokenYMint;
     const depositTokenProgramId = state.side === 'sell' ? cpi.tokenXProgramId : cpi.tokenYProgramId;
 
-    const meteoraPositionKeypair = solanaWeb3.Keypair.generate();
+    // Derive meteora position as PDA (single-signer: no keypair needed)
+    const [counterPDA] = getPositionCounterPDA(user, cpi.lbPair);
+    let posCounter = 0;
+    try {
+      const counterInfo = await conn.getAccountInfo(counterPDA);
+      if (counterInfo && counterInfo.data.length >= 16) {
+        posCounter = Number(new DataView(counterInfo.data.buffer, counterInfo.data.byteOffset).getBigUint64(8, true));
+      }
+    } catch { /* counter doesn't exist yet — first position, count = 0 */ }
+    const [meteoraPositionPDA] = getMeteoraPosiitonPDA(user, cpi.lbPair, posCounter);
+
     const [configPDA] = getConfigPDA();
-    const [positionPDA] = getPositionPDA(meteoraPositionKeypair.publicKey);
-    const [vaultPDA] = getVaultPDA(meteoraPositionKeypair.publicKey);
+    const [positionPDA] = getPositionPDA(meteoraPositionPDA);
+    const [vaultPDA] = getVaultPDA(meteoraPositionPDA);
 
     const userTokenAccount = getAssociatedTokenAddressSync(depositMint, user, false, depositTokenProgramId);
 
@@ -2014,7 +2040,8 @@ async function createPosition() {
     const openIx = await getOpenPositionV2InstructionAsync({
       user: asSigner(user),
       lbPair: address(cpi.lbPair.toBase58()),
-      meteoraPosition: asSigner(meteoraPositionKeypair.publicKey),
+      positionCounter: address(counterPDA.toBase58()),
+      meteoraPosition: address(meteoraPositionPDA.toBase58()),
       binArrayBitmapExt: address(cpi.binArrayBitmapExt.toBase58()),
       reserveX: address(cpi.reserveX.toBase58()),
       reserveY: address(cpi.reserveY.toBase58()),
@@ -2058,8 +2085,7 @@ async function createPosition() {
 
     const vtx = new solanaWeb3.VersionedTransaction(messageV0);
 
-    vtx.sign([meteoraPositionKeypair]);
-
+    // No pre-signing — single signer (user wallet only). Lighthouse can inject guards.
     showToast('Approve in wallet...', 'info');
     const result = await phantomSDK.solana.signAndSendTransaction(vtx);
     const sig = result?.signature || result?.hash || (typeof result === 'string' ? result : undefined);

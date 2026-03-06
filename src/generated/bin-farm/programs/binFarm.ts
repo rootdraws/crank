@@ -50,6 +50,7 @@ export const BIN_FARM_PROGRAM_ADDRESS =
 export enum BinFarmAccount {
   Config,
   Position,
+  PositionCounter,
   RoverAuthority,
   Vault,
 }
@@ -79,6 +80,17 @@ export function identifyBinFarmAccount(
     )
   ) {
     return BinFarmAccount.Position;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([218, 67, 231, 60, 108, 121, 38, 234])
+      ),
+      0
+    )
+  ) {
+    return BinFarmAccount.PositionCounter;
   }
   if (
     containsBytes(

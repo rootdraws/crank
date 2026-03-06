@@ -156,13 +156,26 @@ pub mod bin_farm {
             ],
         )?;
 
+        // Build PDA signer seeds for meteora_position (replaces keypair signing)
+        let user_key = ctx.accounts.user.key();
+        let lb_pair_key = ctx.accounts.lb_pair.key();
+        let count_bytes = ctx.accounts.position_counter.count.to_le_bytes();
+        let meteora_pos_bump = [ctx.bumps.meteora_position];
+
         let meteora_pos_key = ctx.accounts.meteora_position.key();
+        let meteora_pos_seeds: &[&[u8]] = &[
+            b"meteora_pos",
+            user_key.as_ref(),
+            lb_pair_key.as_ref(),
+            &count_bytes,
+            &meteora_pos_bump,
+        ];
         let vault_seeds: &[&[u8]] = &[
             b"vault",
             meteora_pos_key.as_ref(),
             &[ctx.bumps.vault],
         ];
-        let signer = &[vault_seeds];
+        let signer = &[vault_seeds, meteora_pos_seeds];
 
         let bin_array_lower = ctx.accounts.bin_array_lower.to_account_info();
         let bin_array_upper = ctx.accounts.bin_array_upper.to_account_info();
@@ -233,6 +246,13 @@ pub mod bin_farm {
         let vault = &mut ctx.accounts.vault;
         vault.position = ctx.accounts.meteora_position.key();
         vault.bump = ctx.bumps.vault;
+
+        // Persist counter bump on first creation, then increment
+        let counter = &mut ctx.accounts.position_counter;
+        if counter.bump == 0 {
+            counter.bump = ctx.bumps.position_counter;
+        }
+        counter.count = counter.count.checked_add(1).ok_or(CoreError::Overflow)?;
 
         let config = &mut ctx.accounts.config;
         config.total_positions = config.total_positions.saturating_add(1);
@@ -1945,6 +1965,18 @@ impl Vault {
     pub const SIZE: usize = 8 + 32 + 1;
 }
 
+/// Per-user-per-pool counter for deterministic meteora position PDA derivation.
+/// Enables multiple positions per pool without requiring a keypair signer.
+#[account]
+pub struct PositionCounter {
+    pub count: u64,
+    pub bump: u8,
+}
+
+impl PositionCounter {
+    pub const SIZE: usize = 8 + 8 + 1;
+}
+
 /// Rover authority PDA — owns rover (bribe) positions.
 /// Harvest proceeds accumulate here. sweep_rover splits SOL 60/40: 60% to revenue_dest (bridge_vault), 40% to Config.bot.
 #[account]
@@ -1982,6 +2014,7 @@ pub struct Initialize<'info> {
 }
 
 /// Token-2022 compatible open_position. All CPI via V2 variants.
+/// Single-signer: meteora_position is a PDA (signed via invoke_signed), not a keypair.
 #[derive(Accounts)]
 #[instruction(amount: u64, min_bin_id: i32, max_bin_id: i32, side: Side)]
 pub struct OpenPositionV2<'info> {
@@ -1995,8 +2028,22 @@ pub struct OpenPositionV2<'info> {
     #[account(mut)]
     pub lb_pair: AccountInfo<'info>,
 
-    #[account(mut)]
-    pub meteora_position: Signer<'info>,
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = PositionCounter::SIZE,
+        seeds = [b"pos_counter", user.key().as_ref(), lb_pair.key().as_ref()],
+        bump
+    )]
+    pub position_counter: Account<'info, PositionCounter>,
+
+    /// CHECK: PDA signed via invoke_signed — replaces the old keypair Signer
+    #[account(
+        mut,
+        seeds = [b"meteora_pos", user.key().as_ref(), lb_pair.key().as_ref(), &position_counter.count.to_le_bytes()],
+        bump
+    )]
+    pub meteora_position: UncheckedAccount<'info>,
 
     /// CHECK: Bitmap extension (pass DLMM program ID if none).
     pub bin_array_bitmap_ext: AccountInfo<'info>,
