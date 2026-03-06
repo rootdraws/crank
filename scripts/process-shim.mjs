@@ -1,5 +1,9 @@
 import { Buffer as BufferPolyfill } from 'buffer';
 
+if (typeof globalThis !== 'undefined' && !globalThis.Buffer) {
+  globalThis.Buffer = BufferPolyfill;
+}
+
 export const Buffer = BufferPolyfill;
 
 export const process = {
