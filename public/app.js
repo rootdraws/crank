@@ -2060,7 +2060,6 @@ async function createPosition() {
 
     vtx.sign([meteoraPositionKeypair]);
 
-    await preSimulateVersioned(vtx);
     showToast('Approve in wallet...', 'info');
     const result = await phantomSDK.solana.signAndSendTransaction(vtx);
     const sig = result?.signature || result?.hash || (typeof result === 'string' ? result : undefined);
