@@ -3320,7 +3320,7 @@
       "name": "RoverAuthority",
       "docs": [
         "Rover authority PDA — owns rover (bribe) positions.",
-        "Harvest proceeds accumulate here. sweep_rover splits SOL 60/40: 60% to revenue_dest (bridge_vault), 40% to Config.bot."
+        "Harvest proceeds accumulate here. sweep_rover splits SOL 50/50: 50% to revenue_dest (bridge_vault), 50% to Config.bot."
       ],
       "type": {
         "kind": "struct",

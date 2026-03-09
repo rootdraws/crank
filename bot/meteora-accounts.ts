@@ -1,7 +1,7 @@
 /**
  * meteora-accounts.ts
  *
- * Shared Meteora DLMM account resolution for monke.army bot.
+ * Shared Meteora DLMM account resolution for crank.money bot.
  * Used by both harvest-executor (harvests/closes) and keeper (fee rovers/cleanup).
  *
  * Extracted from harvest-executor.ts to allow both modules to build

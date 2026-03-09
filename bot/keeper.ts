@@ -1,8 +1,8 @@
 /**
  * keeper.ts
  *
- * Saturday sequencer for monke.army.
- * 6-step weekly sequence — no phases, no state machine. 60/40 split (monke holders / bot operations).
+ * Saturday sequencer for crank.money.
+ * 6-step weekly sequence — no phases, no state machine. 50/50 split (holders / bot operations).
  *
  * Saturday sequence:
  *   1. close_rover_wsol    — WSOL ATA → native SOL on rover_authority
@@ -147,7 +147,7 @@ export class MonkeKeeper {
 
   /**
    * Main entry point. Called by the orchestrator on each keeper tick.
-   * 60/40 split — 60% to monke holders, 40% to bot (Config.bot).
+   * 50/50 split — 50% to holders, 50% to bot (Config.bot).
    *
    * On Saturday (or whenever fees have accumulated):
    *   1. close_rover_wsol    — WSOL ATA → native SOL on rover_authority
@@ -208,7 +208,7 @@ export class MonkeKeeper {
   // ─── CRANK: SWEEP ROVER (SOL) ───
 
   /**
-   * Sweep SOL from rover_authority — 60% to bridge_vault (monke holders), 40% to bot (operations).
+   * Sweep SOL from rover_authority — 50% to bridge_vault (holders), 50% to bot (operations).
    */
   private async crankSweepRover(): Promise<void> {
     try {
@@ -232,7 +232,7 @@ export class MonkeKeeper {
         'sweep_rover'
       );
 
-      logger.info('  [keeper] ✓ sweep_rover — 60% to dist_pool, 40% to bot');
+      logger.info('  [keeper] ✓ sweep_rover — 50% to dist_pool, 50% to bot');
     } catch (e: any) {
       const isNothingToSweep = e.error?.errorCode?.code === 'NothingToSweep';
       if (isNothingToSweep) {
@@ -572,7 +572,7 @@ export class MonkeKeeper {
   /**
    * Single-transaction deposit. Moves all $PEGGED from dist_pool ATA
    * into the program vault ATA and updates the global accumulator.
-   * Monke holders claim their share whenever they want (pull model).
+   * Holders claim their share whenever they want (pull model).
    * O(1) — one tx, one instruction, regardless of holder count.
    *
    * Falls back to legacy deposit_sol if $PEGGED is not configured.
@@ -662,7 +662,7 @@ export class MonkeKeeper {
 
   /**
    * Close rover positions where all bins are empty (fully converted + harvested).
-   * Rent refund goes to rover_authority → swept via sweep_rover (60/40 split).
+   * Rent refund goes to rover_authority → swept via sweep_rover (50/50 split).
    */
   private async crankCloseExhaustedRovers(): Promise<void> {
     try {

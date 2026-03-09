@@ -541,6 +541,14 @@ pub mod monke_bananas {
         Ok(())
     }
 
+    /// Set the burn mint address ($CRANK). Admin-only.
+    /// Allows migrating to a new burn token without reinitializing state.
+    pub fn set_bananas_mint(ctx: Context<AdminOnly>, new_mint: Pubkey) -> Result<()> {
+        ctx.accounts.state.bananas_mint = new_mint;
+        msg!("Burn mint set to {}", new_mint);
+        Ok(())
+    }
+
     /// Compost a dead monke — clean up MonkeBurn PDA for a burned SMB Gen2 NFT.
     /// Permissionless. Anyone can call for any NFT whose mint supply == 0.
     /// Unclaimed SOL returns to program_vault (redistributed to living monkes).

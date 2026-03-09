@@ -1,190 +1,170 @@
-# monke.army
+# crank.money
 
-**Limit orders that earn fees, instead of paying them.** Sell the rips. Buy the dips. Monke's Harvester protects your position against round-trip loss.
+**Limit orders that earn fees. Burn $CRANK, earn $PEGGED.**
 
-Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream and NFT revenue sharing (SMB Gen2/Gen3 + GooseDAO pixel geese) on Solana.
+Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream and NFT revenue sharing (SMB Gen2/Gen3) on Solana.
 
 ## Programs
 
 | Program | Description |
 |---------|-------------|
-| `core.rs` (bin_farm) | Position management. Open, harvest, close. All CPI via V2 variants (Token-2022 native). Performance fee on converted output — all fees → rover_authority → `sweep_rover` splits 60/40 (bridge_vault + Config.bot). TOKEN fees → rover_authority (BidAskImBalanced DLMM recycling, no market dump). Permissionless fallback on harvest + close (heartbeat + staleness). Rovers use BidAskImBalanced distribution. Emergency escape hatch for deprecated pools. |
-| `monke_bananas.rs` | Feed BANANAS to your Monke (or Goose). Burn $BANANAS (1M per tx, unlimited stacking) against SMB Gen2, Gen3, or gooseswtf pixel goose NFTs — all 1x weight. gooseswtf requires GooseDAO Core membership on first feed only (once in, always in). MasterChef accumulator distributes $PEGGED to all fed NFT holders. `deposit_pegged` / `claim_pegged` for token-based distribution. `compost_monke`: permissionless cleanup of burned NFTs. |
-| `pegged_bridge.rs` | SOL → $PEGGED bridge. Single permissionless crank: `stake_and_forward` deposits SOL into the MonkeDAO SPL stake pool, receives $PEGGED, forwards it to the dist_pool ATA on monke_bananas. |
+| `bin_farm` | Position wrapper on Meteora DLMM.|
+| `bin_farm` (sweep_rover) | 50% of protocol fees are swept to $PEGGED. 50% to development. Program also manages Protocol Owned DLMM positions to reduce sell pressure on TOKEN fees.|
+| `monke_bananas.rs` | Burn 1M $CRANK, Earn $PEGGED. MasterChef contract distributes $PEGGED amongst NFT holders who have burned $CRANK. |
+| `pegged_bridge.rs` | Deposits SOL into SPL multi-stake pool (Helius + LP Army + MonkeDAO validators), receives $PEGGED, forwards to dist_pool ATA on monke_bananas. |
 
-## How It Works
+## The Problem
 
-Users deposit single-sided liquidity into Meteora DLMM bins via the core program — sell the rips (tokens above price) or buy the dips (SOL below price). A vault PDA owns the Meteora position on behalf of the user. As price moves through bins, Monke's Harvester detects fully-converted bins in sub-second via Helius LaserStream gRPC and calls `harvest_bins` to withdraw them. Tokens flow Meteora → vault ATA → owner wallet in a single instruction.
+Your market buys and sells are clumsy. They slam the orderbook, and slippage eats away at your profits.
 
-Performance fee (0.3%) is taken on converted output only. All fees flow through rover_authority. `sweep_rover` splits 60/40: half to bridge_vault (→ $PEGGED for monke holders), half to `Config.bot` (operations). Hardcoded on-chain. The bridge vault's SOL is staked to the MonkeDAO validator via `stake_and_forward`, minting $PEGGED — a yield-bearing LST that appreciates each epoch. TOKEN fees route to rover_authority for BidAskImBalanced DLMM recycling — no market dumping on thin meme pools. Unconverted deposits return untaxed.
+Your LP positions get bled out by Impermanent Loss.
 
-### Key Instructions
+You need Automations, but Jupiter charges you 0.12% as a platform fee, plus LP fees and slippage on execution.
 
-```
-open_position_v2(pool, amount, min_bin, max_bin, side, max_active_bin_slippage)
-  → No fee. 100% deposited into Meteora bins.
-  → `side` is derived on-chain from active_id (parameter ignored).
-  → Token-2022 native. All CPI via V2 variants.
+---
 
-harvest_bins(bin_ids: Vec<i32>)
-  → SOL fees → rover_authority → sweep_rover → 60% bridge_vault (→ $PEGGED) + 40% bot. TOKEN fees → rover_authority (DLMM recycling)
-  → Remainder → owner. Position stays open.
-  → Permissionless fallback: anyone can call when bot is stale,
-    earns a keeper tip from the fee.
+## The Solution
 
-close_position()
-  → Same fee mechanic + permissionless fallback.
-  → Meteora position closed, rent refunded to owner.
+### Yield Bearing, Ranged Limit Orders.
 
-user_close()
-  → User-initiated close. Same fee. No free exits.
+Set your range as a single-sided LP. If price moves through your range, Crank's Harvester captures that profit, or accumulation, and pulls it into your wallet.
 
-feed_monke(nft_mint)
-  → Burn 1M $BANANAS, assigned to an SMB Gen2 or Gen3 NFT you hold.
-  → All collections = +1 weight per feed. Burns stack. No cap.
+**Sell the Rips.** Crank's Harvester pulls your SOL before the chart reverses.
 
-feed_goose(goose_nft_mint)
-  → Burn 1M $BANANAS, assigned to a gooseswtf pixel goose NFT you hold.
-  → Requires GooseDAO Core membership on first feed only (once in, always in).
-  → +1 weight per feed. Same MasterChef accumulator as monkes.
-  → On subsequent feeds, GooseDAO membership is not re-checked.
+**Buy the Dips.** Crank's Harvester lets you build a position over a range of lows.
 
-compost_monke()
-  → Permissionless. Clean up MonkeBurn PDA for burned NFTs (supply == 0).
-  → Subtracts dead weight. Rent refund to caller.
+**How it works:**
 
-open_rover_position(amount, bin_step)
-  → Deposit tokens into sell-side BidAskImBalanced DLMM position.
-  → active_id read from on-chain lb_pair (never trust caller).
-  → Position owned by rover_authority PDA. One-way. No refunds.
+1. User deposits SOL or TOKEN into bins above/below current price.
+2. Position acts as a limit order, earning LP fees as the position fills.
+3. Price sweeps through bins, and your tokens are converted via Meteora DLMM.
+4. Crank's Harvester detects fully-converted bins via Helius LaserStream gRPC.
+5. Harvester calls `harvest_bins` with those specific bin IDs.
+6. Anchor program CPIs to Meteora `removeLiquidity` for only those bins.
+7. Harvested tokens flow directly into the owner's wallet.
+8. Remaining bins stay open, waiting to be filled.
 
-open_fee_rover(amount, bin_step)
-  → Bot-gated. Opens BidAskImBalanced position from accumulated fee tokens
-    in rover_authority ATAs. Bot pays rent.
+### Crank's Harvester — Powered by Helius LaserStream
 
-sweep_rover()
-  → Permissionless. SOL from rover_authority → 60% bridge_vault + 40% Config.bot (operations).
+A pipeline of information coming straight from the source, enables sub-second Crank Automations, to protect your trade.
 
-close_rover_token_account()
-  → Permissionless. Closes any token account owned by rover_authority.
-  → For WSOL: unwraps to native SOL on rover_authority (picked up by sweep_rover).
-  → For empty ATAs: reclaims rent to rover_authority.
+### Permissionless Harvesting - Decentralized Backup
 
-stake_and_forward()  [pegged_bridge]
-  → Permissionless crank. bridge_vault SOL → SPL stake pool deposit
-    → $PEGGED minted → dist_pool ATA (monke_bananas).
+If our bot goes down, you can always harvest or close your position by yourself, or another Crank user can do so for you, and earn a small fee.
 
-deposit_pegged()  [monke_bananas]
-  → Permissionless. dist_pool $PEGGED → program_vault $PEGGED.
-    Accumulator updated. Units shift from lamports to $PEGGED base units.
+Every step in the revenue pipeline is permissionless. Harvest, close, sweep, distribute, deposit — all crankable by anyone. crank.money is built to be fast and convenient through running our own infrastructure, but the system is resilient without it. 
 
-claim_pegged()  [monke_bananas]
-  → Claim accrued $PEGGED from program_vault → user's $PEGGED ATA.
-    Weight-proportional via MasterChef accumulator.
-```
+### Performance Fee
 
-### Bin Detection Logic — Sell the Rips, Buy the Dips
+Zero fee on deposit. 0.3% on converted output only.
 
-```
-SELL THE RIPS (token deposited above price → SOL output):
-  Safe bins = bins where binId < activeId (price ripped above them)
-  These hold Y (SOL). Harvest Y.
+The 0.3% only applies to the side that converted (SOL you received from a sell, or tokens you received from a buy).
 
-BUY THE DIPS (SOL deposited below price → token output):
-  Safe bins = bins where binId > activeId (price dipped below them)
-  These hold X (token). Harvest X.
-```
+LP fees can be claimed anytime at zero cost. Unclaimed LP fees at close are included in the 0.3% — effectively dust.
+
+---
+
+## Methodology: Gamma Scalping
+
+crank.money is a form of active liquidity provision. Trade flow routes through your ranges, filling your orders. The Harvester withdraws that liquidity from the market once filled — widening the bandwidth on fill, then closing the aperture by withdrawing your LP.
+
+Meme tokens with low liquidity and fat orders have structural slippage — an acceleration of price toward the outer bands of available liquidity. This acceleration of price is a byproduct of AMM curves, and is called gamma.
+
+crank.money scalps this gamma, turning it into better execution for your trades.
+
+Users are providing discretionary liquidity to the market and withdrawing on fill — imposing adverse selection on passive pools.
+
+---
+
+## Burn $CRANK, Earn $PEGGED.
+
+To support existing NFT communities, MonkeDAO has been integrated into the tokenomics of crank.money.
+
+1. Hold an eligible NFT — SMB Gen2 or SMB Gen3 to launch.
+2. Burn $CRANK to that monke.
+3. Claim $PEGGED.
+
+- 1M $CRANK minimum per burn.
+- 50% of protocol fees are converted to $PEGGED and distributed to burners.
+- 50% of protocol fees fund bot operations and builds.
+- NFTs are fully tradeable. Weight and unclaimed $PEGGED travel with the NFT.
+
+## WTF is $PEGGED.
+
+50% of Protocol Trade Fees are turned into a SOL Liquid Staking token, as those fees are deposited into three validators: 
+
+- Helius Validator
+- Meteora LP Army Validator
+- MonkeDAO Validator
+
+The $PEGGED token is Liquid Staked SOL, launched on top of Sanctum. 
+
+APRs on $PEGGED will be around 7%, depending on Solana Staking Yield Rates.
+
+## Gud Fee Tek
+
+crank.money is built on top of Meteora DLMM. This debut harvest strategy is an automation layer which when applied to pump.fun tokens ought to provide users with an advantage over their counterparties. 
+
+DLMM also enables the crank.money to form protocol owned LP positions, which reduce sell pressure on the tokens that users trade on the platform. 
+
+For example, if you are buying $CRANK at lower ranges, the protocol charges a fee on those purchases. That means that the protocol now holds some $CRANK. 
+
+Instead of selling that $CRANK immediately for SOL, a protocol owned LP position opens, and crank.money uses its own tech to convert that $CRANK into SOL as more buy pressure occures. 
+
+Meteroa DLMM is Gud Fee Tek.
+
+---
+
+## FAQ
+
+**Why Meteora DLMM?**
+Single-sided bid-ask orders in discrete price bins. crank.money watches those bins, and after they convert, pulls them back into your wallet.
+
+**Why not just use Meteora directly?**
+crank.money is an automation cooperative for yield-bearing limit orders. Our programs are a minimalist vault wrapper on DLMM positions. Our LaserStream gRPC subscription provides an economy of scale — one connection monitoring all positions in the wrapper.
+
+crank.money helps pump.fun traders get better buys and sells, and offers an edge to compete with other more sophisticated players in that ecosystem.
+
+**Did you say $CRANK gets burned?**
+Yep. The Dev doesn't sell $CRANK -- just burns it.
+50% of protocol fees go to burners, so you might consider doing that as well.
+
+**Why Solana Monke Business?**
+SMB Gen2 & Gen3 NFTs have great taste, and crank.money will be submitting as a project to the MonkeFoundry Incubator. 
+
+**Does it work with Token-2022 / pump.fun tokens?**
+Yes. Runtime detection, V1/V2 CPI branching. Zero additional configuration. Exception: Token-2022 mints with active transfer hooks are not yet supported.
+
+---
+
+*crank.money*
+
 
 ## Project Structure
 
 ```
 monke-army/
-├── programs/                      # Anchor workspace (build targets)
-│   ├── bin-farm/src/
-│   │   ├── lib.rs                 # Core program (positions, harvest, close, fees, rovers)
-│   │   └── meteora_dlmm_cpi.rs   # Meteora DLMM CPI wrappers (V2 only)
-│   ├── monke-bananas/src/lib.rs   # Burn $BANANAS, stack weight, claim $PEGGED, compost dead monkes
-│   └── pegged-bridge/src/lib.rs   # SOL → $PEGGED bridge (stake_and_forward via SPL stake pool)
-├── src/
-│   └── generated/                 # Codama-generated TypeScript clients (bin-farm + monke-bananas + pegged-bridge)
-├── bot/                           # Monke's Harvester (off-chain infrastructure)
-│   ├── anchor-harvest-bot.ts      # Orchestrator + health endpoint + relay wiring
-│   ├── geyser-subscriber.ts       # Helius LaserStream gRPC — sub-second bin detection
-│   ├── relay-server.ts            # WebSocket + REST relay for frontend (/ws + /api/*)
-│   ├── meteora-accounts.ts        # Shared Meteora CPI account resolution + DLMM cache
-│   ├── harvest-executor.ts        # Job queue: harvest/close tx (emits events to relay)
-│   ├── keeper.ts                  # MonkeKeeper: Saturday sequencer (incl. stake_and_forward + deposit_pegged)
-│   ├── retry.ts                   # Shared withRetry (exponential backoff, 3 retries)
-│   └── logger.ts                  # Pino structured logging
-├── public/                        # Frontend: Trade / Positions / Rank / Ops / Recon
-│   ├── index.html                 # Navigation sigil astrolabe + all page layouts
-│   ├── styles.css                 # Military monke color palette + all page styles
-│   ├── app.js                     # Page logic, relay WebSocket client, Codama instruction builders
-│   ├── config.json                # Program IDs, RPC, BOT_RELAY_URL (gitignored — see config.example.json)
-│   └── config.example.json        # Template for config.json (no API keys)
-├── scripts/
-│   ├── deploy-and-init.mjs        # Deploy + init programs atomically (anti-front-run)
-│   ├── build-frontend.mjs         # Frontend build: bundle app.js (Codama + @solana/kit)
-│   ├── generate-clients.mjs       # Codama client generation from IDL → src/generated/
-│   ├── init-bridge.ts             # Initialize pegged_bridge program on-chain
-│   ├── set-pegged-and-redirect.ts # set_pegged_mint + propose_revenue_dest (bridge_vault)
-│   ├── preflight-check.ts         # Pre-deployment verification of all programs, PDAs, ATAs
-│   ├── test-close-position.ts     # Close a stuck position (mainnet)
-│   └── recycle-fee-rover.ts       # Open fee rover from accumulated token fees
-├── meteora-invent/                # Meteora DAMM v2 launch toolkit (cloned)
-│   └── studio/config/damm_v2_config.jsonc  # $BANANAS pool + Alpha Vault config
-├── Anchor.toml                    # Workspace config (3 programs, devnet + mainnet)
-├── Cargo.toml                     # Workspace root
-├── whitepaper.md                  # Product overview + mechanics
-├── TODO.md                        # Task list
-├── docs/
-│   └── addressbook.md             # Pool discovery + address book reference (API, Phase 2)
-└── ref/dlmm-sdk/                  # Cloned Meteora DLMM SDK (source of truth for CPI layouts)
+├── programs/           # Anchor workspace: bin-farm, monke-bananas, pegged-bridge
+├── bot/                # Crank's Harvester (off-chain infrastructure)
+├── public/             # Frontend: Trade / Positions / Rank / Ops / Recon
+├── scripts/            # Deploy, build, codama generation, utilities
+├── src/generated/      # Codama-generated TypeScript clients
+└── ref/dlmm-sdk/       # Cloned Meteora DLMM SDK (CPI source of truth)
 ```
 
 ## Build & Deploy
 
 ```bash
 npm install
-
-# Build program (Homebrew cargo doesn't support +toolchain — use rustup cargo)
 PATH="$HOME/.cargo/bin:$PATH" cargo-build-sbf --manifest-path programs/bin-farm/Cargo.toml
-
-# Deploy / upgrade (upgrade authority required)
 solana program deploy target/deploy/bin_farm.so \
   --program-id 8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia \
   --url mainnet-beta
-
-# First-time deploy + initialize atomically (prevents front-running)
-BOT_PUBKEY=<bot-key> BANANAS_MINT=<mint> \
-  node scripts/deploy-and-init.mjs --cluster mainnet
-
-# Verify no one front-ran initialization
-node scripts/deploy-and-init.mjs --verify-only
 ```
 
-Note: `blake3` pinned to 1.5.5, `borsh` pinned to 1.5.5. If you `cargo update`, re-pin both:
-```bash
-cargo update -p blake3 --precise 1.5.5
-cargo update -p borsh@1.6.0 --precise 1.5.5
-```
+IDL generation: `anchor idl build -p bin_farm` / `-p monke_bananas` / `-p pegged_bridge`. Codama clients: `node scripts/generate-clients.mjs`. Pin `blake3` and `borsh` to 1.5.5 after `cargo update`.
 
-### IDL & Client Generation
-
-```bash
-# Generate IDL from on-chain program structs (Anchor 0.31.1)
-anchor idl build -p bin_farm -o bot/idl/bin_farm.json
-anchor idl build -p monke_bananas -o bot/idl/monke_bananas.json
-anchor idl build -p pegged_bridge -o bot/idl/pegged_bridge.json
-
-# Generate Codama TypeScript clients from IDL
-node scripts/generate-clients.mjs
-# Output: src/generated/bin-farm/ + src/generated/monke-bananas/ + src/generated/pegged-bridge/
-```
-
-Regenerate after any on-chain struct change. IDL files at `bot/idl/` are used by the bot's Anchor client. Codama clients at `src/generated/` provide typed instruction builders and account decoders for the frontend (`app.js` imports them via esbuild bundling).
-
-## Run Monke's Harvester
+## Run Crank's Harvester
 
 ```bash
 cp bot/anchor-harvest-bot.env.example bot/.env
@@ -192,16 +172,12 @@ cp bot/anchor-harvest-bot.env.example bot/.env
 npm run bot
 ```
 
-Sub-second harvest via LaserStream, permissionless fallback on all operations (harvest, close, sweep, stake_and_forward, deposit — anyone can crank when bot is stale and earn a tip), periodic fee sweeps, Saturday keeper sequence (unwrap → sweep → bridge → fee rovers → deposit_pegged → cleanup), adaptive intervals, health endpoint.
-
 ## Run Frontend
 
 ```bash
 node scripts/build-frontend.mjs && npx serve dist   # local dev
-node scripts/build-frontend.mjs                      # production (Vercel runs this)
+node scripts/build-frontend.mjs                      # production (Vercel)
 ```
-
-Frontend pages: **Trade** (DLMM harvester — pool discovery via token CA search + Meteora trending feed + server-side address book, default SOL/USDC pool), **Positions** (all wallet positions with inline close + claim fees), **Rank** (monke feed/claim + leaderboard, sub-pages: Monke + Roster), **Ops** (bounty board + permissionless crank + live stats from relay), **Recon** (rover TVL — deferred). Sigil astrolabe navigation. Bot relay provides live data via WebSocket (`/ws`) and REST (`/api/*`) at `wss://bot.monke.army`.
 
 ## Mainnet Addresses
 
@@ -217,74 +193,22 @@ Frontend pages: **Trade** (DLMM harvester — pool discovery via token CA search
 
 | Item | Address |
 |------|---------|
-| $BANANAS Mint | `ABj8RJzGHxbLoB8JBea8kvBx626KwSfvbpce9xVfkK7w` |
+| $CRANK Mint | Launching soon on Pump.fun |
 | $PEGGED Mint (LST) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` |
 | SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` |
-
-### PDAs
-
-| PDA | Address | Program |
-|-----|---------|---------|
-| Core Config | `MeTGCG86PTWhnN52yV9ie8oJkgfSLGyuRCFxhDd97i2` | core |
-| Rover Authority | `56UrucGXHYPfsXS8BMZG82UA632fHDB1o6aXWwt9i6PR` | core |
-| MonkeState | `6DZqJbD3rWzfySHyRASL5nMUsf5WroZvykdf256BNXMo` | monke_bananas |
-| Dist Pool | `2uZxacLniw264zRpr84qGW4NcYkTv3M448733t6MRK1e` | monke_bananas |
-| Program Vault | `6r63srLezrtjiYwwoVwMB82o3c7mwz3BUktGiHRq4FxX` | monke_bananas |
-| Bridge Config | PDA `[b"bridge_config"]` | pegged_bridge |
-| Bridge Vault | `B9gTfeCbN1oSXKCKgog5gGTH3VGNr3U5SYH4mL3gtqxK` | pegged_bridge |
-| Bridge Vault $PEGGED ATA | `Ft1TzupfeAKMvYXg9GfcotK1VFTq2nqvJsq2XCYXpqKB` | pegged_bridge |
-| Dist Pool $PEGGED ATA | `3NBqb4nRadQqe3wwffmwCwP4SLWA19jhxdm85ZhAjTMB` | monke_bananas |
-| Program Vault $PEGGED ATA | `9ZsSHkbzziVwRLuR4uT9KAR6CVu1WoL23xk8rNvpyiXM` | monke_bananas |
-
-### Launch Parameters
-
-- **Init Price:** 0.000001 SOL/token (1 SOL = 1M BANANAS = 1 monke feed)
-- **Alpha Vault:** Pro-rata, 420 SOL max buying cap, permissionless (closed)
-- **Activation:** March 1, 2026 00:00 UTC (trading live)
-- **Vesting:** Instant (1s after activation)
-- **Fee Decay:** 69% → 1% over 3 hours (sniper tax)
-- **Liquidity:** 100% permanently locked (DAMM v2 position NFT held by operator). Trading fees from the locked liquidity position are private to the operator — not part of the 60/40 protocol split.
-- **Supply:** 1,000,000,000 BANANAS (6 decimals). Mint/freeze/update authorities revoked.
-
-## NFT Integration — Feed Your Monke (or Goose)
-
-Three eligible collections, all **1x weight per feed**:
-
-| Collection | Address | Standard | Gate |
-|------------|---------|----------|------|
-| SMB Gen2 | `SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W` | Token Metadata (V1_NFT) | Hold NFT |
-| SMB Gen3 | `8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH` | Token Metadata (V1_NFT) | Hold NFT |
-| gooseswtf (pixel goose) | `6ubyyuUz3EVFwZrBh3C2ezSXXfyjxP4jhemLPyGgdL6Y` | Token Metadata (pNFT) | Hold NFT + GooseDAO membership (first feed only) |
-
-**GooseDAO membership** is verified via a Metaplex Core asset from collection `XkH2QVN9AKNi1AGnaEYdEHCHxFjTjs8BdbTJfcRW2rY` (Core program `CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d`). The membership check only runs on the first `feed_goose` call for a given pixel goose. Once a gooseswtf has a MonkeBurn PDA (`share_weight > 0`), subsequent feeds and claims work forever — even if the wallet later loses GooseDAO membership. **Once in, always in.**
-
-- **Burn:** 1,000,000 $BANANAS per `feed_monke` / `feed_goose` call (6 decimals enforced at init)
-- **Stacking:** Unlimited. Per-NFT `MonkeBurn` PDA tracks cumulative weight.
-- **Revenue:** 60% of protocol fees are converted to $PEGGED and distributed to all fed NFT holders. 40% funds bot operations.
-- **Claiming:** Weight and unclaimed $PEGGED travel with the NFT on secondary sales.
-- **Cleanup:** `compost_monke` — permissionless removal of dead weight when NFT is burned (supply == 0)
 
 ## Deployment
 
 | Component | URL |
 |-----------|-----|
-| Frontend | [monke.army](https://www.monke.army/) |
-| Bot Relay | `wss://bot.monke.army` |
+| Frontend | [crank.money](https://www.crank.money/) |
+| Bot Relay | `wss://bot.crank.money` |
 
 ## Security
 
-- **Upgrade authority:** Retained by operator. Program can be upgraded.
-- **Audit status:** Unaudited. Use at your own risk.
-- **Fee split:** 60/40 hardcoded on-chain (bridge_vault → $PEGGED for monke holders / Config.bot for operations). Not governable by operator. Revenue destination change requires 24hr timelock.
-- **Permissionless fallback:** All harvests and sweeps can be cranked by anyone when the bot is stale, preventing fund lock-up.
-
-## Known Limitations
-
-- **Token-2022 fully supported (Feb 23).** All outbound transfers use `anchor_spl::token_interface::transfer_checked`, dispatching to whichever token program owns the account. SPL Token and Token-2022 pools both work end-to-end.
-
-- **Token-2022 Transfer Fee mints:** Tokens with the Transfer Fee extension work end-to-end, but the recipient receives slightly less than displayed. The protocol's delta-based fee calculation is accurate, but downstream transfers also incur the token's built-in transfer fee. Economic impact bounded by the token's fee rate (typically <2%).
-
-- **Token-2022 Transfer Hook mints:** Mints with the Transfer Hook extension are **not supported**. Transfer hook extra accounts are not resolved (`RemainingAccountsInfo::empty_hooks()` used everywhere). Add when demand exists.
+- Program can be upgraded.
+- AI Audit using [Adversarial Spec](https://github.com/zscole/adversarial-spec) and several rounds of analysis with Opus 4.6.
+- All harvests and sweeps can be cranked by anyone when the bot is stale, preventing fund lock-up.
 
 ## Dependencies
 

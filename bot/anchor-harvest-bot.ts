@@ -1,14 +1,14 @@
 /**
  * anchor-harvest-bot.ts
  *
- * monke.army orchestrator. Wires together:
+ * crank.money orchestrator. Wires together:
  *   - GeyserSubscriber: gRPC stream for real-time price monitoring
  *   - HarvestExecutor: job queue for harvest/close transactions
  *   - MonkeKeeper: Saturday sequencer (unwrap → sweep → stake_and_forward → fee rovers → deposit_pegged → cleanup)
  *
  * The bot never holds user funds or revenue SOL.
- * Revenue SOL flows: rover_authority → bridge_vault → $PEGGED → dist_pool ATA → monke holders (on-chain).
- * 60/40 split: 60% to bridge_vault (→ $PEGGED for monke holders), 40% to bot (Config.bot). Hardcoded in sweep_rover.
+ * Revenue SOL flows: rover_authority → bridge_vault → $PEGGED → dist_pool ATA → holders (on-chain).
+ * 50/50 split: 50% to bridge_vault (→ $PEGGED for holders), 50% to bot (Config.bot). Hardcoded in sweep_rover.
  * The bot only cranks permissionless instructions.
  *
  * Weekly cadence: Saturday keeper sequence (unwrap WSOL → sweep → stake_and_forward → fee rovers → deposit_pegged → cleanup).

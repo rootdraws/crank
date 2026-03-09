@@ -1,5 +1,5 @@
 /**
- * monke.army — Application Logic
+ * crank.money — Application Logic
  *
  * Merges:
  * - frame.html scaffold geometry (arc-tracing range panels, pixel-based sliders)
@@ -910,7 +910,7 @@ function updateBinStrip() {
     const activePos = (1 - 0 / maxPct) * 100;
     rangeEl.style.left = rangeLeft + '%';
     rangeEl.style.width = Math.max(rangeWidth, 1) + '%';
-    rangeEl.style.background = 'var(--mint-faint)';
+    rangeEl.style.background = 'var(--data-green-faint)';
     activeEl.style.left = Math.min(activePos, 99) + '%';
     if (nearLabel) nearLabel.textContent = '-' + near + '%';
     if (farLabel) farLabel.textContent = '-' + far + '%';
@@ -920,7 +920,7 @@ function updateBinStrip() {
     const activePos = 0;
     rangeEl.style.left = rangeLeft + '%';
     rangeEl.style.width = Math.max(rangeWidth, 1) + '%';
-    rangeEl.style.background = 'var(--sell-faint)';
+    rangeEl.style.background = 'var(--alert-red-fill)';
     activeEl.style.left = activePos + '%';
     if (nearLabel) nearLabel.textContent = '+' + near + '%';
     if (farLabel) farLabel.textContent = '+' + far + '%';
@@ -1038,7 +1038,7 @@ const KNOWN_TOKENS = {
   'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 'jitoSOL',
   'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 'BONK',
   'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 'JUP',
-  'ABj8RJzGHxbLoB8JBea8kvBx626KwSfvbpce9xVfkK7w': 'BANANAS',
+  'ABj8RJzGHxbLoB8JBea8kvBx626KwSfvbpce9xVfkK7w': 'BANANAS', // legacy — $CRANK mint TBD
 };
 
 async function parseLbPair(address) {
@@ -1737,10 +1737,10 @@ function renderBinViz() {
 
   const { poolBins, userBins, previewBins, activeBin, binStep, visibleRange } = vizState;
   if (!binStep) {
-    ctx.fillStyle = 'rgba(90, 78, 60, 0.2)';
-    ctx.font = '300 12px "JetBrains Mono", monospace';
+    ctx.fillStyle = 'rgba(154, 154, 144, 0.4)';
+    ctx.font = '400 12px "IBM Plex Mono", monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('load a pool to see liquidity', W / 2, H / 2);
+    ctx.fillText('LOAD A POOL TO SEE LIQUIDITY', W / 2, H / 2);
     return;
   }
 
@@ -1771,13 +1771,13 @@ function renderBinViz() {
   const barH = Math.max(1, rowH * 0.8);
   const halfBar = barH / 2;
 
-  const poolBuyColor = 'rgba(128, 200, 152, 0.35)';
-  const poolSellColor = 'rgba(192, 88, 72, 0.35)';
-  const poolNeutralColor = 'rgba(90, 78, 60, 0.4)';
-  const userBuyColor = 'rgba(128, 200, 152, 0.7)';
-  const userSellColor = 'rgba(192, 88, 72, 0.7)';
-  const previewBuyColor = 'rgba(128, 200, 152, 0.25)';
-  const previewSellColor = 'rgba(192, 88, 72, 0.25)';
+  const poolBuyColor = 'rgba(80, 255, 80, 0.25)';
+  const poolSellColor = 'rgba(255, 72, 64, 0.25)';
+  const poolNeutralColor = 'rgba(255, 152, 48, 0.3)';
+  const userBuyColor = 'rgba(80, 255, 80, 0.6)';
+  const userSellColor = 'rgba(255, 72, 64, 0.6)';
+  const previewBuyColor = 'rgba(80, 255, 80, 0.18)';
+  const previewSellColor = 'rgba(255, 72, 64, 0.18)';
 
   for (let bin = lowBin; bin <= highBin; bin++) {
     const idx = bin - lowBin;
@@ -1832,7 +1832,7 @@ function renderBinViz() {
   }
 
   // Divider line between pool and user columns
-  ctx.strokeStyle = 'rgba(90, 78, 60, 0.15)';
+  ctx.strokeStyle = 'rgba(224, 224, 216, 0.08)';
   ctx.lineWidth = 1;
   ctx.setLineDash([4, 4]);
   const divX = xLabelWidth + barAreaW * 0.5;
@@ -1842,18 +1842,16 @@ function renderBinViz() {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Column labels
-  ctx.font = '300 9px "JetBrains Mono", monospace';
+  ctx.font = '400 9px "IBM Plex Mono", monospace';
   ctx.textAlign = 'center';
-  ctx.fillStyle = 'rgba(90, 78, 60, 0.4)';
-  ctx.fillText('pool', xLabelWidth + barAreaW * 0.24, yMargin - 6);
-  ctx.fillText('yours', xLabelWidth + barAreaW * 0.76, yMargin - 6);
+  ctx.fillStyle = 'rgba(255, 152, 48, 0.5)';
+  ctx.fillText('POOL', xLabelWidth + barAreaW * 0.24, yMargin - 6);
+  ctx.fillText('YOURS', xLabelWidth + barAreaW * 0.76, yMargin - 6);
 
-  // Active price line
   const activeIdx = activeBin - lowBin;
   if (activeIdx >= 0 && activeIdx < totalBins) {
     const activeY = yMargin + barAreaH - (activeIdx + 0.5) * rowH;
-    ctx.strokeStyle = 'rgba(224, 216, 206, 0.7)';
+    ctx.strokeStyle = 'rgba(224, 224, 216, 0.7)';
     ctx.lineWidth = 1;
     ctx.setLineDash([]);
     ctx.beginPath();
@@ -1861,16 +1859,15 @@ function renderBinViz() {
     ctx.lineTo(W - 8, activeY);
     ctx.stroke();
 
-    ctx.fillStyle = 'rgba(224, 216, 206, 0.9)';
-    ctx.font = '300 10px "JetBrains Mono", monospace';
+    ctx.fillStyle = 'rgba(224, 224, 216, 0.9)';
+    ctx.font = '500 10px "IBM Plex Mono", monospace';
     ctx.textAlign = 'right';
     const priceLabel = '$' + formatPrice(binToPrice(activeBin, binStep, state.tokenXDecimals, state.tokenYDecimals));
     ctx.fillText(priceLabel, xLabelWidth - 6, activeY + 3);
   }
 
-  // Y-axis price labels (every ~10 bins)
-  ctx.fillStyle = 'rgba(110, 96, 78, 0.55)';
-  ctx.font = '300 9px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(154, 154, 144, 0.55)';
+  ctx.font = '400 9px "IBM Plex Mono", monospace';
   ctx.textAlign = 'right';
   const labelInterval = Math.max(5, Math.round(totalBins / 10));
   for (let bin = lowBin; bin <= highBin; bin += labelInterval) {
@@ -2674,7 +2671,7 @@ async function renderMonkeList() {
 
   if (nfts.length === 0) {
     container.innerHTML = '';
-    if (frame) frame.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;"><span style="font-size:13px;color:var(--dim);line-height:1.6;font-weight:300;letter-spacing:0.3px;">Monke.Army works best if you own a monke. May we suggest purchasing an <a href="https://magiceden.io/marketplace/smb_gen3" target="_blank" rel="noopener" style="color:var(--bananas);text-decoration:none;">SMB GEN3 on Magic Eden</a>.</span></div>';
+    if (frame) frame.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;"><span style="font-size:13px;color:var(--steel-dim);line-height:1.6;font-weight:400;letter-spacing:0.02em;">crank.money works best if you own a monke. May we suggest purchasing an <a href="https://magiceden.io/marketplace/smb_gen3" target="_blank" rel="noopener" style="color:var(--nerv-orange);text-decoration:none;">SMB GEN3 on Magic Eden</a>.</span></div>';
     hideCarouselNav();
     return;
   }
@@ -2861,7 +2858,7 @@ async function renderGlobalStats() {
     const ms = decodeMonkeState(toEncodedAccount(monkeStatePDA, info.data, MONKE_BANANAS_PROGRAM_ADDRESS)).data;
     if (!ms) return;
     const el = id => document.getElementById(id);
-    if (el('globalBananasBurned')) el('globalBananasBurned').textContent = (Number(ms.totalBananasBurned) / 1e6).toLocaleString() + ' $BANANAS';
+    if (el('globalBananasBurned')) el('globalBananasBurned').textContent = (Number(ms.totalBananasBurned) / 1e6).toLocaleString() + ' $CRANK';
     if (el('globalTotalWeight')) el('globalTotalWeight').textContent = Number(ms.totalShareWeight).toLocaleString();
     const distToken = CONFIG.PEGGED_MINT ? '$PEGGED' : 'SOL';
     if (el('globalSolDistributed')) el('globalSolDistributed').textContent = (Number(ms.totalSolDistributed) / 1e9).toFixed(4) + ' ' + distToken;
@@ -2955,7 +2952,7 @@ async function handleFeedMonke(nftMintStr) {
     const sig = await walletSendTransaction(tx);
     showToast('Confirming burn...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
-    showToast('1M $BANANAS burned to your Monke!', 'success');
+    showToast('1M $CRANK burned!', 'success');
     renderMonkeList();
   } catch (err) {
     console.error('[monke] feed_monke failed:', err);
@@ -3002,7 +2999,7 @@ async function handleFeedGoose(nftMintStr) {
     const sig = await walletSendTransaction(tx);
     showToast('Confirming burn...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
-    showToast('1M $BANANAS burned to your Goose!', 'success');
+    showToast('1M $CRANK burned!', 'success');
     renderMonkeList();
   } catch (err) {
     console.error('[monke] feed_goose failed:', err);
@@ -3316,7 +3313,7 @@ async function handleCrankSweep() {
     const sig = await walletSendTransaction(tx);
     showToast('Confirming sweep...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
-    showToast('Swept SOL — 60% to bridge vault, 40% to bot!', 'success');
+    showToast('Swept SOL — 50% to bridge vault, 50% to bot!', 'success');
     renderOpsStats();
   } catch (err) {
     console.error('[monke] sweep_rover failed:', err);
@@ -3501,14 +3498,12 @@ function renderPnlCard(position) {
   canvas.width = w;
   canvas.height = h;
 
-  // Background
-  ctx.fillStyle = '#111118';
+  ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, w, h);
 
-  // Frame: dashed quarter-arcs in corners (scaffold vocabulary)
   const arcR = 60;
   const margin = 30;
-  ctx.strokeStyle = '#8A7858';
+  ctx.strokeStyle = '#FF9830';
   ctx.lineWidth = 1.5;
   ctx.setLineDash([6, 6]);
 
@@ -3534,7 +3529,7 @@ function renderPnlCard(position) {
   // Determine profit/loss
   const pnl = position.amount * (position.filled / 100) + (position.lpFees || 0) - position.amount;
   const isProfit = pnl >= 0;
-  const accentColor = isProfit ? '#8CD8A4' : '#CC6458';
+  const accentColor = isProfit ? '#50FF50' : '#FF4840';
 
   // Accent: colored inner arcs
   ctx.strokeStyle = accentColor;
@@ -3555,51 +3550,42 @@ function renderPnlCard(position) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Typography — all JetBrains Mono
-  const fontBase = "'JetBrains Mono', monospace";
+  const fontBase = "'IBM Plex Mono', monospace";
 
-  // Pool pair — top left
-  ctx.font = `200 28px ${fontBase}`;
-  ctx.fillStyle = '#E0D8CE';
+  ctx.font = `500 28px ${fontBase}`;
+  ctx.fillStyle = '#E0E0D8';
   ctx.textAlign = 'left';
   ctx.fillText(position.pool, margin + 20, margin + 70);
 
-  // Side
-  ctx.font = `300 15px ${fontBase}`;
-  ctx.fillStyle = position.side === 'buy' ? '#8CD8A4' : '#CC6458';
+  ctx.font = `500 15px ${fontBase}`;
+  ctx.fillStyle = position.side === 'buy' ? '#50FF50' : '#FF4840';
   ctx.fillText(position.side.toUpperCase(), margin + 20, margin + 100);
 
-  // Price range — center left
-  ctx.font = `300 17px ${fontBase}`;
-  ctx.fillStyle = '#A09488';
+  ctx.font = `400 17px ${fontBase}`;
+  ctx.fillStyle = '#9A9A90';
   ctx.fillText(`$${formatPrice(position.minPrice)} - $${formatPrice(position.maxPrice)}`, margin + 20, h / 2 - 20);
 
-  // Fill %
-  ctx.font = `300 15px ${fontBase}`;
-  ctx.fillStyle = '#A09488';
+  ctx.font = `400 15px ${fontBase}`;
+  ctx.fillStyle = '#9A9A90';
   ctx.fillText(`${position.filled}% filled`, margin + 20, h / 2 + 10);
 
-  // LP Fees
   ctx.fillText(`LP fees: ${(position.lpFees || 0).toFixed(4)} SOL`, margin + 20, h / 2 + 40);
 
-  // P/L — right-aligned, large, weight 400 (the ONE use)
-  ctx.font = `400 50px ${fontBase}`;
+  ctx.font = `700 50px ${fontBase}`;
   ctx.fillStyle = accentColor;
   ctx.textAlign = 'right';
   const pnlText = (isProfit ? '+' : '') + pnl.toFixed(4) + ' SOL';
   ctx.fillText(pnlText, w - margin - 20, h / 2 + 15);
 
-  // P/L label
-  ctx.font = `300 13px ${fontBase}`;
-  ctx.fillStyle = '#A09488';
-  ctx.fillText('net p/l', w - margin - 20, h / 2 - 30);
+  ctx.font = `400 13px ${fontBase}`;
+  ctx.fillStyle = '#D08028';
+  ctx.fillText('NET P/L', w - margin - 20, h / 2 - 30);
 
-  // Watermark — bottom center
-  ctx.font = `300 11px ${fontBase}`;
-  ctx.fillStyle = '#A09488';
+  ctx.font = `400 11px ${fontBase}`;
+  ctx.fillStyle = '#9A9A90';
   ctx.textAlign = 'center';
   ctx.letterSpacing = '2px';
-  ctx.fillText('harvested by monke.army', w / 2, h - margin - 10);
+  ctx.fillText('HARVESTED BY CRANK.MONEY', w / 2, h - margin - 10);
 }
 
 function showPnlModal(positionIndex) {
@@ -3690,7 +3676,7 @@ function showSubPage(subName) {
 
 const PAGE_IDS = ['page-trade', 'page-positions', 'page-rank', 'page-ops'];
 const PAGE_BODY_CLASSES = ['on-trade', 'on-positions', 'on-rank', 'on-ops'];
-const PAGE_ACCENT = ['#8CD8A4', '#8CD8A4', '#E0C050', '#E0D8CE'];
+const PAGE_ACCENT = ['#50FF50', '#50FF50', '#FFCC50', '#FF9830'];
 
 function showPage(idx) {
   state.currentPage = idx;
@@ -3714,7 +3700,7 @@ function showPage(idx) {
     if (isActive) {
       o.setAttribute('stroke', accent);
     } else {
-      o.setAttribute('stroke', 'var(--faint)');
+      o.setAttribute('stroke', 'var(--wire-cyan-dim)');
     }
   });
   document.querySelectorAll('.sigil-dot').forEach(d => {
@@ -3723,7 +3709,7 @@ function showPage(idx) {
     if (isActive) {
       d.setAttribute('fill', accent);
     } else {
-      d.setAttribute('fill', 'var(--faint)');
+      d.setAttribute('fill', 'var(--wire-cyan-dim)');
     }
   });
 
@@ -3732,19 +3718,19 @@ function showPage(idx) {
   const rightArrow = document.getElementById('navRight');
   if (leftArrow) {
     if (idx === 0) {
-      leftArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><circle cx="20" cy="28" r="3" fill="var(--scaffold)"/></svg>';
+      leftArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><circle cx="20" cy="28" r="3" fill="var(--nerv-orange)"/></svg>';
       leftArrow.style.cursor = 'default';
     } else {
-      leftArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><path d="M 18 28 Q 24 26, 34 18 Q 28 28, 34 38 Q 24 30, 18 28 Z" fill="var(--scaffold)"/></svg>';
+      leftArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><path d="M 18 28 Q 24 26, 34 18 Q 28 28, 34 38 Q 24 30, 18 28 Z" fill="var(--nerv-orange)"/></svg>';
       leftArrow.style.cursor = 'pointer';
     }
   }
   if (rightArrow) {
     if (idx === PAGE_IDS.length - 1) {
-      rightArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><circle cx="20" cy="28" r="3" fill="var(--scaffold)"/></svg>';
+      rightArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><circle cx="20" cy="28" r="3" fill="var(--nerv-orange)"/></svg>';
       rightArrow.style.cursor = 'default';
     } else {
-      rightArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><path d="M 22 28 Q 16 26, 6 18 Q 12 28, 6 38 Q 16 30, 22 28 Z" fill="var(--scaffold)"/></svg>';
+      rightArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><path d="M 22 28 Q 16 26, 6 18 Q 12 28, 6 38 Q 16 30, 22 28 Z" fill="var(--nerv-orange)"/></svg>';
       rightArrow.style.cursor = 'pointer';
     }
   }
@@ -3805,7 +3791,7 @@ async function init() {
   if (CONFIG.CORE_PROGRAM_ID.includes('1111111111')) {
     const banner = document.createElement('div');
     banner.textContent = 'DEMO MODE — no real transactions';
-    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:var(--sell);color:white;text-align:center;padding:4px;z-index:9999;font-size:12px;font-family:inherit;letter-spacing:1px;';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:var(--alert-red);color:var(--void);text-align:center;padding:4px;z-index:9999;font-size:12px;font-family:inherit;letter-spacing:0.1em;text-transform:uppercase;';
     document.body.prepend(banner);
   }
 

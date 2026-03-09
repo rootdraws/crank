@@ -1,7 +1,7 @@
 /**
  * relay-server.ts
  *
- * WebSocket + REST relay for monke.army frontend.
+ * WebSocket + REST relay for crank.money frontend.
  * Exposes the bot's LaserStream-powered in-memory state to the browser.
  *
  * Plugs into the existing HTTP health server (anchor-harvest-bot.ts).

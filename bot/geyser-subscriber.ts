@@ -1,7 +1,7 @@
 /**
  * geyser-subscriber.ts
  *
- * Geyser/gRPC stream subscriber for monke.army harvest bot.
+ * Geyser/gRPC stream subscriber for crank.money harvest bot.
  * Replaces polling with event-driven monitoring.
  *
  * Optimized for Helius LaserStream gRPC (Yellowstone-compatible):

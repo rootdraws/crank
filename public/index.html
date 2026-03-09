@@ -3,18 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https://*.helius-rpc.com https://arweave.net https://*.arweave.net https://*.nftstorage.link https://nftstorage.link https://ipfs.io https://*.ipfs.io https://shdw-drive.genesysgo.net https://*.shdw-drive.genesysgo.net https://*.cloudfront.net https://img-cdn.magiceden.dev https://*.magiceden.dev https://gateway.irys.xyz https://*.irys.xyz https://*.bundlr.network https://*.pinata.cloud; connect-src 'self' https://*.monke.army https://*.solana.com https://*.helius-rpc.com https://public-api.birdeye.so https://lite-api.jup.ag https://quote-api.jup.ag https://unpkg.com https://connect.phantom.app https://*.phantom.app https://dlmm.datapi.meteora.ag https://*.meteora.ag wss://*.solana.com ws://localhost:* wss://*;">
-  <title>monke.army</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https://*.helius-rpc.com https://arweave.net https://*.arweave.net https://*.nftstorage.link https://nftstorage.link https://ipfs.io https://*.ipfs.io https://shdw-drive.genesysgo.net https://*.shdw-drive.genesysgo.net https://*.cloudfront.net https://img-cdn.magiceden.dev https://*.magiceden.dev https://gateway.irys.xyz https://*.irys.xyz https://*.bundlr.network https://*.pinata.cloud; connect-src 'self' https://*.crank.money https://*.solana.com https://*.helius-rpc.com https://public-api.birdeye.so https://lite-api.jup.ag https://quote-api.jup.ag https://unpkg.com https://connect.phantom.app https://*.phantom.app https://dlmm.datapi.meteora.ag https://*.meteora.ag wss://*.solana.com ws://localhost:* wss://*;">
+  <title>crank.money</title>
   <link rel="icon" href="data:,">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@200;300;400&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=Bebas+Neue&family=Noto+Sans+JP:wght@400;700&display=swap">
   <script src="https://unpkg.com/@solana/web3.js@1.95.8/lib/index.iife.min.js"
     integrity="sha384-ujeTtvHxhu2g5lnu14Roii2ajvVKJ74KQ6eo6GGfAi0IrKZ1YkF8N68Iw5VmIJO0"
     crossorigin="anonymous"></script>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body class="on-trade">
+<body class="on-trade nerv-console crt-overlay crt-vignette crt-flicker">
 
   <!-- GLOBAL SCAFFOLD: corners + outer tangent rays (always visible) -->
   <div class="tangent-ray top"></div>
@@ -24,17 +24,17 @@
 
   <div class="corner top-left">
     <svg viewBox="0 0 200 200">
-      <path d="M 80 1 A 80 80 0 0 0 1 80 L 11 80 A 70 70 0 0 1 80 11 Z" fill="var(--scaffold-fill)"/>
+      <path d="M 80 1 A 80 80 0 0 0 1 80 L 11 80 A 70 70 0 0 1 80 11 Z" fill="var(--nerv-orange-dim)"/>
     </svg>
   </div>
 
   <div class="corner top-right">
     <svg viewBox="0 0 200 200">
       <defs>
-        <linearGradient id="tr-fade-down" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="var(--scaffold)"/><stop offset="100%" stop-color="var(--scaffold)" stop-opacity="0"/></linearGradient>
-        <linearGradient id="tr-fade-left" x1="100%" y1="0%" x2="0%" y2="0%"><stop offset="0%" stop-color="var(--scaffold)"/><stop offset="100%" stop-color="var(--scaffold)" stop-opacity="0"/></linearGradient>
+        <linearGradient id="tr-fade-down" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="var(--nerv-orange)"/><stop offset="100%" stop-color="var(--nerv-orange)" stop-opacity="0"/></linearGradient>
+        <linearGradient id="tr-fade-left" x1="100%" y1="0%" x2="0%" y2="0%"><stop offset="0%" stop-color="var(--nerv-orange)"/><stop offset="100%" stop-color="var(--nerv-orange)" stop-opacity="0"/></linearGradient>
       </defs>
-      <path d="M 120 1 A 80 80 0 0 1 199 80 L 189 80 A 70 70 0 0 0 120 11 Z" fill="var(--scaffold-fill)"/>
+      <path d="M 120 1 A 80 80 0 0 1 199 80 L 189 80 A 70 70 0 0 0 120 11 Z" fill="var(--nerv-orange-dim)"/>
       <line x1="190" y1="80" x2="190" y2="300" stroke="url(#tr-fade-down)" stroke-width="1"/>
       <line x1="120" y1="10" x2="-100" y2="10" stroke="url(#tr-fade-left)" stroke-width="1"/>
     </svg>
@@ -43,10 +43,10 @@
   <div class="corner bottom-left">
     <svg viewBox="0 0 200 200">
       <defs>
-        <linearGradient id="bl-fade-up" x1="0%" y1="100%" x2="0%" y2="0%"><stop offset="0%" stop-color="var(--scaffold)"/><stop offset="100%" stop-color="var(--scaffold)" stop-opacity="0"/></linearGradient>
-        <linearGradient id="bl-fade-right" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="var(--scaffold)"/><stop offset="100%" stop-color="var(--scaffold)" stop-opacity="0"/></linearGradient>
+        <linearGradient id="bl-fade-up" x1="0%" y1="100%" x2="0%" y2="0%"><stop offset="0%" stop-color="var(--nerv-orange)"/><stop offset="100%" stop-color="var(--nerv-orange)" stop-opacity="0"/></linearGradient>
+        <linearGradient id="bl-fade-right" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="var(--nerv-orange)"/><stop offset="100%" stop-color="var(--nerv-orange)" stop-opacity="0"/></linearGradient>
       </defs>
-      <path d="M 1 119 A 80 80 0 0 0 80 199 L 80 189 A 70 70 0 0 1 11 119 Z" fill="var(--scaffold-fill)"/>
+      <path d="M 1 119 A 80 80 0 0 0 80 199 L 80 189 A 70 70 0 0 1 11 119 Z" fill="var(--nerv-orange-dim)"/>
       <line x1="10" y1="120" x2="10" y2="-100" stroke="url(#bl-fade-up)" stroke-width="1"/>
       <line x1="80" y1="190" x2="350" y2="190" stroke="url(#bl-fade-right)" stroke-width="1"/>
     </svg>
@@ -55,10 +55,10 @@
   <div class="corner bottom-right">
     <svg viewBox="0 0 200 200">
       <defs>
-        <linearGradient id="br-fade-up" x1="0%" y1="100%" x2="0%" y2="0%"><stop offset="0%" stop-color="var(--scaffold)"/><stop offset="100%" stop-color="var(--scaffold)" stop-opacity="0"/></linearGradient>
-        <linearGradient id="br-fade-left" x1="100%" y1="0%" x2="0%" y2="0%"><stop offset="0%" stop-color="var(--scaffold)"/><stop offset="100%" stop-color="var(--scaffold)" stop-opacity="0"/></linearGradient>
+        <linearGradient id="br-fade-up" x1="0%" y1="100%" x2="0%" y2="0%"><stop offset="0%" stop-color="var(--nerv-orange)"/><stop offset="100%" stop-color="var(--nerv-orange)" stop-opacity="0"/></linearGradient>
+        <linearGradient id="br-fade-left" x1="100%" y1="0%" x2="0%" y2="0%"><stop offset="0%" stop-color="var(--nerv-orange)"/><stop offset="100%" stop-color="var(--nerv-orange)" stop-opacity="0"/></linearGradient>
       </defs>
-      <path d="M 199 119 A 80 80 0 0 1 120 199 L 120 189 A 70 70 0 0 0 189 119 Z" fill="var(--scaffold-fill)"/>
+      <path d="M 199 119 A 80 80 0 0 1 120 199 L 120 189 A 70 70 0 0 0 189 119 Z" fill="var(--nerv-orange-dim)"/>
       <line x1="190" y1="120" x2="190" y2="-100" stroke="url(#br-fade-up)" stroke-width="1"/>
       <line x1="120" y1="190" x2="-150" y2="190" stroke="url(#br-fade-left)" stroke-width="1"/>
     </svg>
@@ -170,7 +170,7 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════════════════
-       PAGE 2: RANK — feed your monke, claim $PEGGED
+       PAGE 2: RANK — burn $CRANK, claim $PEGGED
        Sub-pages: Monke (personal) + Roster (leaderboard)
        ═══════════════════════════════════════════════════════════ -->
   <div class="site-page" id="page-rank">
@@ -187,7 +187,7 @@
           <div class="monke-split">
             <!-- LEFT: NFT selector -->
             <div class="monke-nft-panel">
-              <div class="stat-label" style="margin-bottom:12px;">monke.army</div>
+              <div class="stat-label" style="margin-bottom:12px;">crank.money</div>
               <div class="nft-carousel" id="nftCarousel">
                 <button class="carousel-arrow carousel-left" id="nftPrev" style="display:none;">&#9664;</button>
                 <div class="carousel-frame" id="nftFrame">
@@ -320,7 +320,7 @@
         <input type="number" class="rover-input" id="roverAmount" placeholder="amount" step="1">
         <button class="rover-btn" id="roverDepositBtn">deposit bribe</button>
       </div>
-      <div class="rover-note">tokens placed in sell-side bins above current price. upcycled to SOL through natural trading. proceeds split 60/40: $PEGGED for monke holders + bot operations.</div>
+      <div class="rover-note">tokens placed in sell-side bins above current price. upcycled to SOL through natural trading. proceeds split 50/50: $PEGGED for holders + bot operations.</div>
 
       <!-- Top 5 expanded analytics cards -->
       <div id="reconTop5Cards"></div>
@@ -335,20 +335,20 @@
   <!-- GLOBAL: SIGIL NAVIGATOR — the astrolabe (5 orbits) -->
   <div class="sigil-nav" id="sigilNav">
     <svg viewBox="0 0 200 120" preserveAspectRatio="xMidYMax meet">
-      <ellipse class="sigil-orbit" data-page="0" cx="100" cy="10" rx="97" ry="57" fill="none" stroke="var(--faint)" stroke-width="1.5" stroke-dasharray="4 4"/>
-      <ellipse class="sigil-orbit" data-page="1" cx="100" cy="10" rx="87" ry="51" fill="none" stroke="var(--faint)" stroke-width="1.5" stroke-dasharray="4 4"/>
-      <ellipse class="sigil-orbit" data-page="2" cx="100" cy="10" rx="77" ry="45" fill="none" stroke="var(--faint)" stroke-width="1.5" stroke-dasharray="4 4"/>
-      <ellipse class="sigil-orbit" data-page="3" cx="100" cy="8" rx="66" ry="38" fill="none" stroke="var(--faint)" stroke-width="1.5" stroke-dasharray="4 4"/>
-      <circle class="sigil-dot" data-page="0" cx="100" cy="67" r="2.5" fill="var(--faint)"/>
-      <circle class="sigil-dot" data-page="1" cx="100" cy="61" r="2.5" fill="var(--faint)"/>
-      <circle class="sigil-dot" data-page="2" cx="100" cy="55" r="2.5" fill="var(--faint)"/>
-      <circle class="sigil-dot" data-page="3" cx="100" cy="46" r="2.5" fill="var(--faint)"/>
-      <circle cx="100" cy="10" r="4" fill="none" stroke="var(--scaffold)" stroke-width="1"/>
-      <circle cx="100" cy="10" r="1.5" fill="var(--scaffold)"/>
-      <line x1="100" y1="14" x2="100" y2="77" stroke="var(--scaffold)" stroke-width="0.75"/>
+      <ellipse class="sigil-orbit" data-page="0" cx="100" cy="10" rx="97" ry="57" fill="none" stroke="var(--wire-cyan-dim)" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <ellipse class="sigil-orbit" data-page="1" cx="100" cy="10" rx="87" ry="51" fill="none" stroke="var(--wire-cyan-dim)" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <ellipse class="sigil-orbit" data-page="2" cx="100" cy="10" rx="77" ry="45" fill="none" stroke="var(--wire-cyan-dim)" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <ellipse class="sigil-orbit" data-page="3" cx="100" cy="8" rx="66" ry="38" fill="none" stroke="var(--wire-cyan-dim)" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <circle class="sigil-dot" data-page="0" cx="100" cy="67" r="2.5" fill="var(--wire-cyan-dim)"/>
+      <circle class="sigil-dot" data-page="1" cx="100" cy="61" r="2.5" fill="var(--wire-cyan-dim)"/>
+      <circle class="sigil-dot" data-page="2" cx="100" cy="55" r="2.5" fill="var(--wire-cyan-dim)"/>
+      <circle class="sigil-dot" data-page="3" cx="100" cy="46" r="2.5" fill="var(--wire-cyan-dim)"/>
+      <circle cx="100" cy="10" r="4" fill="none" stroke="var(--nerv-orange)" stroke-width="1"/>
+      <circle cx="100" cy="10" r="1.5" fill="var(--nerv-orange)"/>
+      <line x1="100" y1="14" x2="100" y2="77" stroke="var(--nerv-orange)" stroke-width="0.75"/>
     </svg>
-    <div class="nav-arrow left" id="navLeft"><svg width="40" height="56" viewBox="0 0 40 56"><path d="M 18 28 Q 24 26, 34 18 Q 28 28, 34 38 Q 24 30, 18 28 Z" fill="var(--scaffold)"/></svg></div>
-    <div class="nav-arrow right" id="navRight"><svg width="40" height="56" viewBox="0 0 40 56"><path d="M 22 28 Q 16 26, 6 18 Q 12 28, 6 38 Q 16 30, 22 28 Z" fill="var(--scaffold)"/></svg></div>
+    <div class="nav-arrow left" id="navLeft"><svg width="40" height="56" viewBox="0 0 40 56"><path d="M 18 28 Q 24 26, 34 18 Q 28 28, 34 38 Q 24 30, 18 28 Z" fill="var(--nerv-orange)"/></svg></div>
+    <div class="nav-arrow right" id="navRight"><svg width="40" height="56" viewBox="0 0 40 56"><path d="M 22 28 Q 16 26, 6 18 Q 12 28, 6 38 Q 16 30, 22 28 Z" fill="var(--nerv-orange)"/></svg></div>
     <div class="social-links">
       <a href="https://x.com/rootdraws" target="_blank" rel="noopener" title="X / Twitter">
         <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>

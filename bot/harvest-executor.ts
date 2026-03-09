@@ -1,7 +1,7 @@
 /**
  * harvest-executor.ts
  *
- * Dedicated harvest job executor for monke.army.
+ * Dedicated harvest job executor for crank.money.
  * Receives harvest jobs from GeyserSubscriber, confirms bin balances
  * via a single RPC call, and submits harvest_bins or close_position
  * transactions.
@@ -265,7 +265,7 @@ export class HarvestExecutor extends EventEmitter {
     const vaultTokenY    = getAssociatedTokenAddressSync(meteora.tokenYMint, vaultPda, true, meteora.tokenYProgram);
     const ownerTokenX    = getAssociatedTokenAddressSync(meteora.tokenXMint, job.owner, true, meteora.tokenXProgram);
     const ownerTokenY    = getAssociatedTokenAddressSync(meteora.tokenYMint, job.owner, true, meteora.tokenYProgram);
-    // All fees → rover_authority ATAs (sweep_rover splits 60/40: monke holders + bot)
+    // All fees → rover_authority ATAs (sweep_rover splits 50/50: holders + bot)
     const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
     const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
@@ -365,7 +365,7 @@ export class HarvestExecutor extends EventEmitter {
     const vaultTokenY    = getAssociatedTokenAddressSync(meteora.tokenYMint, vaultPda, true, meteora.tokenYProgram);
     const ownerTokenX    = getAssociatedTokenAddressSync(meteora.tokenXMint, job.owner, true, meteora.tokenXProgram);
     const ownerTokenY    = getAssociatedTokenAddressSync(meteora.tokenYMint, job.owner, true, meteora.tokenYProgram);
-    // All fees → rover_authority ATAs (sweep_rover splits 60/40: monke holders + bot)
+    // All fees → rover_authority ATAs (sweep_rover splits 50/50: holders + bot)
     const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
     const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
