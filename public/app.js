@@ -1033,6 +1033,7 @@ async function connectWallet() {
     renderMonkeList();
     updateFee();
     loadAddressBook();
+    loadAddressBook();
   } catch (err) {
     console.error('Wallet connection failed:', err);
     if (btn) btn.textContent = 'connect wallet';
@@ -1493,7 +1494,7 @@ function renderAddressBookPanel() {
 
   const pairs = state.addressBook.topPairs || [];
   if (pairs.length === 0) {
-    container.innerHTML = '<div class="ab-empty">no trades yet</div>';
+    container.innerHTML = `<div class="ab-empty">${state.connected ? 'no trades yet' : 'connect wallet'}</div>`;
     return;
   }
 
