@@ -2005,7 +2005,9 @@ function renderBinViz() {
       const priceRaw = Math.pow(1 + binStep / 10000, binId);
       const slot = Math.floor((priceRaw - priceSlotMin) / priceSlotStep);
       if (slot >= 0 && slot < totalBins) {
-        previewSlotMap.set(slot, (previewSlotMap.get(slot) || 0) + amount);
+        // Use MAX not SUM: two adjacent bins can floor() to the same slot,
+        // summing would artificially double that slot's bar width.
+        previewSlotMap.set(slot, Math.max(previewSlotMap.get(slot) || 0, amount));
       }
     }
   }
