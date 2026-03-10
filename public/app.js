@@ -439,19 +439,27 @@ function patchBinArrayCache(data) {
   if (!data || !data.bins) return;
   const dlmmPools = state.discoveredDlmmPools.length > 0
     ? state.discoveredDlmmPools
-    : [{ address: state.poolAddress, activeId: state.activeBin, active_id: state.activeBin, binStep: state.binStep, bin_step: state.binStep }];
+    : [{ address: state.poolAddress, bin_step: state.binStep }];
   const poolEntry = dlmmPools.find(p => p.address === data.lbPair);
-  if (!poolEntry || !vizState.priceSlotStep) return;
+  if (!poolEntry || !vizState.logSlotStep) return;
   const poolBinStep = poolEntry.bin_step ?? poolEntry.binStep;
+  const poolLogStep = Math.log(1 + poolBinStep / 10000);
+  const { logPriceMin, logSlotStep, slotCount } = vizState;
+
   for (const [binIdStr, amounts] of Object.entries(data.bins)) {
     const binId = parseInt(binIdStr, 10);
-    const priceRaw = Math.pow(1 + poolBinStep / 10000, binId);
-    const slot = Math.floor((priceRaw - vizState.priceSlotMin) / vizState.priceSlotStep);
-    if (slot < 0 || slot >= vizState.priceSlotCount) continue;
-    const existing = vizState.poolBins.get(slot) || { amountX: 0, amountY: 0 };
-    existing.amountX = amounts.amountX;
-    existing.amountY = amounts.amountY;
-    vizState.poolBins.set(slot, existing);
+    const binLogLow = binId * poolLogStep - poolLogStep / 2;
+    const binLogHigh = binId * poolLogStep + poolLogStep / 2;
+    const slotLow = Math.max(0, Math.floor((binLogLow - logPriceMin) / logSlotStep));
+    const slotHigh = Math.min(slotCount - 1, Math.floor((binLogHigh - logPriceMin) / logSlotStep));
+    if (slotHigh < 0 || slotLow >= slotCount) continue;
+    const span = Math.max(1, slotHigh - slotLow + 1);
+    for (let s = slotLow; s <= slotHigh; s++) {
+      const ex = vizState.poolBins.get(s) || { amountX: 0, amountY: 0 };
+      ex.amountX += amounts.amountX / span;
+      ex.amountY += amounts.amountY / span;
+      vizState.poolBins.set(s, ex);
+    }
   }
 }
 
@@ -1692,7 +1700,14 @@ async function fetchBinArrays(poolAddress, centerBin, visibleRange) {
     pdas.push({ pda, arrayIndex: i });
   }
 
-  const accounts = await conn.getMultipleAccountsInfo(pdas.map(p => p.pda));
+  const RPC_CHUNK = 100;
+  const allPdaKeys = pdas.map(p => p.pda);
+  const chunks = [];
+  for (let i = 0; i < allPdaKeys.length; i += RPC_CHUNK) {
+    chunks.push(allPdaKeys.slice(i, i + RPC_CHUNK));
+  }
+  const accountChunks = await Promise.all(chunks.map(c => conn.getMultipleAccountsInfo(c)));
+  const accounts = accountChunks.flat();
 
   const bins = new Map();
   for (let a = 0; a < accounts.length; a++) {
@@ -1967,15 +1982,17 @@ function aggregateUserBins(positions, activeBin) {
 
 // Canvas rendering state
 const vizState = {
-  poolBins: new Map(),    // price-slot keyed after aggregation
-  userBins: new Map(),    // binId-keyed (primary pool only)
-  previewBins: new Map(), // binId-keyed
+  poolBins: new Map(),
+  userBins: new Map(),
+  previewBins: new Map(),
   activeBin: 0,
   binStep: 0,
-  visibleRange: 80,
-  priceSlotMin: 0,
-  priceSlotStep: 0,
-  priceSlotCount: 161,    // 2*80+1 default
+  zoomPct: 20,
+  logPriceMin: 0,
+  logSlotStep: 0,
+  slotCount: 400,
+  binArrayCache: new Map(),
+  fetchController: null,
 };
 
 function renderBinViz() {
@@ -1996,7 +2013,7 @@ function renderBinViz() {
   ctx.clearRect(0, 0, W, H);
 
   const { poolBins, userBins, previewBins, activeBin, binStep,
-          priceSlotMin, priceSlotStep, priceSlotCount } = vizState;
+          logPriceMin, logSlotStep, slotCount } = vizState;
   if (!binStep) {
     ctx.fillStyle = '#D984AC';
     ctx.font = '400 12px "IBM Plex Mono", monospace';
@@ -2005,15 +2022,17 @@ function renderBinViz() {
     return;
   }
 
-  const totalBins = priceSlotCount || (vizState.visibleRange * 2 + 1);
+  const totalBins = slotCount;
   const activeSlot = Math.floor(totalBins / 2);
 
-  // Build slot-keyed user/preview maps from binId-keyed Maps
   const userSlotMap = new Map();
-  if (priceSlotStep > 0) {
+  const previewSlotMap = new Map();
+  if (logSlotStep > 0) {
+    const logStep = Math.log(1 + binStep / 10000);
+
     for (const [binId, amounts] of userBins) {
-      const priceRaw = Math.pow(1 + binStep / 10000, binId);
-      const slot = Math.floor((priceRaw - priceSlotMin) / priceSlotStep);
+      const logPrice = binId * logStep;
+      const slot = Math.floor((logPrice - logPriceMin) / logSlotStep);
       if (slot >= 0 && slot < totalBins) {
         const existing = userSlotMap.get(slot) || { buy: 0, sell: 0 };
         existing.buy += amounts.buy || 0;
@@ -2021,31 +2040,28 @@ function renderBinViz() {
         userSlotMap.set(slot, existing);
       }
     }
-  }
 
-  const previewSlotMap = new Map();
-  if (priceSlotStep > 0) {
     for (const [binId, amount] of previewBins) {
-      const priceRaw = Math.pow(1 + binStep / 10000, binId);
-      const slot = Math.floor((priceRaw - priceSlotMin) / priceSlotStep);
+      const logPrice = binId * logStep;
+      const slot = Math.floor((logPrice - logPriceMin) / logSlotStep);
       if (slot >= 0 && slot < totalBins) {
-        // Use MAX not SUM: two adjacent bins can floor() to the same slot,
-        // summing would artificially double that slot's bar width.
         previewSlotMap.set(slot, Math.max(previewSlotMap.get(slot) || 0, amount));
       }
     }
   }
 
-  // Normalize pool and user/preview independently (different scales)
   let maxPoolLiq = 0;
   let maxUserLiq = 0;
   for (let slot = 0; slot < totalBins; slot++) {
     const pool = poolBins.get(slot);
-    const poolTotal = pool ? pool.amountX + pool.amountY : 0;
+    if (pool) {
+      const slotPriceRaw = Math.exp(logPriceMin + slot * logSlotStep);
+      const poolTotal = pool.amountX * slotPriceRaw + pool.amountY;
+      maxPoolLiq = Math.max(maxPoolLiq, poolTotal);
+    }
     const ub = userSlotMap.get(slot);
     const user = ub ? ub.buy + ub.sell : 0;
     const preview = previewSlotMap.get(slot) || 0;
-    maxPoolLiq = Math.max(maxPoolLiq, poolTotal);
     maxUserLiq = Math.max(maxUserLiq, user + preview);
   }
   if (maxPoolLiq === 0) maxPoolLiq = 1;
@@ -2072,7 +2088,8 @@ function renderBinViz() {
     const yCenter = yMargin + barAreaH - (idx + 0.5) * rowH;
 
     const pool = poolBins.get(slot);
-    const poolTotal = pool ? pool.amountX + pool.amountY : 0;
+    const slotPriceRaw = Math.exp(logPriceMin + slot * logSlotStep);
+    const poolTotal = pool ? pool.amountX * slotPriceRaw + pool.amountY : 0;
     const ub = userSlotMap.get(slot);
     const userBuy = ub ? ub.buy : 0;
     const userSell = ub ? ub.sell : 0;
@@ -2151,7 +2168,6 @@ function renderBinViz() {
   const priceLabel = '$' + formatPrice(binToPrice(activeBin, binStep, state.tokenXDecimals, state.tokenYDecimals));
   ctx.fillText(priceLabel, xLabelWidth - 6, activeY + 3);
 
-  // Y-axis price labels — use price slot values
   ctx.fillStyle = '#714BA6';
   ctx.font = '400 9px "IBM Plex Mono", monospace';
   ctx.textAlign = 'right';
@@ -2159,10 +2175,9 @@ function renderBinViz() {
   for (let slot = 0; slot < totalBins; slot += labelInterval) {
     if (slot === activeSlot) continue;
     const y = yMargin + barAreaH - (slot + 0.5) * rowH;
-    const priceRaw = (priceSlotStep > 0)
-      ? (priceSlotMin + slot * priceSlotStep) * Math.pow(10, state.tokenXDecimals - state.tokenYDecimals)
-      : binToPrice(activeBin - vizState.visibleRange + slot, binStep, state.tokenXDecimals, state.tokenYDecimals);
-    ctx.fillText('$' + formatPrice(priceRaw), xLabelWidth - 6, y + 3);
+    const rawP = Math.exp(logPriceMin + slot * logSlotStep);
+    const price = rawP * Math.pow(10, state.tokenXDecimals - state.tokenYDecimals);
+    ctx.fillText('$' + formatPrice(price), xLabelWidth - 6, y + 3);
   }
 
   // Update header meta
@@ -2170,8 +2185,8 @@ function renderBinViz() {
   if (metaEl && binStep) {
     const poolCount = state.discoveredDlmmPools.length;
     const metaLabel = poolCount > 1
-      ? `${poolCount} pools aggregated · bin step ${binStep}`
-      : `bin step ${binStep} · ${totalBins} slots`;
+      ? `${poolCount} pools aggregated · ±${vizState.zoomPct}%`
+      : `bin step ${binStep} · ±${vizState.zoomPct}%`;
     metaEl.textContent = metaLabel;
   }
 }
@@ -2194,18 +2209,20 @@ async function fetchAggregatedLiquidity(dlmmPools) {
   const primary = dlmmPools[0];
   const primaryBinStep = primary.bin_step ?? primary.binStep;
   const primaryActiveId = primary.active_id ?? primary.activeId ?? primary.active_bin_id;
-  const priceSlotCount = vizState.visibleRange * 2 + 1;
-  const stepFactor = 1 + primaryBinStep / 10000;
-  const lowPriceRaw = Math.pow(stepFactor, primaryActiveId - vizState.visibleRange);
-  const highPriceRaw = Math.pow(stepFactor, primaryActiveId + vizState.visibleRange);
-  const priceSlotStep = (highPriceRaw - lowPriceRaw) / priceSlotCount;
-  const priceSlotMin = lowPriceRaw;
+
+  const SLOT_COUNT = 400;
+  const logRange = Math.log(1 + vizState.zoomPct / 100);
+  const primaryLogStep = Math.log(1 + primaryBinStep / 10000);
+  const logPriceCenter = primaryActiveId * primaryLogStep;
+  const logPriceMin = logPriceCenter - logRange;
+  const logSlotStep = (2 * logRange) / SLOT_COUNT;
 
   const allBinMaps = await Promise.all(
     dlmmPools.map(p => {
       const poolBinStep = p.bin_step ?? p.binStep;
       const poolActiveId = p.active_id ?? p.activeId ?? p.active_bin_id;
-      return fetchBinArrays(p.address, poolActiveId, vizState.visibleRange).catch(() => new Map());
+      const poolBinsNeeded = Math.ceil(logRange / Math.log(1 + poolBinStep / 10000));
+      return fetchBinArrays(p.address, poolActiveId, poolBinsNeeded).catch(() => new Map());
     })
   );
 
@@ -2213,25 +2230,36 @@ async function fetchAggregatedLiquidity(dlmmPools) {
   for (let i = 0; i < dlmmPools.length; i++) {
     const pool = dlmmPools[i];
     const poolBinStep = pool.bin_step ?? pool.binStep;
+    const poolLogStep = Math.log(1 + poolBinStep / 10000);
+
     for (const [binId, amounts] of allBinMaps[i]) {
-      const priceRaw = Math.pow(1 + poolBinStep / 10000, binId);
-      const slot = Math.floor((priceRaw - priceSlotMin) / priceSlotStep);
-      if (slot < 0 || slot >= priceSlotCount) continue;
-      const existing = merged.get(slot) || { amountX: 0, amountY: 0 };
-      existing.amountX += amounts.amountX;
-      existing.amountY += amounts.amountY;
-      merged.set(slot, existing);
+      const binLogLow = binId * poolLogStep - poolLogStep / 2;
+      const binLogHigh = binId * poolLogStep + poolLogStep / 2;
+      const slotLow = Math.max(0, Math.floor((binLogLow - logPriceMin) / logSlotStep));
+      const slotHigh = Math.min(SLOT_COUNT - 1, Math.floor((binLogHigh - logPriceMin) / logSlotStep));
+      if (slotHigh < 0 || slotLow >= SLOT_COUNT) continue;
+      const span = Math.max(1, slotHigh - slotLow + 1);
+
+      for (let s = slotLow; s <= slotHigh; s++) {
+        const ex = merged.get(s) || { amountX: 0, amountY: 0 };
+        ex.amountX += amounts.amountX / span;
+        ex.amountY += amounts.amountY / span;
+        merged.set(s, ex);
+      }
     }
   }
 
-  vizState.priceSlotMin = priceSlotMin;
-  vizState.priceSlotStep = priceSlotStep;
-  vizState.priceSlotCount = priceSlotCount;
+  vizState.logPriceMin = logPriceMin;
+  vizState.logSlotStep = logSlotStep;
+  vizState.slotCount = SLOT_COUNT;
   return merged;
 }
 
 async function loadBinVizData() {
   if (!state.poolAddress || !state.activeBin || !state.binStep) return;
+
+  if (vizState.fetchController) vizState.fetchController.abort();
+  vizState.fetchController = new AbortController();
 
   vizState.activeBin = state.activeBin;
   vizState.binStep = state.binStep;
@@ -2243,6 +2271,7 @@ async function loadBinVizData() {
   try {
     vizState.poolBins = await fetchAggregatedLiquidity(dlmmPools);
   } catch (err) {
+    if (err.name === 'AbortError') return;
     if (CONFIG.DEBUG) console.error('Failed to fetch bin arrays:', err);
     vizState.poolBins = new Map();
   }
@@ -4158,20 +4187,20 @@ async function init() {
     if (e.key === 'Enter') loadPool();
   });
 
-  // Zoom controls
-  const ZOOM_STEPS = [80, 120, 200];
+  // Zoom controls (price-percentage)
+  const ZOOM_STEPS = [10, 20, 50];
   document.getElementById('zoomIn')?.addEventListener('click', () => {
-    const curIdx = ZOOM_STEPS.indexOf(vizState.visibleRange);
-    const newIdx = Math.max(0, (curIdx >= 0 ? curIdx : 2) - 1);
-    vizState.visibleRange = ZOOM_STEPS[newIdx];
-    document.getElementById('zoomLevel').textContent = '±' + vizState.visibleRange;
+    const curIdx = ZOOM_STEPS.indexOf(vizState.zoomPct);
+    const newIdx = Math.max(0, (curIdx >= 0 ? curIdx : 1) - 1);
+    vizState.zoomPct = ZOOM_STEPS[newIdx];
+    document.getElementById('zoomLevel').textContent = '±' + vizState.zoomPct + '%';
     loadBinVizData();
   });
   document.getElementById('zoomOut')?.addEventListener('click', () => {
-    const curIdx = ZOOM_STEPS.indexOf(vizState.visibleRange);
-    const newIdx = Math.min(ZOOM_STEPS.length - 1, (curIdx >= 0 ? curIdx : 2) + 1);
-    vizState.visibleRange = ZOOM_STEPS[newIdx];
-    document.getElementById('zoomLevel').textContent = '±' + vizState.visibleRange;
+    const curIdx = ZOOM_STEPS.indexOf(vizState.zoomPct);
+    const newIdx = Math.min(ZOOM_STEPS.length - 1, (curIdx >= 0 ? curIdx : 1) + 1);
+    vizState.zoomPct = ZOOM_STEPS[newIdx];
+    document.getElementById('zoomLevel').textContent = '±' + vizState.zoomPct + '%';
     loadBinVizData();
   });
 

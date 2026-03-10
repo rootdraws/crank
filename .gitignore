@@ -40,3 +40,4 @@ claude.md
 # Reference SDKs (cloned, not ours)
 ref/
 .vercel
+.env*.local
