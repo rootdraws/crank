@@ -1480,12 +1480,13 @@ function renderAddressBook() {
 
 async function loadAddressBook() {
   if (!state.connected || !state.publicKey) return;
+  renderAddressBookPanel();
   const data = await relayFetch('/api/addressbook?wallet=' + state.publicKey.toBase58());
   if (data) {
     state.addressBook = { active: data.active || [], recent: data.recent || [], topPairs: data.topPairs || [] };
     renderAddressBook();
-    renderAddressBookPanel();
   }
+  renderAddressBookPanel();
 }
 
 function renderAddressBookPanel() {
