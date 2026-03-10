@@ -302,7 +302,7 @@
       background: #F2E0D0;
     }
     body.on-rank .page-body {
-      top: 60px; bottom: 150px; left: 90px; right: 70px;
+      top: 60px; bottom: 135px; left: 90px; right: 70px;
       overflow-y: auto;
     }
     .page-body::-webkit-scrollbar { width: 2px; }
@@ -697,7 +697,7 @@
       display: flex; align-items: flex-start; gap: 0;
     }
     .monke-nft-panel {
-      flex: 0 0 300px;
+      flex: 0 0 380px;
       padding-right: 16px;
     }
     .monke-frame-divider {
