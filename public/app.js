@@ -2173,11 +2173,12 @@ function updateBinVizPreview() {
 
 async function fetchAggregatedLiquidity(dlmmPools) {
   const primary = dlmmPools[0];
+  const primaryBinStep = primary.bin_step ?? primary.binStep;
+  const primaryActiveId = primary.active_id ?? primary.activeId ?? primary.active_bin_id;
   const priceSlotCount = vizState.visibleRange * 2 + 1;
-  const stepFactor = 1 + primary.binStep / 10000;
-  const activePriceRaw = Math.pow(stepFactor, primary.activeId ?? primary.active_id ?? primary.active_bin_id);
-  const lowPriceRaw = Math.pow(stepFactor, (primary.activeId ?? primary.active_id ?? primary.active_bin_id) - vizState.visibleRange);
-  const highPriceRaw = Math.pow(stepFactor, (primary.activeId ?? primary.active_id ?? primary.active_bin_id) + vizState.visibleRange);
+  const stepFactor = 1 + primaryBinStep / 10000;
+  const lowPriceRaw = Math.pow(stepFactor, primaryActiveId - vizState.visibleRange);
+  const highPriceRaw = Math.pow(stepFactor, primaryActiveId + vizState.visibleRange);
   const priceSlotStep = (highPriceRaw - lowPriceRaw) / priceSlotCount;
   const priceSlotMin = lowPriceRaw;
 
