@@ -13,6 +13,7 @@
   "HELIUS_RPC_URL": "https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY",
   "BOT_RELAY_URL": "wss://bot.crank.money",
   "METEORA_API_URL": "https://dlmm.datapi.meteora.ag",
+  "DAMM_API_URL": "https://damm-v2.datapi.meteora.ag",
   "PEGGED_MINT": "GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1",
   "STAKE_POOL": "9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg",
   "BRIDGE_PROGRAM_ID": "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN",

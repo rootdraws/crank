@@ -352,6 +352,9 @@ export class GeyserSubscriber extends EventEmitter {
       poolPositions.delete(positionPDA);
       if (poolPositions.size === 0) {
         this.positionsByPool.delete(poolKey);
+        // Prune dead pool from live gRPC subscription
+        this.updateSubscription();
+        logger.info(`[geyser] Pool ${poolKey.slice(0, 8)} has no open positions — pruned from subscription`);
       }
     }
   }
@@ -509,10 +512,10 @@ export class GeyserSubscriber extends EventEmitter {
             position: newPos,
           } as PositionChangedEvent);
         }
-        // If new pools appeared, reconnect to update gRPC subscription
+        // If new pools appeared, update subscription live — no reconnect needed
         if (this.positionsByPool.size > poolCountBefore) {
-          logger.info(`[geyser] New pool(s) detected — reconnecting to update subscription`);
-          this.handleDisconnect();
+          logger.info(`[geyser] New pool(s) detected — updating subscription live`);
+          this.updateSubscription();
         }
       }).catch(e =>
         logger.error(`[geyser] Registry rebuild failed: ${e.message}`)
@@ -523,6 +526,50 @@ export class GeyserSubscriber extends EventEmitter {
   }
 
   // ─── GRPC CONNECTION ───
+
+  /**
+   * Build the current subscription request based on all tracked pools.
+   * Uses full pool address as filter key to avoid 8-char prefix collisions.
+   */
+  private buildSubscriptionRequest(): object {
+    const lbPairFilters: Record<string, any> = {};
+    for (const pool of this.getWatchedPools()) {
+      lbPairFilters[`lb_${pool}`] = {
+        account: [pool],
+        filters: [{ datasize: LBPAIR_EXPECTED_SIZE }],
+      };
+    }
+
+    return {
+      accounts: {
+        ...lbPairFilters,
+        positions: { owner: [this.coreProgramId.toBase58()] },
+      },
+      slots: {},
+      transactions: {},
+      blocks: {},
+      blocksMeta: {},
+      accountsDataSlice: [],
+      commitment: 1,
+      ping: { id: ++this.pingId },
+    };
+  }
+
+  /**
+   * Update the live gRPC subscription without reconnecting.
+   * Sends a new SubscribeRequest to add/remove pool filters in place.
+   */
+  private updateSubscription(): void {
+    if (!this.connected || !this.stream) return;
+    const request = this.buildSubscriptionRequest();
+    this.stream.write(request, (err: any) => {
+      if (err) {
+        logger.warn(`[geyser] Subscription update failed: ${err.message}`);
+      } else {
+        logger.info(`[geyser] Subscription updated: ${this.positionsByPool.size} pools tracked`);
+      }
+    });
+  }
 
   async connect(): Promise<void> {
     if (this.shuttingDown) return;
@@ -551,48 +598,9 @@ export class GeyserSubscriber extends EventEmitter {
       await client.connect();
       this.stream = await client.subscribe();
 
-      // ── Build subscription request ──
+      // ── Build and send subscription request ──
+      const request = this.buildSubscriptionRequest();
 
-      // LbPair accounts: subscribe by specific address + datasize filter
-      // to ensure we only receive LbPair updates (904 bytes), not other
-      // Meteora account types that might share an address pattern.
-      const lbPairFilters: Record<string, any> = {};
-      for (const pool of this.getWatchedPools()) {
-        lbPairFilters[`lb_${pool.slice(0, 8)}`] = {
-          account: [pool],
-          filters: [
-            { datasize: LBPAIR_EXPECTED_SIZE },
-          ],
-        };
-      }
-
-      // Position PDAs: subscribe by program owner (all core program accounts)
-      const positionFilter = {
-        positions: {
-          owner: [this.coreProgramId.toBase58()],
-        },
-      };
-
-      const request = {
-        accounts: {
-          ...lbPairFilters,
-          ...positionFilter,
-        },
-        slots: {},
-        transactions: {},
-        blocks: {},
-        blocksMeta: {},
-        // Note: accounts_data_slice applies globally. We can't slice differently
-        // for LbPair vs Position PDAs, so we request full data for both.
-        // Future optimization: dual connections with targeted slices.
-        accountsDataSlice: [],
-        // Helius LaserStream commitment: 1 = CONFIRMED
-        commitment: 1,
-        // Built-in ping for connection health (Helius LaserStream feature)
-        ping: { id: ++this.pingId },
-      };
-
-      // Send subscription request
       await new Promise<void>((resolve, reject) => {
         this.stream.write(request, (err: any) => {
           if (err) reject(err);

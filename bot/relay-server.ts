@@ -16,6 +16,7 @@
 import { IncomingMessage, ServerResponse } from 'http';
 import { Connection, PublicKey } from '@solana/web3.js';
 import WebSocket from 'ws';
+import * as fs from 'fs';
 const WebSocketServer = WebSocket.Server;
 import type { Server as HttpServer } from 'http';
 import type { GeyserSubscriber, ActiveBinChangedEvent, HarvestJob, PositionChangedEvent } from './geyser-subscriber';
@@ -92,6 +93,15 @@ export class RelayServer {
   private meteoraCache: Map<string, { data: any; ts: number }> = new Map();
   private static METEORA_CACHE_TTL = 5 * 60 * 1000;
   private static METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
+
+  // UI-watched pools (bin array relay)
+  private uiWatchedPools: Set<string> = new Set();
+  private binArrayCache: Map<string, { bins: Map<number, { amountX: number; amountY: number }>; updatedAt: number }> = new Map();
+  private uiPollTimer: NodeJS.Timeout | null = null;
+
+  // Feed persistence
+  private feedCachePath = './feed-cache.json';
+  private feedSaveTimer: NodeJS.Timeout | null = null;
 
   constructor(
     subscriber: GeyserSubscriber,
@@ -175,6 +185,20 @@ export class RelayServer {
       this.broadcast('positionChanged', event);
     });
 
+    // Trigger RPC bin array fetch on active bin changes (for UI-watched pools)
+    this.subscriber.on('activeBinChanged', async (event: ActiveBinChangedEvent) => {
+      const pool = (event as any).lbPair;
+      if (pool && this.uiWatchedPools.has(pool)) {
+        await this.refreshBinArraysRpc(pool);
+      }
+    });
+
+    // Load persisted feed cache
+    this.loadFeedCache();
+
+    // Start UI-only pool polling
+    this.startUiPollLoop();
+
     logger.info('[relay] WebSocket relay attached to HTTP server');
   }
 
@@ -187,7 +211,7 @@ export class RelayServer {
     const path = url.pathname;
 
     // CORS — nginx handles Access-Control-Allow-Origin; app sets methods/headers only
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
@@ -223,11 +247,25 @@ export class RelayServer {
         case '/api/addressbook':
           this.handleAddressBook(url, res);
           return true;
+        case '/api/subscribe-pools':
+          this.handleSubscribePools(req, res);
+          return true;
+        case '/api/feed':
+          this.handleFeed(res);
+          return true;
+        case '/api/init-pool-tx':
+          this.handleInitPoolTx(req, res);
+          return true;
         default:
-          // Check for /api/pools/{address}
+          // Check for /api/pools/{address} or /api/bin-arrays/{pool}
           if (path.startsWith('/api/pools/')) {
             const address = path.slice('/api/pools/'.length);
             return this.handlePoolByAddress(res, address);
+          }
+          if (path.startsWith('/api/bin-arrays/')) {
+            const pool = path.slice('/api/bin-arrays/'.length);
+            this.handleBinArrays(pool, res);
+            return true;
           }
           this.json(res, 404, { error: 'Not found' });
           return true;
@@ -511,9 +549,35 @@ export class RelayServer {
       activePools.sort((a, b) => b.lastActive - a.lastActive);
       recentPools.sort((a, b) => b.lastActive - a.lastActive);
 
+      // Compute topPairs: group by interesting mint, sort by totalPositionsOpened
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      const pairMap = new Map<string, { tokenMint: string; symbol: string; pairSymbol: string; totalPositionsOpened: number }>();
+      for (const entry of entries) {
+        const meteoraData = enriched.get(entry.pair);
+        if (!meteoraData) continue;
+        const tokenX = meteoraData.token_x;
+        const tokenY = meteoraData.token_y;
+        if (!tokenX || !tokenY) continue;
+        const interestingToken = [tokenX, tokenY].find(t => t.address !== SOL_MINT && t.address !== USDC_MINT);
+        if (!interestingToken) continue;
+        const tokenMint = interestingToken.address;
+        const existing = pairMap.get(tokenMint);
+        const pairSymbol = `${tokenX.symbol || '?'}/${tokenY.symbol || '?'}`;
+        if (existing) {
+          existing.totalPositionsOpened += entry.totalPositionsOpened;
+        } else {
+          pairMap.set(tokenMint, { tokenMint, symbol: interestingToken.symbol || tokenMint.slice(0, 6), pairSymbol, totalPositionsOpened: entry.totalPositionsOpened });
+        }
+      }
+      const topPairs = [...pairMap.values()]
+        .sort((a, b) => b.totalPositionsOpened - a.totalPositionsOpened)
+        .slice(0, 5);
+
       this.json(res, 200, {
         active: activePools,
         recent: recentPools.slice(0, 10),
+        topPairs,
         wallet,
         timestamp: Date.now(),
       });
@@ -597,7 +661,9 @@ export class RelayServer {
 
   /** Broadcast an event to all connected WebSocket clients + store in feed buffer */
   broadcast(type: string, data: any): void {
-    const event: RelayEvent = { type, data, timestamp: Date.now() };
+    // Build human-readable text for feed display
+    const text = this.buildFeedText(type, data);
+    const event: RelayEvent & { text?: string } = { type, data, text, timestamp: Date.now() };
 
     // Store in ring buffer
     this.feedEvents.push(event);
@@ -605,12 +671,45 @@ export class RelayServer {
       this.feedEvents.shift();
     }
 
+    // Debounce-save feed cache every 5s
+    clearTimeout(this.feedSaveTimer!);
+    this.feedSaveTimer = setTimeout(() => this.saveFeedCache(), 5000);
+
     // Broadcast to connected clients
     const payload = JSON.stringify(event);
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(payload);
       }
+    }
+  }
+
+  private buildFeedText(type: string, data: any): string {
+    const lbPair = data?.lbPair || '';
+    const info = lbPair ? this.subscriber.getPoolInfo(lbPair) : null;
+    const knownSymbol = (mint: string) => {
+      const cached = this.meteoraCache.get(mint);
+      return cached?.data?.symbol || mint.slice(0, 6) + '...';
+    };
+    const symX = info ? knownSymbol(info.tokenXMint.toBase58()) : lbPair.slice(0, 6);
+    const symY = info ? knownSymbol(info.tokenYMint.toBase58()) : '...';
+    const pair = symX !== lbPair.slice(0, 6) ? `${symX}/${symY}` : lbPair.slice(0, 8) + '...';
+
+    switch (type) {
+      case 'harvestExecuted':
+        return `harvested ${data.binCount || '?'} bins · ${pair} → ${(data.owner || '').slice(0, 6)}...`;
+      case 'positionClosed':
+        return `position closed · ${pair} → ${(data.owner || '').slice(0, 6)}...`;
+      case 'harvestNeeded':
+        return `${data.safeBinCount || '?'} bins ready · ${pair}`;
+      case 'positionChanged':
+        return `position ${data.action || '?'} · ${pair}`;
+      case 'activeBinChanged':
+        return `${pair} price → bin ${data.newActiveId}`;
+      case 'roverTvlUpdated':
+        return `rover TVL: ${data.count || 0} pools · $${(data.totalTvl || 0).toFixed(0)}`;
+      default:
+        return `${type}: ${JSON.stringify(data).slice(0, 60)}`;
     }
   }
 
@@ -626,6 +725,210 @@ export class RelayServer {
       count: entries.length,
       totalTvl: entries.reduce((sum, e) => sum + e.tvl, 0),
     });
+  }
+
+  // ─── NEW ROUTE HANDLERS ───
+
+  private handleSubscribePools(req: IncomingMessage, res: ServerResponse): void {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { pools } = JSON.parse(body);
+        if (Array.isArray(pools)) {
+          const snapshot: Record<string, any> = {};
+          for (const pool of pools) {
+            this.uiWatchedPools.add(pool);
+            const cached = this.binArrayCache.get(pool);
+            if (cached) {
+              snapshot[pool] = Object.fromEntries(cached.bins);
+            }
+          }
+          this.json(res, 200, { subscribed: pools, snapshot });
+        } else {
+          this.json(res, 400, { error: 'Expected { pools: string[] }' });
+        }
+      } catch {
+        this.json(res, 400, { error: 'Invalid JSON' });
+      }
+    });
+  }
+
+  private handleBinArrays(pool: string, res: ServerResponse): void {
+    const cached = this.binArrayCache.get(pool);
+    if (!cached) {
+      this.json(res, 200, { pool, bins: {}, updatedAt: null });
+      return;
+    }
+    const bins: Record<number, { amountX: number; amountY: number }> = {};
+    for (const [binId, amounts] of cached.bins) {
+      bins[binId] = amounts;
+    }
+    this.json(res, 200, { pool, bins, updatedAt: cached.updatedAt });
+  }
+
+  private handleFeed(res: ServerResponse): void {
+    this.json(res, 200, {
+      events: this.feedEvents.slice(-50),
+      timestamp: Date.now(),
+    });
+  }
+
+  private handleInitPoolTx(req: IncomingMessage, res: ServerResponse): void {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { tokenMint, quoteMint, binStep } = JSON.parse(body);
+        if (!tokenMint || !quoteMint || !binStep) {
+          this.json(res, 400, { error: 'Missing tokenMint, quoteMint, or binStep' });
+          return;
+        }
+
+        // Dynamically require DLMM SDK to build pool creation tx
+        let DLMM: any;
+        try {
+          const dlmmMod: any = await import('@meteora-ag/dlmm');
+          DLMM = dlmmMod.default?.DLMM || dlmmMod.default || dlmmMod.DLMM || dlmmMod;
+        } catch {
+          this.json(res, 500, { error: '@meteora-ag/dlmm SDK not available' });
+          return;
+        }
+
+        const tokenXMint = new PublicKey(tokenMint);
+        const tokenYMint = new PublicKey(quoteMint);
+
+        // Fetch current price via DAS getAsset to derive active bin ID
+        let activeId = 0;
+        try {
+          const dasResp = await fetch((this.connection as any).rpcEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAsset', params: { id: tokenMint } }),
+          });
+          const dasData = await dasResp.json();
+          const price = dasData?.result?.token_info?.price_info?.price_per_token;
+          if (price && price > 0) {
+            const binStepNum = parseInt(binStep, 10);
+            activeId = Math.round(Math.log(price) / Math.log(1 + binStepNum / 10000));
+          }
+        } catch {
+          // activeId stays 0; pool will be created at ~1.0 price ratio
+        }
+
+        const tx = await DLMM.createPermissionlessLbPair(
+          this.connection,
+          new PublicKey(binStep.toString()),
+          tokenXMint,
+          tokenYMint,
+          activeId,
+          { cluster: 'mainnet-beta' }
+        );
+
+        if (!tx) {
+          this.json(res, 500, { error: 'Failed to build pool creation transaction' });
+          return;
+        }
+
+        // Extract new pool address (first new account in the tx or derive it)
+        const newPoolKey = tx.instructions?.[0]?.keys?.[0]?.pubkey?.toBase58?.() || '';
+        const txBytes = tx.serialize({ requireAllSignatures: false });
+        const txBase64 = Buffer.from(txBytes).toString('base64');
+
+        this.json(res, 200, { transaction: txBase64, poolAddress: newPoolKey });
+      } catch (e: any) {
+        logger.error(`[relay] /api/init-pool-tx error: ${e.message}`);
+        this.json(res, 500, { error: e.message || 'Failed to build pool creation transaction' });
+      }
+    });
+  }
+
+  // ─── BIN ARRAY RELAY HELPERS ───
+
+  private async refreshBinArraysRpc(pool: string): Promise<void> {
+    try {
+      const poolInfo = this.subscriber.getPoolInfo(pool);
+      if (!poolInfo) return;
+      const activeId = poolInfo.activeId;
+      const visibleRange = 80;
+      const lowBin = activeId - visibleRange;
+      const highBin = activeId + visibleRange;
+
+      // Fetch bin arrays via RPC (reuse existing getDLMM helper)
+      const dlmm = await getDLMM(this.connection, new PublicKey(pool));
+      if (!dlmm) return;
+
+      const binArrays = await (dlmm as any).getBinArrays?.() || [];
+      const newBins = new Map<number, { amountX: number; amountY: number }>();
+      const changedBins: Record<number, { amountX: number; amountY: number }> = {};
+
+      for (const ba of binArrays) {
+        const bins = ba.account?.bins || ba.bins || [];
+        const lowerBinId: number = ba.account?.lowerBinId ?? ba.lowerBinId ?? 0;
+        for (let i = 0; i < bins.length; i++) {
+          const binId = lowerBinId + i;
+          if (binId < lowBin || binId > highBin) continue;
+          const amountX = Number(bins[i]?.amountX ?? bins[i]?.amount_x ?? 0);
+          const amountY = Number(bins[i]?.amountY ?? bins[i]?.amount_y ?? 0);
+          if (amountX === 0 && amountY === 0) continue;
+          newBins.set(binId, { amountX, amountY });
+        }
+      }
+
+      // Diff against cached
+      const cached = this.binArrayCache.get(pool);
+      for (const [binId, amounts] of newBins) {
+        const prev = cached?.bins.get(binId);
+        if (!prev || prev.amountX !== amounts.amountX || prev.amountY !== amounts.amountY) {
+          changedBins[binId] = amounts;
+        }
+      }
+
+      this.binArrayCache.set(pool, { bins: newBins, updatedAt: Date.now() });
+
+      if (Object.keys(changedBins).length > 0) {
+        this.broadcast('binArrayUpdated', { lbPair: pool, bins: changedBins });
+      }
+    } catch (e: any) {
+      if (logger) logger.warn(`[relay] refreshBinArraysRpc ${pool}: ${e.message}`);
+    }
+  }
+
+  private startUiPollLoop(): void {
+    if (this.uiPollTimer) clearInterval(this.uiPollTimer);
+    this.uiPollTimer = setInterval(async () => {
+      const watchedByGeyser = this.subscriber.getWatchedPools ? new Set(this.subscriber.getWatchedPools()) : new Set<string>();
+      for (const pool of this.uiWatchedPools) {
+        if (!watchedByGeyser.has(pool)) {
+          await this.refreshBinArraysRpc(pool).catch(() => {});
+        }
+      }
+    }, 10_000);
+  }
+
+  // ─── FEED PERSISTENCE ───
+
+  private loadFeedCache(): void {
+    try {
+      if (fs.existsSync(this.feedCachePath)) {
+        const raw = fs.readFileSync(this.feedCachePath, 'utf8');
+        const events = JSON.parse(raw);
+        if (Array.isArray(events)) {
+          this.feedEvents = events.slice(-RelayServer.MAX_FEED_EVENTS);
+          logger.info(`[relay] Loaded ${this.feedEvents.length} feed events from cache`);
+        }
+      }
+    } catch (e: any) {
+      logger.warn(`[relay] Failed to load feed cache: ${e.message}`);
+    }
+  }
+
+  private saveFeedCache(): void {
+    try {
+      fs.writeFileSync(this.feedCachePath, JSON.stringify(this.feedEvents.slice(-200)));
+    } catch (e: any) {
+      logger.warn(`[relay] Failed to save feed cache: ${e.message}`);
+    }
   }
 
   // ─── HELPERS ───

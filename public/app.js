@@ -283,7 +283,7 @@ async function loadOnChainFeeBps() {
 let relayWs = null;
 let relayConnected = false;
 let relayRetries = 0;
-const RELAY_MAX_RETRIES = 3;
+const RELAY_MAX_RETRIES = 10;
 const RELAY_BASE_DELAY = 5000;
 
 function connectRelay() {
@@ -337,18 +337,30 @@ function connectRelay() {
 
 function handleRelayEvent(msg) {
   switch (msg.type) {
-    case 'activeBinChanged':
-      // Update price if we're watching this pool
-      if (state.poolAddress && msg.data.lbPair === state.poolAddress) {
-        const newPrice = binToPrice(msg.data.newActiveId, state.binStep, state.tokenXDecimals, state.tokenYDecimals);
-        state.currentPrice = newPrice;
-        state.activeBin = msg.data.newActiveId;
-        const priceEl = document.getElementById('currentPrice');
-        if (priceEl) priceEl.textContent = '$' + formatPrice(newPrice);
-        vizState.activeBin = msg.data.newActiveId;
-        renderBinViz();
-        // Re-fetch user bins since price moved (bins may have filled)
-        loadUserBins().then(() => renderBinViz());
+    case 'activeBinChanged': {
+      // Update price if we're watching the primary pool
+      const isWatchedPool = state.poolAddress && (
+        msg.data.lbPair === state.poolAddress ||
+        state.discoveredDlmmPools.some(p => p.address === msg.data.lbPair)
+      );
+      if (isWatchedPool) {
+        if (msg.data.lbPair === state.poolAddress) {
+          const newPrice = binToPrice(msg.data.newActiveId, state.binStep, state.tokenXDecimals, state.tokenYDecimals);
+          state.currentPrice = newPrice;
+          state.activeBin = msg.data.newActiveId;
+          const priceEl = document.getElementById('currentPrice');
+          if (priceEl) priceEl.textContent = '$' + formatPrice(newPrice);
+          vizState.activeBin = msg.data.newActiveId;
+        }
+        loadBinVizData();
+      }
+      break;
+    }
+
+    case 'binArrayUpdated':
+      if (msg.data && msg.data.lbPair && state.discoveredDlmmPools.some(p => p.address === msg.data.lbPair)) {
+        patchBinArrayCache(msg.data);
+        renderBinVizDebounced();
       }
       break;
 
@@ -367,10 +379,14 @@ function handleRelayEvent(msg) {
       break;
 
     case 'feedHistory':
-      // Catch-up events on WebSocket connect
+      // Catch-up events on WebSocket connect (only if preload hasn't already populated the feed)
       if (msg.data && Array.isArray(msg.data)) {
-        for (const evt of msg.data) {
-          addFeedEvent(formatRelayEvent(evt));
+        const feed = document.getElementById('activityFeed');
+        const hasFeedContent = feed && feed.children.length > 0 && !feed.querySelector('.empty-state');
+        if (!hasFeedContent) {
+          for (const evt of [...msg.data].reverse()) {
+            addFeedEvent(evt.text || formatRelayEvent(evt), evt.timestamp);
+          }
         }
       }
       break;
@@ -397,14 +413,42 @@ function formatRelayEvent(msg) {
   }
 }
 
-async function relayFetch(path) {
+async function relayFetch(path, options = {}) {
   if (!CONFIG.BOT_RELAY_URL) return null;
   const baseUrl = CONFIG.BOT_RELAY_URL.replace('ws://', 'http://').replace('wss://', 'https://');
   try {
-    const resp = await fetch(baseUrl + path);
+    const opts = { ...options };
+    if (opts.body && !opts.headers) opts.headers = { 'Content-Type': 'application/json' };
+    const resp = await fetch(baseUrl + path, opts);
     if (resp.ok) return resp.json();
   } catch {}
   return null;
+}
+
+let _binVizDebounceTimer = null;
+function renderBinVizDebounced() {
+  clearTimeout(_binVizDebounceTimer);
+  _binVizDebounceTimer = setTimeout(renderBinViz, 50);
+}
+
+function patchBinArrayCache(data) {
+  if (!data || !data.bins) return;
+  const dlmmPools = state.discoveredDlmmPools.length > 0
+    ? state.discoveredDlmmPools
+    : [{ address: state.poolAddress, activeId: state.activeBin, active_id: state.activeBin, binStep: state.binStep, bin_step: state.binStep }];
+  const poolEntry = dlmmPools.find(p => p.address === data.lbPair);
+  if (!poolEntry || !vizState.priceSlotStep) return;
+  const poolBinStep = poolEntry.bin_step ?? poolEntry.binStep;
+  for (const [binIdStr, amounts] of Object.entries(data.bins)) {
+    const binId = parseInt(binIdStr, 10);
+    const priceRaw = Math.pow(1 + poolBinStep / 10000, binId);
+    const slot = Math.floor((priceRaw - vizState.priceSlotMin) / vizState.priceSlotStep);
+    if (slot < 0 || slot >= vizState.priceSlotCount) continue;
+    const existing = vizState.poolBins.get(slot) || { amountX: 0, amountY: 0 };
+    existing.amountX = amounts.amountX;
+    existing.amountY = amounts.amountY;
+    vizState.poolBins.set(slot, existing);
+  }
 }
 
 // ============================================================
@@ -790,7 +834,10 @@ const state = {
   positions: [],
 
   // Pool discovery
-  addressBook: { active: [], recent: [] },
+  tokenMint: null,
+  discoveredDlmmPools: [],
+  discoveredDammPools: [],
+  addressBook: { active: [], recent: [], topPairs: [] },
   trendingPools: [],
 
   // Navigation
@@ -841,7 +888,7 @@ function updateSide(newSide) {
   if (tok) tok.textContent = newSide === 'buy' ? state.tokenYSymbol : state.tokenXSymbol;
 
   // Update range suffix text and default values
-  const suffix = newSide === 'buy' ? '% below' : '% above';
+  const suffix = newSide === 'buy' ? 'percent below price.' : 'percent above price.';
   const suffixEl = document.getElementById('rangeSuffix');
   const suffixFarEl = document.getElementById('rangeSuffixFar');
   if (suffixEl) suffixEl.textContent = suffix;
@@ -1146,37 +1193,183 @@ async function fetchTrendingPools() {
   }
 }
 
-async function resolveTokenToPools(mintAddress) {
-  const keys = [SOL_MINT, USDC_MINT].map(quote => {
-    return [mintAddress, quote].sort().join('-');
-  });
+async function discoverAllPoolsForToken(mintAddress) {
+  const DAMM_API_BASE = CONFIG.DAMM_API_URL || 'https://damm-v2.datapi.meteora.ag';
+  const quoteKeys = [SOL_MINT, USDC_MINT].map(quote => [mintAddress, quote].sort().join('-'));
 
-  const fetches = keys.map(key =>
-    fetch(`${METEORA_API_BASE()}/pools/groups/${key}?sort_by=volume_24h:desc&page_size=5`)
-      .then(r => r.ok ? r.json() : { data: [] })
-      .catch(() => ({ data: [] }))
-  );
+  const [dlmmSol, dlmmUsdc, dammSol, dammUsdc] = await Promise.all([
+    fetch(`${METEORA_API_BASE()}/pools/groups/${quoteKeys[0]}?sort_by=volume_24h:desc&page_size=10`)
+      .then(r => r.ok ? r.json() : { data: [] }).catch(() => ({ data: [] })),
+    fetch(`${METEORA_API_BASE()}/pools/groups/${quoteKeys[1]}?sort_by=volume_24h:desc&page_size=10`)
+      .then(r => r.ok ? r.json() : { data: [] }).catch(() => ({ data: [] })),
+    fetch(`${DAMM_API_BASE}/pools/groups/${quoteKeys[0]}?sort_by=volume_24h:desc&page_size=10`)
+      .then(r => r.ok ? r.json() : { data: [] }).catch(() => ({ data: [] })),
+    fetch(`${DAMM_API_BASE}/pools/groups/${quoteKeys[1]}?sort_by=volume_24h:desc&page_size=10`)
+      .then(r => r.ok ? r.json() : { data: [] }).catch(() => ({ data: [] })),
+  ]);
 
-  const results = await Promise.all(fetches);
-  const allPools = results.flatMap(r => r.data || []);
-  allPools.sort((a, b) => (b.volume?.['24h'] || 0) - (a.volume?.['24h'] || 0));
+  const dlmmPools = [...(dlmmSol.data || []), ...(dlmmUsdc.data || [])]
+    .filter(p => !p.is_blacklisted)
+    .sort((a, b) => (b.volume?.['24h'] || 0) - (a.volume?.['24h'] || 0));
+  const dammPools = [...(dammSol.data || []), ...(dammUsdc.data || [])]
+    .filter(p => !p.is_blacklisted)
+    .sort((a, b) => (b.volume?.['24h'] || 0) - (a.volume?.['24h'] || 0));
 
-  if (allPools.length === 0) {
-    showToast('No DLMM pools found for this token', 'error');
+  // Tag DAMM pools so renderPoolPicker can badge them
+  dammPools.forEach(p => { p._source = 'damm'; });
+
+  // Register known symbols
+  for (const p of [...dlmmPools, ...dammPools]) {
+    if (p.token_x?.symbol) KNOWN_TOKENS[p.token_x?.address] = p.token_x.symbol;
+    if (p.token_y?.symbol) KNOWN_TOKENS[p.token_y?.address] = p.token_y.symbol;
+  }
+
+  return { dlmm: dlmmPools, damm: dammPools };
+}
+
+async function loadAggregatedView(dlmmPools, dammPools) {
+  state.tokenMint = document.getElementById('poolAddress')?.value.trim();
+  state.discoveredDlmmPools = dlmmPools;
+  state.discoveredDammPools = dammPools;
+
+  const primary = dlmmPools[0];
+  state.poolAddress = primary.address;
+  state.activeBin = primary.active_id ?? primary.activeId ?? primary.active_bin_id;
+  state.binStep = primary.bin_step ?? primary.binStep;
+  state.tokenXSymbol = primary.token_x?.symbol || 'TOKEN';
+  state.tokenYSymbol = primary.token_y?.symbol || 'SOL';
+  state.tokenXMint = primary.token_x?.address || null;
+  state.tokenYMint = primary.token_y?.address || null;
+
+  if (state.tokenXMint) {
+    const [dX, dY] = await Promise.all([getMintDecimals(state.tokenXMint), getMintDecimals(state.tokenYMint)]);
+    state.tokenXDecimals = dX;
+    state.tokenYDecimals = dY;
+  }
+
+  state.currentPrice = binToPrice(state.activeBin, state.binStep, state.tokenXDecimals, state.tokenYDecimals);
+
+  document.getElementById('poolName').textContent = `${state.tokenXSymbol}/${state.tokenYSymbol}`;
+  document.getElementById('currentPrice').textContent = '$' + formatPrice(state.currentPrice);
+  document.getElementById('poolInfo').classList.add('visible');
+
+  // Show/hide DAMM TVL info
+  let dammInfoEl = document.getElementById('dammTvlInfo');
+  if (dammPools.length > 0) {
+    const totalTvl = dammPools.reduce((sum, p) => sum + (p.tvl || p.liquidity || 0), 0);
+    const tvlStr = totalTvl >= 1e6 ? '$' + (totalTvl / 1e6).toFixed(1) + 'M'
+                 : totalTvl >= 1e3 ? '$' + (totalTvl / 1e3).toFixed(0) + 'K'
+                 : '$' + Math.round(totalTvl);
+    if (!dammInfoEl) {
+      dammInfoEl = document.createElement('div');
+      dammInfoEl.id = 'dammTvlInfo';
+      dammInfoEl.className = 'damm-tvl-info';
+      document.getElementById('poolInfo').after(dammInfoEl);
+    }
+    dammInfoEl.textContent = `+ ${tvlStr} DAMM v2 liquidity (${dammPools.length} pool${dammPools.length > 1 ? 's' : ''})`;
+    dammInfoEl.style.display = '';
+  } else if (dammInfoEl) {
+    dammInfoEl.style.display = 'none';
+  }
+
+  // Primary pool selector when multiple DLMM pools exist
+  const selectWrap = document.getElementById('primaryPoolSelectWrap');
+  const select = document.getElementById('primaryPoolSelect');
+  if (selectWrap && select && dlmmPools.length > 1) {
+    select.innerHTML = dlmmPools.map((p, i) => {
+      const label = `${p.token_x?.symbol || '?'}/${p.token_y?.symbol || '?'} · ${p.bin_step ?? p.binStep} bps`;
+      return `<option value="${i}">${label}</option>`;
+    }).join('');
+    selectWrap.style.display = '';
+    select.onchange = () => {
+      const idx = parseInt(select.value, 10);
+      const pool = state.discoveredDlmmPools[idx];
+      state.poolAddress = pool.address;
+      state.activeBin = pool.active_id ?? pool.activeId ?? pool.active_bin_id;
+      state.binStep = pool.bin_step ?? pool.binStep;
+      state.currentPrice = binToPrice(state.activeBin, state.binStep, state.tokenXDecimals, state.tokenYDecimals);
+      document.getElementById('currentPrice').textContent = '$' + formatPrice(state.currentPrice);
+      loadUserBins();
+      updateBinVizPreview();
+    };
+  } else if (selectWrap) {
+    selectWrap.style.display = 'none';
+  }
+
+  updateSide(state.side);
+
+  // Restore form sections in case they were hidden by createPoolPanel
+  document.querySelector('.side-tabs')?.style.setProperty('display', '');
+  document.querySelector('.range-section')?.style.setProperty('display', '');
+  document.querySelector('.amount-section')?.style.setProperty('display', '');
+  document.getElementById('createPoolPanel')?.style.setProperty('display', 'none');
+
+  showToast(`Found ${dlmmPools.length} DLMM pool${dlmmPools.length > 1 ? 's' : ''}`, 'success');
+  loadBinVizData();
+  if (state.connected) refreshPositionsList();
+
+  // Notify relay to watch these pools for bin array updates
+  const poolAddresses = dlmmPools.map(p => p.address);
+  relayFetch('/api/subscribe-pools', { method: 'POST', body: JSON.stringify({ pools: poolAddresses }) }).catch(() => {});
+}
+
+function showCreatePoolUI(mint, dammPools) {
+  state.tokenMint = mint;
+  state.discoveredDlmmPools = [];
+  state.discoveredDammPools = dammPools || [];
+
+  document.querySelector('.side-tabs').style.display = 'none';
+  document.querySelector('.range-section').style.display = 'none';
+  document.querySelector('.amount-section').style.display = 'none';
+  const panel = document.getElementById('createPoolPanel');
+  if (panel) panel.style.display = '';
+
+  showToast('No DLMM pool found — create one to get started', 'info');
+
+  const btn = document.getElementById('createPoolBtn');
+  if (btn) btn.onclick = createDlmmPool;
+}
+
+async function createDlmmPool() {
+  if (!state.connected || !state.publicKey) {
+    showToast('Connect wallet first', 'error');
     return;
   }
+  const btn = document.getElementById('createPoolBtn');
+  const binStep = parseInt(document.getElementById('createPoolBinStep')?.value || '100', 10);
+  if (btn) { btn.textContent = 'creating...'; btn.disabled = true; }
 
-  for (const p of allPools) {
-    if (p.token_x?.symbol) KNOWN_TOKENS[p.token_x.address] = p.token_x.symbol;
-    if (p.token_y?.symbol) KNOWN_TOKENS[p.token_y.address] = p.token_y.symbol;
-  }
+  try {
+    const body = JSON.stringify({ tokenMint: state.tokenMint, quoteMint: SOL_MINT, binStep });
+    const result = await relayFetch('/api/init-pool-tx', { method: 'POST', body });
+    if (!result || !result.transaction) throw new Error('Failed to build pool creation transaction');
 
-  if (allPools.length === 1) {
-    document.getElementById('poolAddress').value = allPools[0].address;
-    loadPool();
-    return;
+    const txBytes = Uint8Array.from(atob(result.transaction), c => c.charCodeAt(0));
+    const tx = solanaWeb3.Transaction.from(txBytes);
+    const conn = state.connection || new solanaWeb3.Connection(CONFIG.HELIUS_RPC_URL || CONFIG.RPC_URL, 'confirmed');
+    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+    tx.feePayer = state.publicKey;
+
+    const signed = await window.phantom?.solana?.signTransaction(tx);
+    if (!signed) throw new Error('Transaction rejected by wallet');
+
+    const sig = await conn.sendRawTransaction(signed.serialize());
+    await conn.confirmTransaction(sig, 'confirmed');
+
+    showToast('Pool created! Loading...', 'success');
+    document.querySelector('.side-tabs').style.display = '';
+    document.querySelector('.range-section').style.display = '';
+    document.querySelector('.amount-section').style.display = '';
+    document.getElementById('createPoolPanel').style.display = 'none';
+
+    document.getElementById('poolAddress').value = result.poolAddress;
+    await loadPool();
+  } catch (err) {
+    console.error('[createPool]', err);
+    showToast(err.message || 'Pool creation failed', 'error');
+  } finally {
+    if (btn) { btn.textContent = 'create pool'; btn.disabled = false; }
   }
-  renderPoolPicker(allPools);
 }
 
 function renderTrendingFeed() {
@@ -1204,14 +1397,18 @@ function renderPoolPicker(pools) {
   const container = document.getElementById('poolPicker');
   if (!container) return;
 
-  container.innerHTML = pools.slice(0, 8).map(p => {
+  container.innerHTML = pools.slice(0, 10).map(p => {
     const name = p.name || `${p.token_x?.symbol || '?'}/${p.token_y?.symbol || '?'}`;
-    const binStep = p.pool_config?.bin_step || '?';
+    const isDamm = p._source === 'damm';
+    const typeBadge = isDamm
+      ? `<span class="picker-type damm-badge">DAMM v2</span>`
+      : `<span class="picker-type dlmm-badge">DLMM · ${p.bin_step ?? p.pool_config?.bin_step ?? '?'} bps</span>`;
     const vol = formatVolume(p.volume?.['24h'] || 0);
-    const tvl = formatVolume(p.tvl || 0);
-    return `<button class="picker-row" data-pool="${p.address}">
+    const tvl = formatVolume(p.tvl || p.liquidity || 0);
+    return `<button class="picker-row${isDamm ? ' picker-row-damm' : ''}" data-pool="${p.address}" data-damm="${isDamm}">
       <span class="picker-name">${name}</span>
-      <span class="picker-meta">bin ${binStep} · ${vol} vol · ${tvl} tvl</span>
+      ${typeBadge}
+      <span class="picker-meta">${vol} vol · ${tvl} tvl</span>
     </button>`;
   }).join('');
 
@@ -1219,6 +1416,10 @@ function renderPoolPicker(pools) {
 
   container.querySelectorAll('.picker-row').forEach(row => {
     row.addEventListener('click', () => {
+      if (row.dataset.damm === 'true') {
+        showToast('DAMM v2 — view only. Select a DLMM pool to open positions.', 'info');
+        return;
+      }
       document.getElementById('poolAddress').value = row.dataset.pool;
       hidePoolPicker();
       loadPool();
@@ -1280,9 +1481,36 @@ async function loadAddressBook() {
   if (!state.connected || !state.publicKey) return;
   const data = await relayFetch('/api/addressbook?wallet=' + state.publicKey.toBase58());
   if (data) {
-    state.addressBook = { active: data.active || [], recent: data.recent || [] };
+    state.addressBook = { active: data.active || [], recent: data.recent || [], topPairs: data.topPairs || [] };
     renderAddressBook();
+    renderAddressBookPanel();
   }
+}
+
+function renderAddressBookPanel() {
+  const container = document.getElementById('abCards');
+  if (!container) return;
+
+  const pairs = state.addressBook.topPairs || [];
+  if (pairs.length === 0) {
+    container.innerHTML = '<div class="ab-empty">no trades yet</div>';
+    return;
+  }
+
+  container.innerHTML = pairs.map(p =>
+    `<button class="ab-card" data-mint="${p.tokenMint}">
+      <span class="ab-pair">${p.pairSymbol || p.symbol}</span>
+      <span class="ab-count">${p.totalPositionsOpened} pos</span>
+    </button>`
+  ).join('');
+
+  container.querySelectorAll('.ab-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const mint = card.dataset.mint;
+      document.getElementById('poolAddress').value = mint;
+      loadPool();
+    });
+  });
 }
 
 async function loadPool() {
@@ -1335,9 +1563,14 @@ async function loadPool() {
         state.tokenXMint = pool.tokenXMint.toBase58();
         state.tokenYMint = pool.tokenYMint.toBase58();
       } else {
-        // Not an lb_pair — likely a token mint. Resolve to DLMM pools.
+        // Not an lb_pair — likely a token mint. Discover all DLMM + DAMM pools.
         if (btn) { btn.textContent = 'searching...'; }
-        await resolveTokenToPools(addr);
+        const { dlmm, damm } = await discoverAllPoolsForToken(addr);
+        if (dlmm.length > 0) {
+          await loadAggregatedView(dlmm, damm);
+        } else {
+          showCreatePoolUI(addr, damm);
+        }
         return;
       }
     }
@@ -1710,12 +1943,15 @@ function aggregateUserBins(positions, activeBin) {
 
 // Canvas rendering state
 const vizState = {
-  poolBins: new Map(),
-  userBins: new Map(),
-  previewBins: new Map(),
+  poolBins: new Map(),    // price-slot keyed after aggregation
+  userBins: new Map(),    // binId-keyed (primary pool only)
+  previewBins: new Map(), // binId-keyed
   activeBin: 0,
   binStep: 0,
   visibleRange: 80,
+  priceSlotMin: 0,
+  priceSlotStep: 0,
+  priceSlotCount: 161,    // 2*80+1 default
 };
 
 function renderBinViz() {
@@ -1735,28 +1971,54 @@ function renderBinViz() {
 
   ctx.clearRect(0, 0, W, H);
 
-  const { poolBins, userBins, previewBins, activeBin, binStep, visibleRange } = vizState;
+  const { poolBins, userBins, previewBins, activeBin, binStep,
+          priceSlotMin, priceSlotStep, priceSlotCount } = vizState;
   if (!binStep) {
-    ctx.fillStyle = 'rgba(154, 154, 144, 0.4)';
+    ctx.fillStyle = '#D984AC';
     ctx.font = '400 12px "IBM Plex Mono", monospace';
     ctx.textAlign = 'center';
     ctx.fillText('LOAD A POOL TO SEE LIQUIDITY', W / 2, H / 2);
     return;
   }
 
-  const lowBin = activeBin - visibleRange;
-  const highBin = activeBin + visibleRange;
-  const totalBins = highBin - lowBin + 1;
+  const totalBins = priceSlotCount || (vizState.visibleRange * 2 + 1);
+  const activeSlot = Math.floor(totalBins / 2);
+
+  // Build slot-keyed user/preview maps from binId-keyed Maps
+  const userSlotMap = new Map();
+  if (priceSlotStep > 0) {
+    for (const [binId, amounts] of userBins) {
+      const priceRaw = Math.pow(1 + binStep / 10000, binId);
+      const slot = Math.floor((priceRaw - priceSlotMin) / priceSlotStep);
+      if (slot >= 0 && slot < totalBins) {
+        const existing = userSlotMap.get(slot) || { buy: 0, sell: 0 };
+        existing.buy += amounts.buy || 0;
+        existing.sell += amounts.sell || 0;
+        userSlotMap.set(slot, existing);
+      }
+    }
+  }
+
+  const previewSlotMap = new Map();
+  if (priceSlotStep > 0) {
+    for (const [binId, amount] of previewBins) {
+      const priceRaw = Math.pow(1 + binStep / 10000, binId);
+      const slot = Math.floor((priceRaw - priceSlotMin) / priceSlotStep);
+      if (slot >= 0 && slot < totalBins) {
+        previewSlotMap.set(slot, (previewSlotMap.get(slot) || 0) + amount);
+      }
+    }
+  }
 
   // Normalize pool and user/preview independently (different scales)
   let maxPoolLiq = 0;
   let maxUserLiq = 0;
-  for (let bin = lowBin; bin <= highBin; bin++) {
-    const pool = poolBins.get(bin);
+  for (let slot = 0; slot < totalBins; slot++) {
+    const pool = poolBins.get(slot);
     const poolTotal = pool ? pool.amountX + pool.amountY : 0;
-    const ub = userBins.get(bin);
+    const ub = userSlotMap.get(slot);
     const user = ub ? ub.buy + ub.sell : 0;
-    const preview = previewBins.get(bin) || 0;
+    const preview = previewSlotMap.get(slot) || 0;
     maxPoolLiq = Math.max(maxPoolLiq, poolTotal);
     maxUserLiq = Math.max(maxUserLiq, user + preview);
   }
@@ -1771,34 +2033,33 @@ function renderBinViz() {
   const barH = Math.max(1, rowH * 0.8);
   const halfBar = barH / 2;
 
-  const poolBuyColor = 'rgba(80, 255, 80, 0.25)';
-  const poolSellColor = 'rgba(255, 72, 64, 0.25)';
-  const poolNeutralColor = 'rgba(255, 152, 48, 0.3)';
-  const userBuyColor = 'rgba(80, 255, 80, 0.6)';
-  const userSellColor = 'rgba(255, 72, 64, 0.6)';
-  const previewBuyColor = 'rgba(80, 255, 80, 0.18)';
-  const previewSellColor = 'rgba(255, 72, 64, 0.18)';
+  const poolBuyColor = 'rgba(217, 132, 172, 0.65)';
+  const poolSellColor = 'rgba(113, 75, 166, 0.70)';
+  const poolNeutralColor = 'rgba(217, 132, 172, 0.40)';
+  const userBuyColor = 'rgba(173, 217, 108, 1.0)';
+  const userSellColor = 'rgba(24, 14, 38, 0.80)';
+  const previewBuyColor = 'rgba(173, 217, 108, 0.30)';
+  const previewSellColor = 'rgba(24, 14, 38, 0.20)';
 
-  for (let bin = lowBin; bin <= highBin; bin++) {
-    const idx = bin - lowBin;
+  for (let slot = 0; slot < totalBins; slot++) {
+    const idx = slot;
     const yCenter = yMargin + barAreaH - (idx + 0.5) * rowH;
 
-    const pool = poolBins.get(bin);
+    const pool = poolBins.get(slot);
     const poolTotal = pool ? pool.amountX + pool.amountY : 0;
-    const ub = userBins.get(bin);
+    const ub = userSlotMap.get(slot);
     const userBuy = ub ? ub.buy : 0;
     const userSell = ub ? ub.sell : 0;
-    const userTotal = userBuy + userSell;
-    const preview = previewBins.get(bin) || 0;
+    const preview = previewSlotMap.get(slot) || 0;
 
     const colW = barAreaW * 0.46;
 
-    // Pool bar (left column) — colored by buy/sell side
+    // Pool bar (left column) — colored by buy/sell side relative to active slot
     if (poolTotal > 0) {
       const barW = (poolTotal / maxPoolLiq) * colW;
-      if (bin < activeBin) {
+      if (slot < activeSlot) {
         ctx.fillStyle = poolBuyColor;
-      } else if (bin > activeBin) {
+      } else if (slot > activeSlot) {
         ctx.fillStyle = poolSellColor;
       } else {
         ctx.fillStyle = poolNeutralColor;
@@ -1806,7 +2067,7 @@ function renderBinViz() {
       ctx.fillRect(xLabelWidth, yCenter - halfBar, barW, barH);
     }
 
-    // User + preview bars (right column) — colored by position side, not bin position
+    // User + preview bars (right column)
     const userX = xLabelWidth + barAreaW * 0.54;
     let userDrawn = 0;
 
@@ -1825,16 +2086,16 @@ function renderBinViz() {
 
     if (preview > 0) {
       const previewW = (preview / maxUserLiq) * colW;
-      const isSellPreview = bin > activeBin;
+      const isSellPreview = slot > activeSlot;
       ctx.fillStyle = isSellPreview ? previewSellColor : previewBuyColor;
       ctx.fillRect(userX + userDrawn, yCenter - halfBar, previewW, barH);
     }
   }
 
   // Divider line between pool and user columns
-  ctx.strokeStyle = 'rgba(224, 224, 216, 0.08)';
+  ctx.strokeStyle = 'rgba(113, 75, 166, 0.15)';
   ctx.lineWidth = 1;
-  ctx.setLineDash([4, 4]);
+  ctx.setLineDash([3, 3]);
   const divX = xLabelWidth + barAreaW * 0.5;
   ctx.beginPath();
   ctx.moveTo(divX, yMargin);
@@ -1844,44 +2105,48 @@ function renderBinViz() {
 
   ctx.font = '400 9px "IBM Plex Mono", monospace';
   ctx.textAlign = 'center';
-  ctx.fillStyle = 'rgba(255, 152, 48, 0.5)';
+  ctx.fillStyle = '#D984AC';
   ctx.fillText('POOL', xLabelWidth + barAreaW * 0.24, yMargin - 6);
   ctx.fillText('YOURS', xLabelWidth + barAreaW * 0.76, yMargin - 6);
 
-  const activeIdx = activeBin - lowBin;
-  if (activeIdx >= 0 && activeIdx < totalBins) {
-    const activeY = yMargin + barAreaH - (activeIdx + 0.5) * rowH;
-    ctx.strokeStyle = 'rgba(224, 224, 216, 0.7)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.moveTo(xLabelWidth, activeY);
-    ctx.lineTo(W - 8, activeY);
-    ctx.stroke();
+  // Active bin line at the middle slot
+  const activeY = yMargin + barAreaH - (activeSlot + 0.5) * rowH;
+  ctx.strokeStyle = '#180E26';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(xLabelWidth, activeY);
+  ctx.lineTo(W - 8, activeY);
+  ctx.stroke();
 
-    ctx.fillStyle = 'rgba(224, 224, 216, 0.9)';
-    ctx.font = '500 10px "IBM Plex Mono", monospace';
-    ctx.textAlign = 'right';
-    const priceLabel = '$' + formatPrice(binToPrice(activeBin, binStep, state.tokenXDecimals, state.tokenYDecimals));
-    ctx.fillText(priceLabel, xLabelWidth - 6, activeY + 3);
-  }
+  ctx.fillStyle = '#180E26';
+  ctx.font = '500 10px "IBM Plex Mono", monospace';
+  ctx.textAlign = 'right';
+  const priceLabel = '$' + formatPrice(binToPrice(activeBin, binStep, state.tokenXDecimals, state.tokenYDecimals));
+  ctx.fillText(priceLabel, xLabelWidth - 6, activeY + 3);
 
-  ctx.fillStyle = 'rgba(154, 154, 144, 0.55)';
+  // Y-axis price labels — use price slot values
+  ctx.fillStyle = '#714BA6';
   ctx.font = '400 9px "IBM Plex Mono", monospace';
   ctx.textAlign = 'right';
   const labelInterval = Math.max(5, Math.round(totalBins / 10));
-  for (let bin = lowBin; bin <= highBin; bin += labelInterval) {
-    if (bin === activeBin) continue;
-    const idx = bin - lowBin;
-    const y = yMargin + barAreaH - (idx + 0.5) * rowH;
-    const price = binToPrice(bin, binStep, state.tokenXDecimals, state.tokenYDecimals);
-    ctx.fillText('$' + formatPrice(price), xLabelWidth - 6, y + 3);
+  for (let slot = 0; slot < totalBins; slot += labelInterval) {
+    if (slot === activeSlot) continue;
+    const y = yMargin + barAreaH - (slot + 0.5) * rowH;
+    const priceRaw = (priceSlotStep > 0)
+      ? (priceSlotMin + slot * priceSlotStep) * Math.pow(10, state.tokenXDecimals - state.tokenYDecimals)
+      : binToPrice(activeBin - vizState.visibleRange + slot, binStep, state.tokenXDecimals, state.tokenYDecimals);
+    ctx.fillText('$' + formatPrice(priceRaw), xLabelWidth - 6, y + 3);
   }
 
   // Update header meta
   const metaEl = document.getElementById('binVizMeta');
   if (metaEl && binStep) {
-    metaEl.textContent = `bin step ${binStep} · ${totalBins} bins`;
+    const poolCount = state.discoveredDlmmPools.length;
+    const metaLabel = poolCount > 1
+      ? `${poolCount} pools aggregated · bin step ${binStep}`
+      : `bin step ${binStep} · ${totalBins} slots`;
+    metaEl.textContent = metaLabel;
   }
 }
 
@@ -1899,14 +2164,57 @@ function updateBinVizPreview() {
   renderBinViz();
 }
 
+async function fetchAggregatedLiquidity(dlmmPools) {
+  const primary = dlmmPools[0];
+  const priceSlotCount = vizState.visibleRange * 2 + 1;
+  const stepFactor = 1 + primary.binStep / 10000;
+  const activePriceRaw = Math.pow(stepFactor, primary.activeId ?? primary.active_id ?? primary.active_bin_id);
+  const lowPriceRaw = Math.pow(stepFactor, (primary.activeId ?? primary.active_id ?? primary.active_bin_id) - vizState.visibleRange);
+  const highPriceRaw = Math.pow(stepFactor, (primary.activeId ?? primary.active_id ?? primary.active_bin_id) + vizState.visibleRange);
+  const priceSlotStep = (highPriceRaw - lowPriceRaw) / priceSlotCount;
+  const priceSlotMin = lowPriceRaw;
+
+  const allBinMaps = await Promise.all(
+    dlmmPools.map(p => {
+      const poolBinStep = p.bin_step ?? p.binStep;
+      const poolActiveId = p.active_id ?? p.activeId ?? p.active_bin_id;
+      return fetchBinArrays(p.address, poolActiveId, vizState.visibleRange).catch(() => new Map());
+    })
+  );
+
+  const merged = new Map();
+  for (let i = 0; i < dlmmPools.length; i++) {
+    const pool = dlmmPools[i];
+    const poolBinStep = pool.bin_step ?? pool.binStep;
+    for (const [binId, amounts] of allBinMaps[i]) {
+      const priceRaw = Math.pow(1 + poolBinStep / 10000, binId);
+      const slot = Math.floor((priceRaw - priceSlotMin) / priceSlotStep);
+      if (slot < 0 || slot >= priceSlotCount) continue;
+      const existing = merged.get(slot) || { amountX: 0, amountY: 0 };
+      existing.amountX += amounts.amountX;
+      existing.amountY += amounts.amountY;
+      merged.set(slot, existing);
+    }
+  }
+
+  vizState.priceSlotMin = priceSlotMin;
+  vizState.priceSlotStep = priceSlotStep;
+  vizState.priceSlotCount = priceSlotCount;
+  return merged;
+}
+
 async function loadBinVizData() {
   if (!state.poolAddress || !state.activeBin || !state.binStep) return;
 
   vizState.activeBin = state.activeBin;
   vizState.binStep = state.binStep;
 
+  const dlmmPools = state.discoveredDlmmPools.length > 0
+    ? state.discoveredDlmmPools
+    : [{ address: state.poolAddress, activeId: state.activeBin, active_id: state.activeBin, binStep: state.binStep, bin_step: state.binStep }];
+
   try {
-    vizState.poolBins = await fetchBinArrays(state.poolAddress, state.activeBin, vizState.visibleRange);
+    vizState.poolBins = await fetchAggregatedLiquidity(dlmmPools);
   } catch (err) {
     if (CONFIG.DEBUG) console.error('Failed to fetch bin arrays:', err);
     vizState.poolBins = new Map();
@@ -2438,10 +2746,10 @@ function initBurnFireCanvas() {
   ctx.imageSmoothingEnabled = false;
 
   const pal = [
-    [6, 4, 18],
-    [30, 10, 60], [60, 18, 100], [100, 30, 140],
-    [160, 60, 180], [200, 100, 190], [220, 160, 120],
-    [242, 214, 98], [255, 240, 180], [255, 255, 240],
+    [24, 14, 38],
+    [70, 30, 90], [113, 75, 166], [180, 100, 160],
+    [217, 132, 172], [242, 182, 198], [242, 210, 220],
+    [242, 224, 208], [220, 235, 180], [173, 217, 108],
   ];
 
   const fire = new Float32Array(W * H);
@@ -3262,7 +3570,7 @@ async function renderBountyBoard() {
   }
 }
 
-function addFeedEvent(text) {
+function addFeedEvent(text, ts) {
   const feed = document.getElementById('activityFeed');
   if (!feed) return;
   const emptyState = feed.querySelector('.empty-state');
@@ -3270,12 +3578,28 @@ function addFeedEvent(text) {
 
   const event = document.createElement('div');
   event.className = 'feed-event';
-  const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const d = ts ? new Date(ts) : new Date();
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   event.innerHTML = `${escapeHtml(text)} <span class="event-time">${time}</span>`;
   feed.insertBefore(event, feed.firstChild);
 
   while (feed.children.length > 100) {
     feed.removeChild(feed.lastChild);
+  }
+}
+
+async function preloadFeed() {
+  try {
+    const data = await relayFetch('/api/feed');
+    if (data?.events?.length) {
+      const feed = document.getElementById('activityFeed');
+      if (feed) feed.innerHTML = '';
+      for (const evt of [...data.events].reverse()) {
+        addFeedEvent(evt.text || formatRelayEvent(evt), evt.timestamp);
+      }
+    }
+  } catch {
+    // Feed pre-load is best-effort
   }
 }
 
@@ -3498,12 +3822,12 @@ function renderPnlCard(position) {
   canvas.width = w;
   canvas.height = h;
 
-  ctx.fillStyle = '#000000';
+  ctx.fillStyle = '#F2E0D0';
   ctx.fillRect(0, 0, w, h);
 
   const arcR = 60;
   const margin = 30;
-  ctx.strokeStyle = '#FF9830';
+  ctx.strokeStyle = '#714BA6';
   ctx.lineWidth = 1.5;
   ctx.setLineDash([6, 6]);
 
@@ -3529,7 +3853,7 @@ function renderPnlCard(position) {
   // Determine profit/loss
   const pnl = position.amount * (position.filled / 100) + (position.lpFees || 0) - position.amount;
   const isProfit = pnl >= 0;
-  const accentColor = isProfit ? '#50FF50' : '#FF4840';
+  const accentColor = isProfit ? '#ADD96C' : '#F2B6C6';
 
   // Accent: colored inner arcs
   ctx.strokeStyle = accentColor;
@@ -3553,20 +3877,20 @@ function renderPnlCard(position) {
   const fontBase = "'IBM Plex Mono', monospace";
 
   ctx.font = `500 28px ${fontBase}`;
-  ctx.fillStyle = '#E0E0D8';
+  ctx.fillStyle = '#180E26';
   ctx.textAlign = 'left';
   ctx.fillText(position.pool, margin + 20, margin + 70);
 
   ctx.font = `500 15px ${fontBase}`;
-  ctx.fillStyle = position.side === 'buy' ? '#50FF50' : '#FF4840';
+  ctx.fillStyle = position.side === 'buy' ? '#ADD96C' : '#F2B6C6';
   ctx.fillText(position.side.toUpperCase(), margin + 20, margin + 100);
 
   ctx.font = `400 17px ${fontBase}`;
-  ctx.fillStyle = '#9A9A90';
+  ctx.fillStyle = '#714BA6';
   ctx.fillText(`$${formatPrice(position.minPrice)} - $${formatPrice(position.maxPrice)}`, margin + 20, h / 2 - 20);
 
   ctx.font = `400 15px ${fontBase}`;
-  ctx.fillStyle = '#9A9A90';
+  ctx.fillStyle = '#714BA6';
   ctx.fillText(`${position.filled}% filled`, margin + 20, h / 2 + 10);
 
   ctx.fillText(`LP fees: ${(position.lpFees || 0).toFixed(4)} SOL`, margin + 20, h / 2 + 40);
@@ -3578,11 +3902,11 @@ function renderPnlCard(position) {
   ctx.fillText(pnlText, w - margin - 20, h / 2 + 15);
 
   ctx.font = `400 13px ${fontBase}`;
-  ctx.fillStyle = '#D08028';
+  ctx.fillStyle = '#714BA6';
   ctx.fillText('NET P/L', w - margin - 20, h / 2 - 30);
 
   ctx.font = `400 11px ${fontBase}`;
-  ctx.fillStyle = '#9A9A90';
+  ctx.fillStyle = '#714BA6';
   ctx.textAlign = 'center';
   ctx.letterSpacing = '2px';
   ctx.fillText('HARVESTED BY CRANK.MONEY', w / 2, h - margin - 10);
@@ -3676,7 +4000,7 @@ function showSubPage(subName) {
 
 const PAGE_IDS = ['page-trade', 'page-positions', 'page-rank', 'page-ops'];
 const PAGE_BODY_CLASSES = ['on-trade', 'on-positions', 'on-rank', 'on-ops'];
-const PAGE_ACCENT = ['#50FF50', '#50FF50', '#FFCC50', '#FF9830'];
+const PAGE_ACCENT = ['#F2B6C6', '#F2B6C6', '#F2B6C6', '#F2B6C6'];
 
 function showPage(idx) {
   state.currentPage = idx;
@@ -3786,6 +4110,9 @@ async function init() {
 
   // Connect to bot relay (LaserStream WebSocket + REST)
   connectRelay();
+
+  // Pre-load feed events via HTTP so feed is populated immediately
+  preloadFeed();
 
   // Demo mode banner
   if (CONFIG.CORE_PROGRAM_ID.includes('1111111111')) {
