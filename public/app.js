@@ -416,12 +416,16 @@ function formatRelayEvent(msg) {
 async function relayFetch(path, options = {}) {
   if (!CONFIG.BOT_RELAY_URL) return null;
   const baseUrl = CONFIG.BOT_RELAY_URL.replace('ws://', 'http://').replace('wss://', 'https://');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
   try {
-    const opts = { ...options };
+    const opts = { ...options, signal: controller.signal };
     if (opts.body && !opts.headers) opts.headers = { 'Content-Type': 'application/json' };
     const resp = await fetch(baseUrl + path, opts);
+    clearTimeout(timer);
     if (resp.ok) return resp.json();
   } catch {}
+  clearTimeout(timer);
   return null;
 }
 
@@ -4292,7 +4296,12 @@ async function init() {
     const poolInput = document.getElementById('poolAddress');
     if (poolInput) {
       poolInput.value = CONFIG.DEFAULT_POOL;
-      loadPool();
+      // Bypass relay check on startup — DEFAULT_POOL is always a token mint,
+      // so go straight to discovery for an instant aggregated view.
+      discoverAllPoolsForToken(CONFIG.DEFAULT_POOL).then(({ dlmm, damm }) => {
+        if (dlmm.length > 0) loadAggregatedView(dlmm, damm);
+        else loadPool();
+      }).catch(() => loadPool());
     }
   }
 
