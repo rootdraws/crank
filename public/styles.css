@@ -112,12 +112,12 @@
       position: fixed;
       top: 70px; bottom: 110px;
       left: 40px; right: 40px;
-      display: flex; gap: 280px;
+      display: flex; justify-content: space-between;
       z-index: 50;
     }
 
     .trade-left-panel {
-      flex: 0 1 40%; min-width: 200px;
+      width: clamp(480px, 44vw, 620px); flex-shrink: 0;
       display: flex; flex-direction: column;
       background: #F2E0D0;
       border: 1px solid #D984AC;
