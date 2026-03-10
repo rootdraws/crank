@@ -1529,74 +1529,77 @@ async function loadPool() {
 
     hidePoolPicker();
 
-    // Try bot relay first (LaserStream-backed, sub-second data)
+    // Resolve the input to a token mint for discovery.
+    // Whether the user enters a token CA or a specific pool address, we always
+    // discover all DLMM/DAMM pools for that token and show the aggregated view.
+    let tokenMintForDiscovery = addr;
+    let preferredPoolAddress = null;
+    let fallbackPool = null; // used if the entered pool isn't indexed by the API
+
+    // Step 1 — try relay (fast path for known LP pairs)
     const relayData = await relayFetch(`/api/pools/${addr}`);
     if (relayData && relayData.activeId !== undefined) {
-      state.poolAddress = addr;
-      state.activeBin = relayData.activeId;
-      state.binStep = relayData.binStep;
-      state.tokenXSymbol = relayData.tokenXSymbol || 'TOKEN';
-      state.tokenYSymbol = relayData.tokenYSymbol || 'SOL';
-      if (relayData.tokenXMint) {
-        state.tokenXMint = relayData.tokenXMint;
-        state.tokenYMint = relayData.tokenYMint;
-      } else {
+      let xMint = relayData.tokenXMint;
+      let yMint = relayData.tokenYMint;
+      if (!xMint) {
         const poolData = await parseLbPairFull(addr);
-        state.tokenXMint = poolData.tokenXMint.toBase58();
-        state.tokenYMint = poolData.tokenYMint.toBase58();
+        xMint = poolData.tokenXMint.toBase58();
+        yMint = poolData.tokenYMint.toBase58();
       }
+      tokenMintForDiscovery = [xMint, yMint].find(m => m && m !== SOL_MINT && m !== USDC_MINT) || xMint;
+      preferredPoolAddress = addr;
+      fallbackPool = {
+        address: addr,
+        active_id: relayData.activeId,
+        bin_step: relayData.binStep,
+        token_x: { address: xMint, symbol: relayData.tokenXSymbol || 'TOKEN' },
+        token_y: { address: yMint, symbol: relayData.tokenYSymbol || 'SOL' },
+      };
     } else {
-      // Try direct RPC — parse raw lb_pair account bytes
+      // Step 2 — try direct on-chain parse
       const conn = state.connection || new solanaWeb3.Connection(CONFIG.HELIUS_RPC_URL || CONFIG.RPC_URL, 'confirmed');
       const accountInfo = await conn.getAccountInfo(pubkey);
       if (!accountInfo) throw new Error('Account not found — check the address');
 
       if (accountInfo.data.length === LBPAIR_EXPECTED_SIZE) {
+        // It's a raw LP pair account
         const pool = await parseLbPair(addr);
-        const [symX, symY] = await Promise.all([
-          resolveTokenSymbol(pool.tokenXMint),
-          resolveTokenSymbol(pool.tokenYMint),
-        ]);
-        state.poolAddress = addr;
-        state.activeBin = pool.activeId;
-        state.binStep = pool.binStep;
-        state.tokenXSymbol = symX;
-        state.tokenYSymbol = symY;
-        state.tokenXMint = pool.tokenXMint.toBase58();
-        state.tokenYMint = pool.tokenYMint.toBase58();
-      } else {
-        // Not an lb_pair — likely a token mint. Discover all DLMM + DAMM pools.
-        if (btn) { btn.textContent = 'searching...'; }
-        const { dlmm, damm } = await discoverAllPoolsForToken(addr);
-        if (dlmm.length > 0) {
-          await loadAggregatedView(dlmm, damm);
-        } else {
-          showCreatePoolUI(addr, damm);
-        }
-        return;
+        const xMint = pool.tokenXMint.toBase58();
+        const yMint = pool.tokenYMint.toBase58();
+        const [symX, symY] = await Promise.all([resolveTokenSymbol(pool.tokenXMint), resolveTokenSymbol(pool.tokenYMint)]);
+        tokenMintForDiscovery = [xMint, yMint].find(m => m !== SOL_MINT && m !== USDC_MINT) || xMint;
+        preferredPoolAddress = addr;
+        fallbackPool = {
+          address: addr,
+          active_id: pool.activeId,
+          bin_step: pool.binStep,
+          token_x: { address: xMint, symbol: symX },
+          token_y: { address: yMint, symbol: symY },
+        };
+      }
+      // else: it's a token mint — tokenMintForDiscovery is already addr
+    }
+
+    if (btn) { btn.textContent = 'searching...'; }
+    const { dlmm, damm } = await discoverAllPoolsForToken(tokenMintForDiscovery);
+
+    // If the user entered a specific pool, make sure it's in the list.
+    // Promote it to primary (index 0) if found, or inject it if the API missed it.
+    if (preferredPoolAddress) {
+      const idx = dlmm.findIndex(p => p.address === preferredPoolAddress);
+      if (idx > 0) {
+        const [preferred] = dlmm.splice(idx, 1);
+        dlmm.unshift(preferred);
+      } else if (idx === -1 && fallbackPool) {
+        dlmm.unshift(fallbackPool);
       }
     }
 
-    // Fetch decimals before price computation (needed for atomic → human normalization)
-    if (state.tokenXMint) {
-      const [dX, dY] = await Promise.all([
-        getMintDecimals(state.tokenXMint),
-        getMintDecimals(state.tokenYMint),
-      ]);
-      state.tokenXDecimals = dX;
-      state.tokenYDecimals = dY;
+    if (dlmm.length > 0) {
+      await loadAggregatedView(dlmm, damm);
+    } else {
+      showCreatePoolUI(tokenMintForDiscovery, damm);
     }
-
-    state.currentPrice = binToPrice(state.activeBin, state.binStep, state.tokenXDecimals, state.tokenYDecimals);
-
-    document.getElementById('poolName').textContent = `${state.tokenXSymbol}/${state.tokenYSymbol}`;
-    document.getElementById('currentPrice').textContent = '$' + formatPrice(state.currentPrice);
-    document.getElementById('poolInfo').classList.add('visible');
-
-    updateSide(state.side);
-    showToast('Pool loaded', 'success');
-    loadBinVizData();
-    if (state.connected) refreshPositionsList();
   } catch (err) {
     console.error('Failed to load pool:', err);
     showToast(err.message, 'error');
