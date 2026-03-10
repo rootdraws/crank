@@ -1216,6 +1216,21 @@ async function discoverAllPoolsForToken(mintAddress) {
   const dlmmPools = [...(dlmmSol.data || []), ...(dlmmUsdc.data || [])]
     .filter(p => !p.is_blacklisted)
     .sort((a, b) => (b.volume?.['24h'] || 0) - (a.volume?.['24h'] || 0));
+
+  // Normalize API response shape: the DataAPI nests bin_step inside pool_config
+  // and never returns active_id — derive it from current_price and token decimals.
+  for (const p of dlmmPools) {
+    if (p.bin_step == null && p.pool_config?.bin_step != null) {
+      p.bin_step = p.pool_config.bin_step;
+    }
+    if (p.active_id == null && p.current_price > 0 && p.bin_step) {
+      const decimalsX = p.token_x?.decimals ?? 9;
+      const decimalsY = p.token_y?.decimals ?? 6;
+      const rawPrice = p.current_price / Math.pow(10, decimalsX - decimalsY);
+      p.active_id = Math.round(Math.log(rawPrice) / Math.log(1 + p.bin_step / 10000));
+    }
+  }
+
   const dammPools = [...(dammSol.data || []), ...(dammUsdc.data || [])]
     .filter(p => !p.is_blacklisted)
     .sort((a, b) => (b.volume?.['24h'] || 0) - (a.volume?.['24h'] || 0));
