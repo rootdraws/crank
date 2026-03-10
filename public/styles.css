@@ -302,8 +302,8 @@
       background: #F2E0D0;
     }
     body.on-rank .page-body {
-      top: 60px; left: 90px; right: 70px;
-      overflow: hidden;
+      top: 60px; bottom: 150px; left: 90px; right: 70px;
+      overflow-y: auto;
     }
     .page-body::-webkit-scrollbar { width: 2px; }
     .page-body::-webkit-scrollbar-track { background: transparent; }
@@ -670,8 +670,8 @@
     .monke-frame {
       position: relative;
       border: 1px solid var(--wire-cyan-dim);
-      padding: 20px;
-      margin-bottom: 16px;
+      padding: 14px;
+      margin-bottom: 12px;
     }
     .monke-frame-corner {
       position: absolute; width: 12px; height: 12px;
@@ -697,8 +697,8 @@
       display: flex; align-items: flex-start; gap: 0;
     }
     .monke-nft-panel {
-      flex: 0 0 520px;
-      padding-right: 20px;
+      flex: 0 0 300px;
+      padding-right: 16px;
     }
     .monke-frame-divider {
       flex: 0 0 1px;
@@ -707,7 +707,7 @@
     }
     .monke-detail-panel {
       flex: 1; min-width: 0;
-      padding-left: 20px;
+      padding-left: 16px;
     }
     .stats-grid-2 {
       grid-template-columns: repeat(2, 1fr);
