@@ -1196,10 +1196,22 @@ function timeAgo(ts) {
 
 async function fetchTrendingPools() {
   try {
-    const resp = await fetch(`${METEORA_API_BASE()}/pools?sort_by=volume_24h:desc&page_size=10`);
+    const resp = await fetch(
+      `${METEORA_API_BASE()}/pools/groups?sort_by=volume_24h:desc&page_size=8&filter_by=is_blacklisted=false`
+    );
     if (!resp.ok) return;
     const { data } = await resp.json();
-    state.trendingPools = (data || []).filter(p => !p.is_blacklisted);
+    state.trendingPools = (data || []).map(g => {
+      const mints = g.lexical_order_mints.split('-');
+      const mint = mints.find(m => m !== SOL_MINT && m !== USDC_MINT) || mints[0];
+      return {
+        name: g.group_name,
+        mint,
+        volume: g.total_volume,
+        tvl: g.total_tvl,
+        poolCount: g.pool_count,
+      };
+    });
     renderTrendingFeed();
   } catch {
     if (CONFIG.DEBUG) console.warn('[discovery] Trending feed unavailable');
@@ -1405,18 +1417,30 @@ function renderTrendingFeed() {
   if (!container) return;
   if (!state.trendingPools.length) { container.innerHTML = ''; return; }
 
-  container.innerHTML = state.trendingPools.slice(0, 8).map(p => {
-    const vol = formatVolume(p.volume?.['24h'] || 0);
-    const name = p.name || '???';
-    return `<button class="trending-pill" data-pool="${p.address}" title="${name} · ${vol} 24h vol">${name} <span class="pill-vol">${vol}</span></button>`;
-  }).join('');
+  container.innerHTML = '<div class="discovery-label">trending pairs</div>' +
+    state.trendingPools.slice(0, 8).map((p, i) => {
+      const vol = formatVolume(p.volume || 0);
+      return `<button class="trending-pill" data-idx="${i}" title="${p.name} · ${vol} 24h vol">${p.name} <span class="pill-vol">${vol}</span></button>`;
+    }).join('');
 
   container.querySelectorAll('.trending-pill').forEach(pill => {
-    pill.addEventListener('click', () => {
-      const addr = pill.dataset.pool;
-      document.getElementById('poolAddress').value = addr;
+    pill.addEventListener('click', async () => {
+      const p = state.trendingPools[parseInt(pill.dataset.idx, 10)];
+      if (!p) return;
+      document.getElementById('poolAddress').value = p.mint;
       hidePoolPicker();
-      loadPool();
+      const btn = document.getElementById('loadPool');
+      if (btn) { btn.textContent = 'searching...'; btn.disabled = true; }
+      try {
+        const { dlmm, damm } = await discoverAllPoolsForToken(p.mint);
+        if (dlmm.length > 0) {
+          await loadAggregatedView(dlmm, damm);
+        }
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        if (btn) { btn.textContent = 'load'; btn.disabled = false; }
+      }
     });
   });
 }
