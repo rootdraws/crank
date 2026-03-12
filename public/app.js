@@ -3623,22 +3623,56 @@ function renderOHLCVCanvas(candles) {
 
   if (candles.length === 0) return;
 
-  const prices = candles.flatMap(c => [c.high, c.low]);
-  const minP = Math.min(...prices);
-  const maxP = Math.max(...prices);
-  const range = maxP - minP || 1;
-  const pad = 4;
-  const barW = Math.max(1, (W - pad * 2) / candles.length - 1);
+  const font = "'IBM Plex Mono', monospace";
+  const axisColor = '#714BA6';
+  const gridColor = 'rgba(113, 75, 166, 0.12)';
+  const fontSize = 8;
 
-  const toY = (p) => pad + (1 - (p - minP) / range) * (H - pad * 2);
+  const marginRight = 52;
+  const marginBottom = 20;
+  const marginTop = 6;
+  const marginLeft = 4;
+
+  const chartW = W - marginLeft - marginRight;
+  const chartH = H - marginTop - marginBottom;
+
+  const prices = candles.flatMap(c => [c.high, c.low]);
+  let minP = Math.min(...prices);
+  let maxP = Math.max(...prices);
+  const pRange = maxP - minP || 1;
+  minP -= pRange * 0.02;
+  maxP += pRange * 0.02;
+  const fullRange = maxP - minP;
+
+  const toY = (p) => marginTop + (1 - (p - minP) / fullRange) * chartH;
+  const gap = Math.max(1, chartW * 0.08 / candles.length);
+  const barW = Math.max(2, (chartW / candles.length) - gap);
+  const step = chartW / candles.length;
+
+  ctx.font = `400 ${fontSize}px ${font}`;
+
+  const gridSteps = 5;
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 0.5;
+  ctx.fillStyle = axisColor;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i <= gridSteps; i++) {
+    const p = minP + (fullRange * i) / gridSteps;
+    const y = toY(p);
+    ctx.beginPath();
+    ctx.moveTo(marginLeft, y);
+    ctx.lineTo(marginLeft + chartW, y);
+    ctx.stroke();
+    ctx.fillText('$' + formatPrice(p), marginLeft + chartW + 4, y);
+  }
 
   for (let i = 0; i < candles.length; i++) {
     const c = candles[i];
-    const x = pad + i * ((W - pad * 2) / candles.length) + barW / 2;
+    const x = marginLeft + i * step + step / 2;
     const isUp = c.close >= c.open;
     const color = isUp ? '#ADD96C' : '#D984AC';
 
-    // Wick
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -3646,7 +3680,6 @@ function renderOHLCVCanvas(candles) {
     ctx.lineTo(x, toY(c.low));
     ctx.stroke();
 
-    // Body
     const bodyTop = toY(Math.max(c.open, c.close));
     const bodyBot = toY(Math.min(c.open, c.close));
     const bodyH = Math.max(1, bodyBot - bodyTop);
@@ -3654,13 +3687,38 @@ function renderOHLCVCanvas(candles) {
     ctx.fillRect(x - barW / 2, bodyTop, barW, bodyH);
   }
 
-  const labelSize = W < 120 ? 7 : 9;
-  ctx.font = `400 ${labelSize}px 'IBM Plex Mono', monospace`;
+  ctx.fillStyle = axisColor;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const labelY = marginTop + chartH + 4;
+  const maxTimeLabels = Math.floor(chartW / 40);
+  const timeStep = Math.max(1, Math.ceil(candles.length / maxTimeLabels));
+  for (let i = 0; i < candles.length; i += timeStep) {
+    const c = candles[i];
+    const ts = c.timestamp ? c.timestamp * 1000 : Date.parse(c.timestamp_str);
+    if (!ts || isNaN(ts)) continue;
+    const d = new Date(ts);
+    const label = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    const x = marginLeft + i * step + step / 2;
+    ctx.fillText(label, x, labelY);
+  }
+
+  const lastCandle = candles[candles.length - 1];
+  const lastPrice = lastCandle.close;
+  const lastY = toY(lastPrice);
+  ctx.strokeStyle = 'rgba(113, 75, 166, 0.4)';
+  ctx.lineWidth = 0.5;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(marginLeft, lastY);
+  ctx.lineTo(marginLeft + chartW, lastY);
+  ctx.stroke();
+  ctx.setLineDash([]);
   ctx.fillStyle = '#714BA6';
-  ctx.textAlign = W < 120 ? 'center' : 'right';
-  const labelX = W < 120 ? W / 2 : W - 4;
-  ctx.fillText('$' + formatPrice(maxP), labelX, labelSize + 2);
-  ctx.fillText('$' + formatPrice(minP), labelX, H - 4);
+  ctx.font = `600 ${fontSize + 1}px ${font}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('$' + formatPrice(lastPrice), marginLeft + chartW + 4, lastY);
 }
 
 // ============================================================
