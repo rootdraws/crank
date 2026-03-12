@@ -3602,10 +3602,10 @@ async function fetchAndRenderOHLCV(poolAddress, timeframe) {
   }
 
   section.style.display = '';
-  renderOHLCVCanvas(data.data);
+  renderOHLCVCanvas(data.data, timeframe);
 }
 
-function renderOHLCVCanvas(candles) {
+function renderOHLCVCanvas(candles, timeframe) {
   const canvas = document.getElementById('ohlcvCanvas');
   if (!canvas) return;
   const wrap = canvas.parentElement;
@@ -3691,14 +3691,19 @@ function renderOHLCVCanvas(candles) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   const labelY = marginTop + chartH + 4;
-  const maxTimeLabels = Math.floor(chartW / 40);
+  const isDaily = timeframe === '24h' || timeframe === '12h';
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const labelWidth = isDaily ? 46 : 36;
+  const maxTimeLabels = Math.floor(chartW / labelWidth);
   const timeStep = Math.max(1, Math.ceil(candles.length / maxTimeLabels));
   for (let i = 0; i < candles.length; i += timeStep) {
     const c = candles[i];
     const ts = c.timestamp ? c.timestamp * 1000 : Date.parse(c.timestamp_str);
     if (!ts || isNaN(ts)) continue;
     const d = new Date(ts);
-    const label = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    const label = isDaily
+      ? months[d.getMonth()] + ' ' + d.getDate()
+      : d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
     const x = marginLeft + i * step + step / 2;
     ctx.fillText(label, x, labelY);
   }
