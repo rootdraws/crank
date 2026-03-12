@@ -394,12 +394,19 @@
       text-transform: uppercase; margin-bottom: 2px;
     }
 
-    .trending-feed, .addressbook-active, .addressbook-recent {
+    .addressbook-active, .addressbook-recent {
       display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
     }
-    .trending-feed:empty, .addressbook-active:empty, .addressbook-recent:empty {
+    .addressbook-active:empty, .addressbook-recent:empty {
       display: none;
     }
+
+    .ab-trending {
+      display: flex; flex-direction: column; gap: 3px;
+      border-top: 1px solid rgba(217, 132, 172, 0.3);
+      padding-top: 6px; margin-top: 6px;
+    }
+    .ab-trending:empty { display: none; }
 
     .trending-pill, .addressbook-pill {
       background: transparent;

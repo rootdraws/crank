@@ -1421,10 +1421,10 @@ function renderTrendingFeed() {
   if (!container) return;
   if (!state.trendingPools.length) { container.innerHTML = ''; return; }
 
-  container.innerHTML = '<div class="discovery-label">trending pairs</div>' +
+  container.innerHTML = '<div class="ab-title">trending</div>' +
     state.trendingPools.slice(0, 8).map((p, i) => {
       const vol = formatVolume(p.volume || 0);
-      return `<button class="trending-pill" data-idx="${i}" title="${p.name} · ${vol} 24h vol">${p.name} <span class="pill-vol">${vol}</span></button>`;
+      return `<button class="ab-card trending-pill" data-idx="${i}" title="${p.name} · ${vol} 24h vol"><span class="ab-pair">${p.name}</span><span class="ab-count">${vol}</span></button>`;
     }).join('');
 
   container.querySelectorAll('.trending-pill').forEach(pill => {
