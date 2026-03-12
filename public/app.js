@@ -855,7 +855,7 @@ const state = {
   // Navigation
   currentPage: 0,
   currentSubPage: 'monke',
-  ohlcvTimeframe: '4h',
+  ohlcvTimeframe: '24h',
   activePoolOrbital: 0,
 };
 
@@ -1295,7 +1295,7 @@ async function loadAggregatedView(dlmmPools, dammPools) {
   document.getElementById('poolInfo').classList.add('visible');
 
   updatePoolMetrics(primary);
-  fetchAndRenderOHLCV(primary.address, state.ohlcvTimeframe || '4h');
+  fetchAndRenderOHLCV(primary.address, state.ohlcvTimeframe || '24h');
 
   // Show/hide DAMM TVL info
   let dammInfoEl = document.getElementById('dammTvlInfo');
