@@ -1177,6 +1177,158 @@
   margin-top: 4px;
 }
 
+/* ─── POOL METRICS ROW ─── */
+    .pool-metrics {
+      display: flex; gap: 16px; flex-wrap: wrap;
+      padding: 4px 0; margin-top: 2px;
+    }
+    .pool-metric {
+      font-size: 0.625rem; letter-spacing: 0.04em;
+    }
+    .pool-metric-label {
+      color: var(--nerv-orange-dim); text-transform: uppercase;
+      letter-spacing: 0.08em; margin-right: 4px;
+    }
+    .pool-metric-value {
+      color: var(--data-green); font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ─── OHLCV CHART ─── */
+    .ohlcv-section {
+      margin-top: 8px;
+      border-top: 1px solid var(--steel-faint);
+      padding-top: 8px;
+    }
+    .ohlcv-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 4px;
+    }
+    .ohlcv-title {
+      font-size: 0.625rem; color: var(--nerv-orange-dim);
+      letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .ohlcv-timeframes { display: flex; gap: 4px; }
+    .ohlcv-tf-btn {
+      background: transparent; border: 1px solid var(--steel-faint);
+      padding: 2px 8px; font-size: 0.5625rem; font-family: var(--font-sys);
+      color: var(--steel-dim); cursor: pointer; letter-spacing: 0.06em;
+      transition: all 0.15s;
+    }
+    .ohlcv-tf-btn:hover { border-color: var(--nerv-orange-dim); color: var(--nerv-orange); }
+    .ohlcv-tf-btn.active {
+      border-color: var(--nerv-orange); color: var(--data-green);
+      background: rgba(217, 132, 172, 0.1);
+    }
+    .ohlcv-wrap {
+      position: relative; width: 100%; height: 120px;
+    }
+    .ohlcv-wrap canvas { position: absolute; inset: 0; }
+
+    /* ─── POSITION HISTORY MODAL ─── */
+    .history-modal-content {
+      max-width: 600px; max-height: 80vh; overflow-y: auto;
+    }
+    .history-modal-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px;
+    }
+    .history-modal-title {
+      font-size: 0.75rem; color: var(--nerv-orange-dim);
+      letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .history-events { min-height: 100px; }
+    .history-event-row {
+      display: grid; grid-template-columns: 80px 1fr 80px 60px;
+      gap: 8px; padding: 8px 0;
+      font-size: 0.75rem; font-weight: 400;
+      color: var(--data-green);
+      border-bottom: 1px solid var(--steel-faint);
+      align-items: center;
+      font-variant-numeric: tabular-nums;
+    }
+    .history-event-type {
+      font-size: 0.625rem; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 2px 6px; display: inline-block;
+    }
+    .history-event-type.add { color: var(--thermal-yellow); border: 1px solid var(--thermal-yellow); }
+    .history-event-type.remove { color: var(--nerv-orange); border: 1px solid var(--nerv-orange); }
+    .history-event-type.claim_fee { color: var(--data-green); border: 1px solid var(--data-green); }
+    .history-event-type.claim_reward { color: var(--wire-cyan); border: 1px solid var(--wire-cyan); }
+    .history-event-amounts { font-size: 0.6875rem; color: var(--steel); }
+    .history-event-usd { font-weight: 500; }
+    .history-event-time { font-size: 0.5625rem; color: var(--steel-dim); }
+    .history-event-tx a {
+      font-size: 0.5625rem; color: var(--nerv-orange-dim);
+      text-decoration: none; letter-spacing: 0.04em;
+    }
+    .history-event-tx a:hover { color: var(--nerv-orange); text-decoration: underline; }
+
+    /* ─── RECON DASHBOARD ─── */
+    .recon-title {
+      font-size: 0.75rem; color: var(--nerv-orange-dim);
+      letter-spacing: 0.12em; text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+    .recon-stats { grid-template-columns: repeat(3, 1fr); }
+    .recon-side-split {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+      margin: 20px 0;
+    }
+    .recon-side-box {
+      background: #F2B6C6; border: 1px solid #D984AC;
+      padding: 16px; text-align: center;
+    }
+    .recon-side-wr {
+      font-size: 1.5rem; font-weight: 700; color: var(--data-green);
+      margin: 8px 0 4px;
+    }
+    .recon-side-count {
+      font-size: 0.6875rem; color: var(--steel-dim);
+      letter-spacing: 0.04em;
+    }
+    .recon-side-pnl {
+      font-size: 0.8125rem; font-weight: 500;
+      font-variant-numeric: tabular-nums; margin-top: 4px;
+    }
+    .recon-section-title {
+      font-size: 0.625rem; color: var(--nerv-orange-dim);
+      letter-spacing: 0.1em; text-transform: uppercase;
+      margin: 20px 0 8px; padding-top: 16px;
+      border-top: 1px solid var(--steel-faint);
+    }
+    .recon-filter-row {
+      display: flex; gap: 6px; margin-bottom: 12px;
+    }
+    .recon-filter-btn {
+      background: transparent; border: 1px solid var(--steel-faint);
+      padding: 3px 10px; font-size: 0.5625rem; font-family: var(--font-sys);
+      color: var(--steel-dim); cursor: pointer; letter-spacing: 0.06em;
+      text-transform: uppercase; transition: all 0.15s;
+    }
+    .recon-filter-btn:hover { border-color: var(--nerv-orange-dim); }
+    .recon-filter-btn.active {
+      border-color: var(--nerv-orange); color: var(--data-green);
+      background: rgba(217, 132, 172, 0.1);
+    }
+    .recon-pool-header {
+      display: grid; grid-template-columns: 2fr 1fr 1fr 1.2fr 1.2fr;
+      gap: 8px; padding: 8px 0;
+      font-size: 0.5625rem; color: var(--nerv-orange);
+      letter-spacing: 0.1em; text-transform: uppercase;
+      border-bottom: 1px solid var(--nerv-orange-dim);
+    }
+    .recon-pool-row {
+      display: grid; grid-template-columns: 2fr 1fr 1fr 1.2fr 1.2fr;
+      gap: 8px; padding: 10px 0;
+      font-size: 0.75rem; font-weight: 400;
+      color: var(--data-green);
+      border-bottom: 1px solid var(--steel-faint);
+      font-variant-numeric: tabular-nums;
+    }
+    .pnl-positive { color: var(--thermal-yellow); }
+    .pnl-negative { color: var(--nerv-orange); }
+
 /* ─── ACCESSIBILITY ─── */
 @media (prefers-reduced-motion: reduce) {
   .crt-flicker,

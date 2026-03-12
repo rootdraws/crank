@@ -855,6 +855,7 @@ const state = {
   // Navigation
   currentPage: 0,
   currentSubPage: 'monke',
+  ohlcvTimeframe: '4h',
   activePoolOrbital: 0,
 };
 
@@ -1292,6 +1293,9 @@ async function loadAggregatedView(dlmmPools, dammPools) {
   document.getElementById('poolName').textContent = `${state.tokenXSymbol}/${state.tokenYSymbol}`;
   document.getElementById('currentPrice').textContent = '$' + formatPrice(state.currentPrice);
   document.getElementById('poolInfo').classList.add('visible');
+
+  updatePoolMetrics(primary);
+  fetchAndRenderOHLCV(primary.address, state.ohlcvTimeframe || '4h');
 
   // Show/hide DAMM TVL info
   let dammInfoEl = document.getElementById('dammTvlInfo');
@@ -1931,6 +1935,7 @@ async function renderPositionsPage() {
       <span class="pos-status ${status}">${status}</span>
       <button class="claim-fees-btn action-btn-sm" data-pubkey="${pos.pubkey.toBase58()}" data-lbpair="${pos.lbPair}" data-metpos="${pos.meteoraPosition.toBase58()}" data-min="${pos.minBinId}" data-max="${pos.maxBinId}">fees</button>
       <button class="close-btn" data-pubkey="${pos.pubkey.toBase58()}" data-lbpair="${pos.lbPair}" data-metpos="${pos.meteoraPosition.toBase58()}" data-min="${pos.minBinId}" data-max="${pos.maxBinId}">close</button>
+      <button class="history-btn action-btn-sm" data-metpos="${pos.meteoraPosition.toBase58()}">history</button>
     </div>`;
   }
 
@@ -1979,6 +1984,10 @@ async function renderPositionsPage() {
         btn.textContent = 'fees'; btn.disabled = false;
       }
     });
+  });
+
+  listEl.querySelectorAll('.history-btn').forEach(btn => {
+    btn.addEventListener('click', () => showPositionHistory(btn.dataset.metpos));
   });
 }
 
@@ -3538,19 +3547,293 @@ async function handleClaimAll() {
 }
 
 // ============================================================
-// RECON PAGE — rover TVL leaderboard + bribe deposit
+// POOL METRICS — enriched stats from DataPI /pools/{address}
 // ============================================================
 
-function renderReconPools() {
-  const container = document.getElementById('reconPoolList');
-  if (!container) return;
-  container.innerHTML = '<div class="empty-state">no rover positions yet — data loads from bot relay</div>';
+function updatePoolMetrics(poolData) {
+  const metricsEl = document.getElementById('poolMetrics');
+  if (!metricsEl) return;
+
+  const apr = poolData.apr;
+  const feeTvl = poolData.fee_tvl_ratio?.['24h'];
+  const dynFee = poolData.dynamic_fee_pct ?? poolData.pool_config?.base_fee_pct;
+  const cumVol = poolData.cumulative_metrics?.volume;
+
+  if (apr != null || feeTvl != null) {
+    const aprEl = document.getElementById('poolApr');
+    const feeTvlEl = document.getElementById('poolFeeTvl');
+    const dynFeeEl = document.getElementById('poolDynFee');
+    const cumVolEl = document.getElementById('poolCumVol');
+
+    if (aprEl) aprEl.textContent = apr != null ? (apr * 100).toFixed(1) + '%' : '—';
+    if (feeTvlEl) feeTvlEl.textContent = feeTvl != null ? (feeTvl * 100).toFixed(2) + '%' : '—';
+    if (dynFeeEl) dynFeeEl.textContent = dynFee != null ? dynFee.toFixed(2) + '%' : '—';
+    if (cumVolEl) cumVolEl.textContent = cumVol != null ? formatVolume(cumVol) : '—';
+    metricsEl.style.display = '';
+  } else {
+    metricsEl.style.display = 'none';
+  }
 }
 
-function renderReconTop5() {
-  const container = document.getElementById('reconTop5Cards');
+// ============================================================
+// OHLCV CHART — candlestick/line chart from DataPI
+// ============================================================
+
+async function fetchAndRenderOHLCV(poolAddress, timeframe) {
+  const section = document.getElementById('ohlcvSection');
+  if (!section) return;
+
+  let data = null;
+  try {
+    const relayData = await relayFetch(`/api/pool-ohlcv/${poolAddress}?timeframe=${timeframe}`);
+    if (relayData?.data?.length) data = relayData;
+  } catch {}
+
+  if (!data) {
+    try {
+      const resp = await fetch(`${METEORA_API_BASE()}/pools/${poolAddress}/ohlcv?timeframe=${timeframe}`);
+      if (resp.ok) data = await resp.json();
+    } catch {}
+  }
+
+  if (!data?.data?.length) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = '';
+  renderOHLCVCanvas(data.data);
+}
+
+function renderOHLCVCanvas(candles) {
+  const canvas = document.getElementById('ohlcvCanvas');
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  if (!wrap) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = wrap.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = rect.width;
+  const H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (candles.length === 0) return;
+
+  const prices = candles.flatMap(c => [c.high, c.low]);
+  const minP = Math.min(...prices);
+  const maxP = Math.max(...prices);
+  const range = maxP - minP || 1;
+  const pad = 4;
+  const barW = Math.max(1, (W - pad * 2) / candles.length - 1);
+
+  const toY = (p) => pad + (1 - (p - minP) / range) * (H - pad * 2);
+
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    const x = pad + i * ((W - pad * 2) / candles.length) + barW / 2;
+    const isUp = c.close >= c.open;
+    const color = isUp ? '#ADD96C' : '#D984AC';
+
+    // Wick
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, toY(c.high));
+    ctx.lineTo(x, toY(c.low));
+    ctx.stroke();
+
+    // Body
+    const bodyTop = toY(Math.max(c.open, c.close));
+    const bodyBot = toY(Math.min(c.open, c.close));
+    const bodyH = Math.max(1, bodyBot - bodyTop);
+    ctx.fillStyle = color;
+    ctx.fillRect(x - barW / 2, bodyTop, barW, bodyH);
+  }
+
+  // Price labels
+  ctx.font = `400 9px 'IBM Plex Mono', monospace`;
+  ctx.fillStyle = '#714BA6';
+  ctx.textAlign = 'right';
+  ctx.fillText('$' + formatPrice(maxP), W - 4, 12);
+  ctx.fillText('$' + formatPrice(minP), W - 4, H - 4);
+}
+
+// ============================================================
+// POSITION HISTORY MODAL — events from DataPI
+// ============================================================
+
+async function showPositionHistory(meteoraPositionAddress) {
+  const modal = document.getElementById('positionHistoryModal');
+  const eventsEl = document.getElementById('historyEvents');
+  if (!modal || !eventsEl) return;
+
+  eventsEl.innerHTML = '<div class="empty-state">loading...</div>';
+  modal.classList.add('visible');
+
+  let data = null;
+  try {
+    const relayData = await relayFetch(`/api/position-history/${meteoraPositionAddress}`);
+    if (relayData?.events) data = relayData;
+  } catch {}
+
+  if (!data) {
+    try {
+      const resp = await fetch(
+        `${METEORA_API_BASE()}/positions/${meteoraPositionAddress}/historical?order_direction=desc`
+      );
+      if (resp.ok) data = await resp.json();
+    } catch {}
+  }
+
+  if (!data?.events?.length) {
+    eventsEl.innerHTML = '<div class="empty-state">no events found</div>';
+    return;
+  }
+
+  eventsEl.innerHTML = data.events.map(evt => {
+    const ts = evt.blockTime ? new Date(evt.blockTime * 1000) : null;
+    const timeStr = ts ? timeAgo(evt.blockTime) : '—';
+    const usd = parseFloat(evt.totalUsd) || 0;
+    const sig = evt.signature || '';
+    const shortSig = sig ? sig.slice(0, 6) + '...' : '';
+    return `<div class="history-event-row">
+      <span class="history-event-type ${escapeHtml(evt.eventType)}">${escapeHtml(evt.eventType)}</span>
+      <span class="history-event-amounts">
+        <span class="history-event-usd">$${usd.toFixed(2)}</span>
+      </span>
+      <span class="history-event-time">${escapeHtml(timeStr)}</span>
+      <span class="history-event-tx">${sig ? `<a href="https://solscan.io/tx/${encodeURIComponent(sig)}" target="_blank" rel="noopener">${escapeHtml(shortSig)}</a>` : '—'}</span>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================
+// RECON PAGE — private protocol analytics dashboard
+// ============================================================
+
+let reconPnlData = null;
+let reconFilter = 'all';
+
+async function loadReconDashboard() {
+  try {
+    const data = await relayFetch('/api/protocol-pnl');
+    if (!data) {
+      document.getElementById('reconPoolBreakdown').innerHTML =
+        '<div class="empty-state">bot relay unavailable — protocol PnL requires the bot</div>';
+      return;
+    }
+    reconPnlData = data;
+    renderReconDashboard(data);
+  } catch {
+    document.getElementById('reconPoolBreakdown').innerHTML =
+      '<div class="empty-state">failed to load protocol data</div>';
+  }
+}
+
+function renderReconDashboard(data) {
+  const el = id => document.getElementById(id);
+
+  const wr = el('reconWinRate');
+  if (wr) {
+    const pct = (data.winRate * 100).toFixed(1);
+    wr.textContent = pct + '%';
+    wr.className = 'stat-value ' + (data.winRate >= 0.5 ? 'green' : '');
+  }
+
+  const netPnl = parseFloat(data.netPnlUsd);
+  if (el('reconNetPnl')) {
+    el('reconNetPnl').textContent = (netPnl >= 0 ? '+' : '') + '$' + Math.abs(netPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    el('reconNetPnl').className = 'stat-value ' + (netPnl >= 0 ? 'pnl-positive' : 'pnl-negative');
+  }
+
+  if (el('reconPosCount')) el('reconPosCount').textContent = `${data.openPositions} open / ${data.closedPositions} closed`;
+  if (el('reconFeesEarned')) el('reconFeesEarned').textContent = '$' + parseFloat(data.totalFeesUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (el('reconAvgReturn')) {
+    el('reconAvgReturn').textContent = (data.avgReturnPct >= 0 ? '+' : '') + data.avgReturnPct.toFixed(2) + '%';
+    el('reconAvgReturn').className = 'stat-value ' + (data.avgReturnPct >= 0 ? 'pnl-positive' : 'pnl-negative');
+  }
+
+  // Side stats
+  const buy = data.bySide?.buy || {};
+  const sell = data.bySide?.sell || {};
+  if (el('reconBuyWr')) el('reconBuyWr').textContent = ((buy.winRate || 0) * 100).toFixed(1) + '%';
+  if (el('reconBuyCount')) el('reconBuyCount').textContent = (buy.count || 0) + ' positions';
+  if (el('reconBuyPnl')) {
+    const v = parseFloat(buy.netPnlUsd || '0');
+    el('reconBuyPnl').textContent = (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(2);
+    el('reconBuyPnl').className = 'recon-side-pnl ' + (v >= 0 ? 'pnl-positive' : 'pnl-negative');
+  }
+  if (el('reconSellWr')) el('reconSellWr').textContent = ((sell.winRate || 0) * 100).toFixed(1) + '%';
+  if (el('reconSellCount')) el('reconSellCount').textContent = (sell.count || 0) + ' positions';
+  if (el('reconSellPnl')) {
+    const v = parseFloat(sell.netPnlUsd || '0');
+    el('reconSellPnl').textContent = (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(2);
+    el('reconSellPnl').className = 'recon-side-pnl ' + (v >= 0 ? 'pnl-positive' : 'pnl-negative');
+  }
+
+  // Rover
+  if (data.roverPortfolio?.total) {
+    const rt = data.roverPortfolio.total;
+    const roverPnl = parseFloat(rt.totalPnlUsd || '0');
+    if (el('reconRoverPnl')) {
+      el('reconRoverPnl').textContent = (roverPnl >= 0 ? '+$' : '-$') + Math.abs(roverPnl).toFixed(2);
+      el('reconRoverPnl').className = 'stat-value ' + (roverPnl >= 0 ? 'pnl-positive' : 'pnl-negative');
+    }
+    const roverSection = el('reconRoverSection');
+    if (roverSection) {
+      const openPools = data.roverPortfolio.open?.pools || [];
+      if (openPools.length > 0) {
+        roverSection.innerHTML = openPools.map(p => `
+          <div class="recon-pool-row">
+            <span>${escapeHtml(p.tokenX || '?')}/${escapeHtml(p.tokenY || '?')}</span>
+            <span>${p.openPositionCount || 0}</span>
+            <span>—</span>
+            <span>$${parseFloat(p.balances || '0').toFixed(2)}</span>
+            <span class="${parseFloat(p.pnl || '0') >= 0 ? 'pnl-positive' : 'pnl-negative'}">
+              ${parseFloat(p.pnl || '0') >= 0 ? '+' : ''}$${parseFloat(p.pnl || '0').toFixed(2)}
+            </span>
+          </div>
+        `).join('');
+      } else {
+        roverSection.innerHTML = '<div class="empty-state">no open rover positions</div>';
+      }
+    }
+  } else {
+    if (el('reconRoverPnl')) el('reconRoverPnl').textContent = '—';
+    const roverSection = el('reconRoverSection');
+    if (roverSection) roverSection.innerHTML = '<div class="empty-state">rover data unavailable</div>';
+  }
+
+  renderReconPoolBreakdown(data.byPool || []);
+}
+
+function renderReconPoolBreakdown(pools) {
+  const container = document.getElementById('reconPoolBreakdown');
   if (!container) return;
-  container.innerHTML = '';
+
+  let filtered = pools;
+  if (reconFilter === 'profitable') filtered = pools.filter(p => parseFloat(p.netPnlUsd) > 0);
+  else if (reconFilter === 'unprofitable') filtered = pools.filter(p => parseFloat(p.netPnlUsd) <= 0);
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="empty-state">no pools match filter</div>';
+    return;
+  }
+
+  container.innerHTML = filtered.map(p => {
+    const pnl = parseFloat(p.netPnlUsd);
+    return `<div class="recon-pool-row">
+      <span>${escapeHtml(p.name)}</span>
+      <span>${p.positions}</span>
+      <span>${(p.winRate * 100).toFixed(0)}%</span>
+      <span>$${parseFloat(p.depositedUsd).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+      <span class="${pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}</span>
+    </div>`;
+  }).join('');
 }
 
 async function handleRoverDeposit() {
@@ -4075,12 +4358,26 @@ function showSubPage(subName) {
 }
 
 // ============================================================
+// RECON ACCESS CONTROL
+// ============================================================
+
+function activateReconPage() {
+  const reconEl = document.getElementById('page-recon');
+  if (!reconEl) return;
+  reconEl.style.display = '';
+  reconEl.style.removeProperty('display');
+  showPage(PAGE_IDS.indexOf('page-recon'));
+  loadReconDashboard();
+  showToast('Recon dashboard activated', 'info');
+}
+
+// ============================================================
 // NAVIGATION — bottom panel tabs + dots
 // ============================================================
 
-const PAGE_IDS = ['page-trade', 'page-positions', 'page-rank', 'page-ops'];
-const PAGE_BODY_CLASSES = ['on-trade', 'on-positions', 'on-rank', 'on-ops'];
-const PAGE_ACCENT = ['#F2B6C6', '#F2B6C6', '#F2B6C6', '#F2B6C6'];
+const PAGE_IDS = ['page-trade', 'page-positions', 'page-rank', 'page-ops', 'page-recon'];
+const PAGE_BODY_CLASSES = ['on-trade', 'on-positions', 'on-rank', 'on-ops', 'on-recon'];
+const PAGE_ACCENT = ['#F2B6C6', '#F2B6C6', '#F2B6C6', '#F2B6C6', '#F2B6C6'];
 
 function showPage(idx) {
   state.currentPage = idx;
@@ -4256,7 +4553,8 @@ async function init() {
     if (state.currentPage > 0) showPage(state.currentPage - 1);
   });
   document.getElementById('navRight')?.addEventListener('click', () => {
-    if (state.currentPage < PAGE_IDS.length - 1) showPage(state.currentPage + 1);
+    const maxPublicPage = 3; // ops is last public page; recon (4) is hidden
+    if (state.currentPage < maxPublicPage) showPage(state.currentPage + 1);
   });
 
   // Arrow hover highlights target orbit
@@ -4319,8 +4617,41 @@ async function init() {
     if (e.key === 'Enter') handleMonkeBurnLookup();
   });
 
-  // Recon: bribe deposit
+  // Recon: bribe deposit + dashboard
   document.getElementById('roverDepositBtn')?.addEventListener('click', handleRoverDeposit);
+  document.getElementById('historyClose')?.addEventListener('click', () => {
+    document.getElementById('positionHistoryModal')?.classList.remove('visible');
+  });
+
+  // OHLCV timeframe toggles
+  document.querySelectorAll('.ohlcv-tf-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ohlcv-tf-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.ohlcvTimeframe = btn.dataset.tf;
+      if (state.poolAddress) fetchAndRenderOHLCV(state.poolAddress, btn.dataset.tf);
+    });
+  });
+
+  // Recon filter buttons
+  document.querySelectorAll('.recon-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.recon-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      reconFilter = btn.dataset.filter;
+      if (reconPnlData) renderReconPoolBreakdown(reconPnlData.byPool || []);
+    });
+  });
+
+  // Recon access: ?recon=1 or Ctrl+Shift+R
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('recon') === '1') activateReconPage();
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'R') {
+      e.preventDefault();
+      activateReconPage();
+    }
+  });
 
   // Ops: crank buttons
   document.getElementById('crankSweep')?.addEventListener('click', handleCrankSweep);
@@ -4354,8 +4685,7 @@ async function init() {
   renderGlobalStats();
   renderOpsStats();
   renderBountyBoard();
-  renderReconPools();
-  renderReconTop5();
+  loadReconDashboard();
 
   fetchTrendingPools();
   setInterval(fetchTrendingPools, 60_000);

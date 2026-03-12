@@ -52,6 +52,281 @@ export interface RoverTvlEntry {
   };
 }
 
+// ═══ PROTOCOL PNL AGGREGATOR ═══
+
+interface PositionPnl {
+  meteoraPosition: string;
+  pool: string;
+  side: 'Buy' | 'Sell';
+  depositedUsd: number;
+  withdrawnUsd: number;
+  feesUsd: number;
+  netPnl: number;
+  isClosed: boolean;
+  lastFetchedAt: number;
+}
+
+export interface ProtocolPnlSnapshot {
+  totalPositions: number;
+  closedPositions: number;
+  openPositions: number;
+  profitableCount: number;
+  unprofitableCount: number;
+  winRate: number;
+  totalDepositedUsd: string;
+  totalWithdrawnUsd: string;
+  totalFeesUsd: string;
+  netPnlUsd: string;
+  avgReturnPct: number;
+  byPool: Array<{
+    pool: string;
+    name: string;
+    positions: number;
+    winRate: number;
+    netPnlUsd: string;
+    depositedUsd: string;
+  }>;
+  bySide: {
+    buy: { count: number; winRate: number; netPnlUsd: string };
+    sell: { count: number; winRate: number; netPnlUsd: string };
+  };
+  roverPortfolio: any | null;
+  lastUpdated: number;
+}
+
+export class ProtocolPnlAggregator {
+  private positionPnls: Map<string, PositionPnl> = new Map();
+  private snapshot: ProtocolPnlSnapshot | null = null;
+  private timer: NodeJS.Timeout | null = null;
+  private running = false;
+  private meteoraApiBase: string;
+  private concurrency = 5;
+
+  constructor(
+    private getPositions: () => Array<{ positionPDA: string; meteoraPosition: string; lbPair: string; side: 'Buy' | 'Sell'; isClosed?: boolean }>,
+    private getPoolName: (pool: string) => Promise<string>,
+    private getRoverAuthority?: () => string | null,
+    meteoraApiBase?: string,
+  ) {
+    this.meteoraApiBase = meteoraApiBase || 'https://dlmm.datapi.meteora.ag';
+  }
+
+  start(intervalMs = 10 * 60 * 1000): void {
+    this.runCycle().catch(e => logger.error(`[pnl-aggregator] Initial cycle failed: ${e.message}`));
+    this.timer = setInterval(() => {
+      this.runCycle().catch(e => logger.error(`[pnl-aggregator] Cycle failed: ${e.message}`));
+    }, intervalMs);
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+  }
+
+  getSnapshot(): ProtocolPnlSnapshot | null {
+    return this.snapshot;
+  }
+
+  private async runCycle(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    try {
+      const positions = this.getPositions();
+      logger.info(`[pnl-aggregator] Scanning ${positions.length} positions`);
+
+      const toFetch: typeof positions = [];
+      for (const pos of positions) {
+        const cached = this.positionPnls.get(pos.meteoraPosition);
+        if (cached?.isClosed) continue;
+        const staleMs = 10 * 60 * 1000;
+        if (cached && Date.now() - cached.lastFetchedAt < staleMs) continue;
+        toFetch.push(pos);
+      }
+
+      // Fetch in batches with concurrency limit
+      for (let i = 0; i < toFetch.length; i += this.concurrency) {
+        const batch = toFetch.slice(i, i + this.concurrency);
+        await Promise.allSettled(batch.map(pos => this.fetchPositionHistory(pos)));
+      }
+
+      // Fetch rover portfolio if available
+      let roverPortfolio: any = null;
+      if (this.getRoverAuthority) {
+        const roverAddr = this.getRoverAuthority();
+        if (roverAddr) {
+          roverPortfolio = await this.fetchRoverPortfolio(roverAddr);
+        }
+      }
+
+      this.buildSnapshot(positions, roverPortfolio);
+      logger.info(`[pnl-aggregator] Snapshot updated: ${this.snapshot?.totalPositions} positions, ${(this.snapshot?.winRate ?? 0 * 100).toFixed(1)}% win rate`);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async fetchPositionHistory(pos: { meteoraPosition: string; lbPair: string; side: 'Buy' | 'Sell' }): Promise<void> {
+    try {
+      const resp = await fetch(`${this.meteoraApiBase}/positions/${pos.meteoraPosition}/historical`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const events: Array<{ eventType: string; amountXUsd: string; amountYUsd: string; totalUsd: string }> = data.events || [];
+
+      let depositedUsd = 0;
+      let withdrawnUsd = 0;
+      let feesUsd = 0;
+      let hasRemoveOrClaim = false;
+
+      for (const evt of events) {
+        const total = parseFloat(evt.totalUsd) || 0;
+        switch (evt.eventType) {
+          case 'add':
+            depositedUsd += total;
+            break;
+          case 'remove':
+            withdrawnUsd += total;
+            hasRemoveOrClaim = true;
+            break;
+          case 'claim_fee':
+            feesUsd += total;
+            hasRemoveOrClaim = true;
+            break;
+          case 'claim_reward':
+            feesUsd += total;
+            hasRemoveOrClaim = true;
+            break;
+        }
+      }
+
+      const isClosed = hasRemoveOrClaim && events.length > 0 &&
+        events[events.length - 1]?.eventType === 'remove';
+
+      this.positionPnls.set(pos.meteoraPosition, {
+        meteoraPosition: pos.meteoraPosition,
+        pool: pos.lbPair,
+        side: pos.side,
+        depositedUsd,
+        withdrawnUsd,
+        feesUsd,
+        netPnl: (withdrawnUsd + feesUsd) - depositedUsd,
+        isClosed,
+        lastFetchedAt: Date.now(),
+      });
+    } catch {
+      // Skip failures silently
+    }
+  }
+
+  private async fetchRoverPortfolio(roverAuthority: string): Promise<any> {
+    try {
+      const [openResp, totalResp] = await Promise.all([
+        fetch(`${this.meteoraApiBase}/portfolio/open?user=${roverAuthority}`).then(r => r.ok ? r.json() : null),
+        fetch(`${this.meteoraApiBase}/portfolio/total?user=${roverAuthority}`).then(r => r.ok ? r.json() : null),
+      ]);
+      return { open: openResp, total: totalResp };
+    } catch {
+      return null;
+    }
+  }
+
+  private buildSnapshot(
+    positions: Array<{ meteoraPosition: string; lbPair: string; side: 'Buy' | 'Sell' }>,
+    roverPortfolio: any,
+  ): void {
+    let totalDeposited = 0, totalWithdrawn = 0, totalFees = 0;
+    let profitableCount = 0, unprofitableCount = 0;
+    let closedCount = 0, openCount = 0;
+
+    const poolStats = new Map<string, { positions: number; profitable: number; netPnl: number; deposited: number }>();
+    const sideStats = {
+      buy: { count: 0, profitable: 0, netPnl: 0 },
+      sell: { count: 0, profitable: 0, netPnl: 0 },
+    };
+
+    for (const pos of positions) {
+      const pnl = this.positionPnls.get(pos.meteoraPosition);
+      if (!pnl) continue;
+
+      totalDeposited += pnl.depositedUsd;
+      totalWithdrawn += pnl.withdrawnUsd;
+      totalFees += pnl.feesUsd;
+
+      if (pnl.isClosed) {
+        closedCount++;
+        if (pnl.netPnl > 0) profitableCount++;
+        else unprofitableCount++;
+      } else {
+        openCount++;
+      }
+
+      const poolKey = pnl.pool;
+      const ps = poolStats.get(poolKey) || { positions: 0, profitable: 0, netPnl: 0, deposited: 0 };
+      ps.positions++;
+      if (pnl.netPnl > 0) ps.profitable++;
+      ps.netPnl += pnl.netPnl;
+      ps.deposited += pnl.depositedUsd;
+      poolStats.set(poolKey, ps);
+
+      const sideKey = pnl.side === 'Buy' ? 'buy' : 'sell';
+      sideStats[sideKey].count++;
+      if (pnl.netPnl > 0) sideStats[sideKey].profitable++;
+      sideStats[sideKey].netPnl += pnl.netPnl;
+    }
+
+    const totalClosed = profitableCount + unprofitableCount;
+    const winRate = totalClosed > 0 ? profitableCount / totalClosed : 0;
+    const netPnl = (totalWithdrawn + totalFees) - totalDeposited;
+    const avgReturn = totalDeposited > 0 ? (netPnl / totalDeposited) * 100 : 0;
+
+    const byPoolArray: ProtocolPnlSnapshot['byPool'] = [];
+    for (const [pool, ps] of poolStats) {
+      const wr = ps.positions > 0 ? ps.profitable / ps.positions : 0;
+      byPoolArray.push({
+        pool,
+        name: pool.slice(0, 8) + '...',
+        positions: ps.positions,
+        winRate: wr,
+        netPnlUsd: ps.netPnl.toFixed(2),
+        depositedUsd: ps.deposited.toFixed(2),
+      });
+    }
+    byPoolArray.sort((a, b) => parseFloat(b.netPnlUsd) - parseFloat(a.netPnlUsd));
+
+    // Resolve pool names asynchronously (best-effort, use cached)
+    for (const entry of byPoolArray) {
+      this.getPoolName(entry.pool).then(name => { entry.name = name; }).catch(() => {});
+    }
+
+    this.snapshot = {
+      totalPositions: positions.length,
+      closedPositions: closedCount,
+      openPositions: openCount,
+      profitableCount,
+      unprofitableCount,
+      winRate,
+      totalDepositedUsd: totalDeposited.toFixed(2),
+      totalWithdrawnUsd: totalWithdrawn.toFixed(2),
+      totalFeesUsd: totalFees.toFixed(2),
+      netPnlUsd: netPnl.toFixed(2),
+      avgReturnPct: parseFloat(avgReturn.toFixed(2)),
+      byPool: byPoolArray,
+      bySide: {
+        buy: {
+          count: sideStats.buy.count,
+          winRate: sideStats.buy.count > 0 ? sideStats.buy.profitable / sideStats.buy.count : 0,
+          netPnlUsd: sideStats.buy.netPnl.toFixed(2),
+        },
+        sell: {
+          count: sideStats.sell.count,
+          winRate: sideStats.sell.count > 0 ? sideStats.sell.profitable / sideStats.sell.count : 0,
+          netPnlUsd: sideStats.sell.netPnl.toFixed(2),
+        },
+      },
+      roverPortfolio,
+      lastUpdated: Date.now(),
+    };
+  }
+}
+
 // ═══ RELAY SERVER ═══
 
 /** Fee pipeline state returned by the /api/fees endpoint */
@@ -99,6 +374,9 @@ export class RelayServer {
   private binArrayCache: Map<string, { bins: Map<number, { amountX: number; amountY: number }>; updatedAt: number }> = new Map();
   private uiPollTimer: NodeJS.Timeout | null = null;
 
+  // Protocol PnL aggregator
+  private pnlAggregator: ProtocolPnlAggregator | null = null;
+
   // Feed persistence
   private feedCachePath = './feed-cache.json';
   private feedSaveTimer: NodeJS.Timeout | null = null;
@@ -123,6 +401,34 @@ export class RelayServer {
 
   setAddressBookStore(store: AddressBookStore): void {
     this.addressBookStore = store;
+  }
+
+  /** Start the protocol PnL aggregator that scans all position histories periodically */
+  startPnlAggregator(getRoverAuthority?: () => string | null): void {
+    this.pnlAggregator = new ProtocolPnlAggregator(
+      () => {
+        const results: Array<{ positionPDA: string; meteoraPosition: string; lbPair: string; side: 'Buy' | 'Sell' }> = [];
+        for (const poolKey of this.subscriber.getWatchedPools()) {
+          for (const pos of this.subscriber.getPositionsForPool(poolKey)) {
+            results.push({
+              positionPDA: pos.positionPDA,
+              meteoraPosition: pos.meteoraPosition.toBase58(),
+              lbPair: pos.lbPair.toBase58(),
+              side: pos.side,
+            });
+          }
+        }
+        return results;
+      },
+      async (pool: string) => {
+        const data = await this.fetchMeteoraPoolData(pool);
+        return data?.name || pool.slice(0, 8) + '...';
+      },
+      getRoverAuthority,
+      RelayServer.METEORA_API_BASE,
+    );
+    this.pnlAggregator.start();
+    logger.info('[relay] Protocol PnL aggregator started');
   }
 
   /**
@@ -256,6 +562,9 @@ export class RelayServer {
         case '/api/init-pool-tx':
           this.handleInitPoolTx(req, res);
           return true;
+        case '/api/protocol-pnl':
+          this.handleProtocolPnl(res);
+          return true;
         default:
           // Check for /api/pools/{address} or /api/bin-arrays/{pool}
           if (path.startsWith('/api/pools/')) {
@@ -265,6 +574,21 @@ export class RelayServer {
           if (path.startsWith('/api/bin-arrays/')) {
             const pool = path.slice('/api/bin-arrays/'.length);
             this.handleBinArrays(pool, res);
+            return true;
+          }
+          if (path.startsWith('/api/pool-ohlcv/')) {
+            const addr = path.slice('/api/pool-ohlcv/'.length);
+            this.handlePoolOhlcv(addr, url, res);
+            return true;
+          }
+          if (path.startsWith('/api/pool-volume/')) {
+            const addr = path.slice('/api/pool-volume/'.length);
+            this.handlePoolVolume(addr, url, res);
+            return true;
+          }
+          if (path.startsWith('/api/position-history/')) {
+            const metPos = path.slice('/api/position-history/'.length);
+            this.handlePositionHistory(metPos, res);
             return true;
           }
           this.json(res, 404, { error: 'Not found' });
@@ -516,6 +840,9 @@ export class RelayServer {
           volume24h: vol24h,
           tvl,
           alive,
+          apr: meteoraData?.apr || 0,
+          feeTvlRatio24h: meteoraData?.fee_tvl_ratio?.['24h'] || 0,
+          dynamicFeePct: meteoraData?.dynamic_fee_pct || 0,
         };
 
         if (liveCount > 0) {
@@ -841,6 +1168,73 @@ export class RelayServer {
         this.json(res, 500, { error: e.message || 'Failed to build pool creation transaction' });
       }
     });
+  }
+
+  // ─── DATAPI PROXY HANDLERS ───
+
+  private handleProtocolPnl(res: ServerResponse): void {
+    const snapshot = this.pnlAggregator?.getSnapshot();
+    if (!snapshot) {
+      this.json(res, 503, { error: 'PnL aggregator not ready — data is being computed' });
+      return;
+    }
+    this.json(res, 200, snapshot);
+  }
+
+  private async handlePoolOhlcv(poolAddress: string, url: URL, res: ServerResponse): Promise<void> {
+    const timeframe = url.searchParams.get('timeframe') || '24h';
+    const cacheKey = `ohlcv:${poolAddress}:${timeframe}`;
+    const cached = this.meteoraCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < RelayServer.METEORA_CACHE_TTL) {
+      this.json(res, 200, cached.data);
+      return;
+    }
+    try {
+      const resp = await fetch(`${RelayServer.METEORA_API_BASE}/pools/${poolAddress}/ohlcv?timeframe=${timeframe}`);
+      if (!resp.ok) { this.json(res, resp.status, { error: 'DataPI error' }); return; }
+      const data = await resp.json();
+      this.meteoraCache.set(cacheKey, { data, ts: Date.now() });
+      this.json(res, 200, data);
+    } catch (e: any) {
+      this.json(res, 502, { error: e.message });
+    }
+  }
+
+  private async handlePoolVolume(poolAddress: string, url: URL, res: ServerResponse): Promise<void> {
+    const timeframe = url.searchParams.get('timeframe') || '24h';
+    const cacheKey = `volume:${poolAddress}:${timeframe}`;
+    const cached = this.meteoraCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < RelayServer.METEORA_CACHE_TTL) {
+      this.json(res, 200, cached.data);
+      return;
+    }
+    try {
+      const resp = await fetch(`${RelayServer.METEORA_API_BASE}/pools/${poolAddress}/volume/history?timeframe=${timeframe}`);
+      if (!resp.ok) { this.json(res, resp.status, { error: 'DataPI error' }); return; }
+      const data = await resp.json();
+      this.meteoraCache.set(cacheKey, { data, ts: Date.now() });
+      this.json(res, 200, data);
+    } catch (e: any) {
+      this.json(res, 502, { error: e.message });
+    }
+  }
+
+  private async handlePositionHistory(meteoraPosition: string, res: ServerResponse): Promise<void> {
+    const cacheKey = `poshistory:${meteoraPosition}`;
+    const cached = this.meteoraCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < RelayServer.METEORA_CACHE_TTL) {
+      this.json(res, 200, cached.data);
+      return;
+    }
+    try {
+      const resp = await fetch(`${RelayServer.METEORA_API_BASE}/positions/${meteoraPosition}/historical?order_direction=desc`);
+      if (!resp.ok) { this.json(res, resp.status, { error: 'DataPI error' }); return; }
+      const data = await resp.json();
+      this.meteoraCache.set(cacheKey, { data, ts: Date.now() });
+      this.json(res, 200, data);
+    } catch (e: any) {
+      this.json(res, 502, { error: e.message });
+    }
   }
 
   // ─── BIN ARRAY RELAY HELPERS ───
