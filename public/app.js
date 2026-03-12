@@ -4491,7 +4491,8 @@ function showPage(idx) {
     }
   }
   if (rightArrow) {
-    if (idx === PAGE_IDS.length - 1) {
+    const maxPublicPage = 3;
+    if (idx >= maxPublicPage) {
       rightArrow.innerHTML = '<svg width="40" height="56" viewBox="0 0 40 56"><circle cx="20" cy="28" r="3" fill="var(--nerv-orange)"/></svg>';
       rightArrow.style.cursor = 'default';
     } else {
@@ -4634,7 +4635,7 @@ async function init() {
   }
   if (rightArrow) {
     rightArrow.addEventListener('mouseenter', () => {
-      const next = sigDots[Math.min(PAGE_IDS.length - 1, state.currentPage + 1)];
+      const next = sigDots[Math.min(3, state.currentPage + 1)];
       if (next) next.classList.add('hover');
     });
     rightArrow.addEventListener('mouseleave', () => sigDots.forEach(d => d.classList.remove('hover')));
