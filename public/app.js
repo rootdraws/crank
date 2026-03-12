@@ -3654,12 +3654,13 @@ function renderOHLCVCanvas(candles) {
     ctx.fillRect(x - barW / 2, bodyTop, barW, bodyH);
   }
 
-  // Price labels
-  ctx.font = `400 9px 'IBM Plex Mono', monospace`;
+  const labelSize = W < 120 ? 7 : 9;
+  ctx.font = `400 ${labelSize}px 'IBM Plex Mono', monospace`;
   ctx.fillStyle = '#714BA6';
-  ctx.textAlign = 'right';
-  ctx.fillText('$' + formatPrice(maxP), W - 4, 12);
-  ctx.fillText('$' + formatPrice(minP), W - 4, H - 4);
+  ctx.textAlign = W < 120 ? 'center' : 'right';
+  const labelX = W < 120 ? W / 2 : W - 4;
+  ctx.fillText('$' + formatPrice(maxP), labelX, labelSize + 2);
+  ctx.fillText('$' + formatPrice(minP), labelX, H - 4);
 }
 
 // ============================================================

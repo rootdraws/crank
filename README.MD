@@ -133,7 +133,7 @@ Yep. The Dev doesn't sell $CRANK -- just burns it.
 SMB Gen2 & Gen3 NFTs have great taste, and crank.money will be submitting as a project to the MonkeFoundry Incubator. 
 
 **Does it work with Token-2022 / pump.fun tokens?**
-Yes. Runtime detection, V1/V2 CPI branching. Zero additional configuration. Exception: Token-2022 mints with active transfer hooks are not yet supported.
+Yes. All CPI uses V2 variants natively (Token-2022 compatible). Zero additional configuration. Exception: Token-2022 mints with active transfer hooks are not yet supported.
 
 ---
 
@@ -143,7 +143,7 @@ Yes. Runtime detection, V1/V2 CPI branching. Zero additional configuration. Exce
 ## Project Structure
 
 ```
-monke-army/
+crank-money/
 ├── programs/           # Anchor workspace: bin-farm, monke-bananas, pegged-bridge
 ├── bot/                # Crank's Harvester (off-chain infrastructure)
 ├── public/             # Frontend: Trade / Positions / Rank / Ops / Recon
