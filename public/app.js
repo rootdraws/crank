@@ -3702,8 +3702,8 @@ function renderOHLCVCanvas(candles, timeframe) {
     if (!ts || isNaN(ts)) continue;
     const d = new Date(ts);
     const label = isDaily
-      ? months[d.getMonth()] + ' ' + d.getDate()
-      : d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+      ? months[d.getUTCMonth()] + ' ' + d.getUTCDate()
+      : d.getUTCHours().toString().padStart(2, '0') + ':' + d.getUTCMinutes().toString().padStart(2, '0');
     const x = marginLeft + i * step + step / 2;
     ctx.fillText(label, x, labelY);
   }
