@@ -2376,6 +2376,13 @@ async function createPosition() {
     const depositAmount = BigInt(Math.round(amount * Math.pow(10, decimals)));
     const numBins = maxBin - minBin + 1;
 
+    if (numBins > 70) {
+      const maxSpread = (state.binStep * 70 / 100).toFixed(2);
+      showToast(`Range too wide: ${numBins} bins (max 70). Narrow to ≤${maxSpread}% spread or use a higher bin-step pool.`, 'error');
+      if (btn) { btn.textContent = original; btn.disabled = false; }
+      return;
+    }
+
     if (CONFIG.DEBUG) {
       console.log(`[monke] Create ${state.side} position`);
       console.log(`  Amount: ${amount} (${depositAmount} lamports, ${decimals} decimals)`);
