@@ -2480,7 +2480,7 @@ async function createPosition() {
 
     const vtx = new solanaWeb3.VersionedTransaction(messageV0);
 
-    // No pre-signing — single signer (user wallet only). Lighthouse can inject guards.
+    await preSimulateVersioned(vtx);
     showToast('Approve in wallet...', 'info');
     const result = await phantomSDK.solana.signAndSendTransaction(vtx);
     const sig = result?.signature || result?.hash || (typeof result === 'string' ? result : undefined);
@@ -2655,6 +2655,7 @@ async function closePosition(index) {
     }).compileToV0Message([altAccount]);
     const vtx = new solanaWeb3.VersionedTransaction(messageV0);
 
+    await preSimulateVersioned(vtx);
     showToast('Approve in wallet...', 'info');
     const result = await phantomSDK.solana.signAndSendTransaction(vtx);
     const sig = result?.signature || result?.hash || (typeof result === 'string' ? result : undefined);
@@ -2749,6 +2750,7 @@ async function closePositionDirect(pos) {
   }).compileToV0Message([altAccount]);
   const vtx = new solanaWeb3.VersionedTransaction(messageV0);
 
+  await preSimulateVersioned(vtx);
   showToast('Approve in wallet...', 'info');
   const result = await phantomSDK.solana.signAndSendTransaction(vtx);
   const sig = result?.signature || result?.hash || (typeof result === 'string' ? result : undefined);
