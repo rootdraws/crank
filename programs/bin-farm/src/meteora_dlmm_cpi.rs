@@ -1,6 +1,6 @@
 // meteora_dlmm_cpi.rs
 //
-// Meteora DLMM CPI module for monke.army
+// Meteora DLMM CPI module for crank.money
 // Program: LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo
 //
 // All CPI calls use V2 variants (Token-2022 compatible).

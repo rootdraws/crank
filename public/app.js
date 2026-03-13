@@ -45,7 +45,7 @@ const CONFIG = {
   FEE_BPS: 30,
   CORE_PROGRAM_ID: '8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia',
   MONKE_BANANAS_PROGRAM_ID: 'myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH',
-  BANANAS_MINT: 'ABj8RJzGHxbLoB8JBea8kvBx626KwSfvbpce9xVfkK7w',
+  BANANAS_MINT: 'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump',
   SMB_COLLECTION: 'SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W',
   BIRDEYE_API_KEY: '',
   DEFAULT_POOL: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
@@ -1099,7 +1099,7 @@ const KNOWN_TOKENS = {
   'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 'jitoSOL',
   'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 'BONK',
   'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 'JUP',
-  'ABj8RJzGHxbLoB8JBea8kvBx626KwSfvbpce9xVfkK7w': 'BANANAS', // legacy — $CRANK mint TBD
+  'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump': 'CRANK',
 };
 
 async function parseLbPair(address) {
@@ -3013,7 +3013,7 @@ async function updateUserMonkeStats(nfts) {
     try {
       const conn = state.connection || new solanaWeb3.Connection(CONFIG.HELIUS_RPC_URL || CONFIG.RPC_URL, 'confirmed');
       const bananasMint = new solanaWeb3.PublicKey(CONFIG.BANANAS_MINT);
-      const userBananasAta = getAssociatedTokenAddressSync(bananasMint, state.publicKey);
+      const userBananasAta = getAssociatedTokenAddressSync(bananasMint, state.publicKey, false, TOKEN_2022_PROGRAM_ID);
       const ataInfo = await conn.getAccountInfo(userBananasAta);
       if (ataInfo) {
         const data = new Uint8Array(ataInfo.data);
@@ -3325,7 +3325,7 @@ async function handleFeedMonke(nftMintStr) {
   try {
     const [metadataPDA] = getMetadataPDA(nftMint);
     const userNftAccount = getAssociatedTokenAddressSync(nftMint, user);
-    const userBananasAccount = getAssociatedTokenAddressSync(bananasMint, user);
+    const userBananasAccount = getAssociatedTokenAddressSync(bananasMint, user, false, TOKEN_2022_PROGRAM_ID);
 
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
@@ -3337,6 +3337,7 @@ async function handleFeedMonke(nftMintStr) {
       userNftAccount: address(userNftAccount.toBase58()),
       userBananasAccount: address(userBananasAccount.toBase58()),
       bananasMint: address(bananasMint.toBase58()),
+      tokenProgram: address(TOKEN_2022_PROGRAM_ID.toBase58()),
     });
     tx.add(kitIxToWeb3(feedIx));
 
@@ -3371,7 +3372,7 @@ async function handleFeedGoose(nftMintStr) {
   try {
     const [metadataPDA] = getMetadataPDA(gooseNftMint);
     const userGooseNftAccount = getAssociatedTokenAddressSync(gooseNftMint, user);
-    const userBananasAccount = getAssociatedTokenAddressSync(bananasMint, user);
+    const userBananasAccount = getAssociatedTokenAddressSync(bananasMint, user, false, TOKEN_2022_PROGRAM_ID);
 
     const tx = new solanaWeb3.Transaction();
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
@@ -3384,6 +3385,7 @@ async function handleFeedGoose(nftMintStr) {
       gooseDaoAsset: address(gooseDaoAssetStr),
       userBananasAccount: address(userBananasAccount.toBase58()),
       bananasMint: address(bananasMint.toBase58()),
+      tokenProgram: address(TOKEN_2022_PROGRAM_ID.toBase58()),
     });
     tx.add(kitIxToWeb3(feedIx));
 

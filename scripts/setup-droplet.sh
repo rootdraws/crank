@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DOMAIN="bot.monke.army"
-APP_DIR="/root/monke-army"
+DOMAIN="bot.crank.money"
+APP_DIR="/root/crank-money"
 KEYS_DIR="/root/.keys"
 
 echo "==> Installing Node.js 20 via NodeSource"

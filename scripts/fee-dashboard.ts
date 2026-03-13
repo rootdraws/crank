@@ -1,7 +1,7 @@
 /**
  * fee-dashboard.ts
  *
- * Queries all 4 checkpoints in the monke.army fee pipeline and prints a summary.
+ * Queries all 4 checkpoints in the crank.money fee pipeline and prints a summary.
  *
  *   1. rover_authority PDA — accumulated fees (native SOL + token ATAs)
  *   2. dist_pool PDA       — swept SOL pending deposit into accumulator
@@ -145,7 +145,7 @@ function parseMonkeState(data: Buffer): MonkeStateData {
 }
 
 async function main() {
-  console.log('monke.army Fee Dashboard');
+  console.log('crank.money Fee Dashboard');
   console.log(`RPC: ${RPC_URL!.replace(/api-key=.*/, 'api-key=***')}`);
   console.log(`Time: ${new Date().toISOString()}`);
 

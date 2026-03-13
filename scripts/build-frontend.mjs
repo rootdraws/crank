@@ -59,49 +59,13 @@ const minified = readFileSync(join(distDir, 'app.min.js'), 'utf-8');
 const savings = ((1 - minified.length / original.length) * 100).toFixed(1);
 console.log(`  ${original.length} → ${minified.length} bytes (${savings}% reduction)`);
 
-// 2. Bundle enlist.js (Alpha Vault SDK) — only if src/enlist.js exists
-const enlistEntry = join(root, 'src', 'enlist.js');
-const isDev = process.argv.includes('--dev');
-if (existsSync(enlistEntry)) {
-  console.log('Bundling enlist.js (Alpha Vault SDK)...');
-  const enlistOutDir = isDev ? publicDir : distDir;
-  const enlistResult = await esbuild.build({
-    entryPoints: [enlistEntry],
-    outfile: join(enlistOutDir, 'enlist.bundle.js'),
-    bundle: true,
-    minify: !isDev,
-    sourcemap: true,
-    target: ['es2020'],
-    format: 'iife',
-    charset: 'utf8',
-    define: {
-      'process.env.NODE_ENV': isDev ? '"development"' : '"production"',
-      'process.env.BROWSER': '"true"',
-      'process.version': '""',
-      'process.platform': '""',
-      'process.stdout': 'null',
-      'process.stderr': 'null',
-      global: 'globalThis',
-    },
-    inject: [join(root, 'scripts', 'process-shim.mjs')],
-    external: [],
-  });
-  if (enlistResult.errors.length > 0) {
-    console.error('Enlist build errors:', enlistResult.errors);
-    process.exit(1);
-  }
-  console.log(`  enlist.bundle.js → ${isDev ? 'public/' : 'dist/'}`);
-} else {
-  console.log('Skipping enlist.js (not found at src/enlist.js)');
-}
-
-// 3. Copy index.html with updated script paths
+// 2. Copy index.html with updated script paths
 console.log('Processing index.html...');
 let html = readFileSync(join(publicDir, 'index.html'), 'utf-8');
 html = html.replace('src="app.js"', 'src="app.min.js"');
 writeFileSync(join(distDir, 'index.html'), html);
 
-// 4. Copy static assets
+// 3. Copy static assets
 for (const file of ['styles.css', 'monke.png', 'filler.svg']) {
   const src = join(publicDir, file);
   if (existsSync(src)) {
@@ -110,7 +74,7 @@ for (const file of ['styles.css', 'monke.png', 'filler.svg']) {
   }
 }
 
-// 5. Generate config.json — use local config.json if present, otherwise build from config.example.json + env vars
+// 4. Generate config.json — use local config.json if present, otherwise build from config.example.json + env vars
 const configPath = join(publicDir, 'config.json');
 const configExamplePath = join(publicDir, 'config.example.json');
 const configDest = join(distDir, 'config.json');

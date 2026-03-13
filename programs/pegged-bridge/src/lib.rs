@@ -1,4 +1,4 @@
-// pegged_bridge — SOL-to-$PEGGED staking bridge for monke.army
+// pegged_bridge — SOL-to-$PEGGED staking bridge for crank.money
 //
 // Receives SOL from sweep_rover (via revenue_dest redirect to bridge_vault PDA),
 // stakes it into the Sanctum SPL stake pool (multi-validator: MonkeDAO, LP Army,

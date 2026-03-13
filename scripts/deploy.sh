@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DROPLET_IP="${1:-${DROPLET_IP:-159.223.133.9}}"
-REMOTE_DIR="/root/monke-army"
+REMOTE_DIR="/root/crank-money"
 REMOTE_USER="root"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_deploy}"
 
@@ -27,7 +27,7 @@ rsync -avz --delete \
     "$PROJECT_ROOT/" "$REMOTE:$REMOTE_DIR/"
 
 echo "==> Installing dependencies and restarting bot"
-ssh $SSH_OPTS "$REMOTE" "cd $REMOTE_DIR && npm install --omit=dev && pm2 restart monke-harvester"
+ssh $SSH_OPTS "$REMOTE" "cd $REMOTE_DIR && npm install --omit=dev && pm2 restart crank-harvester"
 
 echo "==> Waiting for bot to come up..."
 sleep 3
@@ -39,7 +39,7 @@ echo "$HEALTH"
 if [ "$HEALTH" = "FAILED" ]; then
     echo ""
     echo "WARNING: Health check failed. Check logs with:"
-    echo "  ssh $SSH_OPTS $REMOTE 'pm2 logs monke-harvester --lines 50'"
+    echo "  ssh $SSH_OPTS $REMOTE 'pm2 logs crank-harvester --lines 50'"
     exit 1
 fi
 

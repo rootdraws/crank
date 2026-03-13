@@ -1,7 +1,7 @@
 /**
  * e2e-test.ts
  *
- * Guided end-to-end test of the monke.army automation pipeline.
+ * Guided end-to-end test of the crank.money automation pipeline.
  * Runs against mainnet (or devnet) — verifies each step of the fee pipeline.
  *
  * Steps:
@@ -153,7 +153,7 @@ function printDiff(before: PipelineSnapshot, after: PipelineSnapshot) {
 
 async function main() {
   console.log('╔══════════════════════════════════════════════════════════╗');
-  console.log('║          monke.army E2E Pipeline Test                   ║');
+  console.log('║          crank.money E2E Pipeline Test                   ║');
   console.log('╚══════════════════════════════════════════════════════════╝');
   console.log(`  Mode:     ${DRY_RUN ? 'DRY RUN (read-only)' : 'LIVE (will send transactions)'}`);
   console.log(`  Bot:      ${botKeypair.publicKey.toBase58()}`);

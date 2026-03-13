@@ -58,8 +58,7 @@ export type FeedGooseInstruction<
   TAccountUserBananasAccount extends string | AccountMeta<string> = string,
   TAccountBananasMint extends string | AccountMeta<string> = string,
   TAccountMonkeBurn extends string | AccountMeta<string> = string,
-  TAccountTokenProgram extends string | AccountMeta<string> =
-    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  TAccountTokenProgram extends string | AccountMeta<string> = string,
   TAccountSystemProgram extends string | AccountMeta<string> =
     '11111111111111111111111111111111',
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -153,13 +152,13 @@ export type FeedGooseAsyncInput<
   userGooseNftAccount: Address<TAccountUserGooseNftAccount>;
   /** On subsequent feeds (share_weight > 0), this can be any account (e.g. SystemProgram). */
   gooseDaoAsset: Address<TAccountGooseDaoAsset>;
-  /** User's $BANANAS token account (will be burned from) */
+  /** User's $CRANK token account (will be burned from) */
   userBananasAccount: Address<TAccountUserBananasAccount>;
-  /** $BANANAS mint (for burn CPI) */
+  /** $CRANK mint (for burn CPI) */
   bananasMint: Address<TAccountBananasMint>;
   /** MonkeBurn PDA — created on first feed, incremented on subsequent feeds */
   monkeBurn?: Address<TAccountMonkeBurn>;
-  tokenProgram?: Address<TAccountTokenProgram>;
+  tokenProgram: Address<TAccountTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
 };
 
@@ -261,10 +260,6 @@ export async function getFeedGooseInstructionAsync<
       ],
     });
   }
-  if (!accounts.tokenProgram.value) {
-    accounts.tokenProgram.value =
-      'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' as Address<'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'>;
-  }
   if (!accounts.systemProgram.value) {
     accounts.systemProgram.value =
       '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
@@ -325,13 +320,13 @@ export type FeedGooseInput<
   userGooseNftAccount: Address<TAccountUserGooseNftAccount>;
   /** On subsequent feeds (share_weight > 0), this can be any account (e.g. SystemProgram). */
   gooseDaoAsset: Address<TAccountGooseDaoAsset>;
-  /** User's $BANANAS token account (will be burned from) */
+  /** User's $CRANK token account (will be burned from) */
   userBananasAccount: Address<TAccountUserBananasAccount>;
-  /** $BANANAS mint (for burn CPI) */
+  /** $CRANK mint (for burn CPI) */
   bananasMint: Address<TAccountBananasMint>;
   /** MonkeBurn PDA — created on first feed, incremented on subsequent feeds */
   monkeBurn: Address<TAccountMonkeBurn>;
-  tokenProgram?: Address<TAccountTokenProgram>;
+  tokenProgram: Address<TAccountTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
 };
 
@@ -410,10 +405,6 @@ export function getFeedGooseInstruction<
   >;
 
   // Resolve default values.
-  if (!accounts.tokenProgram.value) {
-    accounts.tokenProgram.value =
-      'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' as Address<'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'>;
-  }
   if (!accounts.systemProgram.value) {
     accounts.systemProgram.value =
       '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
@@ -467,9 +458,9 @@ export type ParsedFeedGooseInstruction<
     userGooseNftAccount: TAccountMetas[4];
     /** On subsequent feeds (share_weight > 0), this can be any account (e.g. SystemProgram). */
     gooseDaoAsset: TAccountMetas[5];
-    /** User's $BANANAS token account (will be burned from) */
+    /** User's $CRANK token account (will be burned from) */
     userBananasAccount: TAccountMetas[6];
-    /** $BANANAS mint (for burn CPI) */
+    /** $CRANK mint (for burn CPI) */
     bananasMint: TAccountMetas[7];
     /** MonkeBurn PDA — created on first feed, incremented on subsequent feeds */
     monkeBurn: TAccountMetas[8];

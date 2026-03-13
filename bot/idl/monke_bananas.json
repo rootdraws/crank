@@ -290,8 +290,7 @@
           "writable": true
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         }
       ],
       "args": []
@@ -523,8 +522,7 @@
           }
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         }
       ],
       "args": []
@@ -704,14 +702,14 @@
         {
           "name": "user_bananas_account",
           "docs": [
-            "User's $BANANAS token account (will be burned from)"
+            "User's $CRANK token account (will be burned from)"
           ],
           "writable": true
         },
         {
           "name": "bananas_mint",
           "docs": [
-            "$BANANAS mint (for burn CPI)"
+            "$CRANK mint (for burn CPI)"
           ],
           "writable": true
         },
@@ -746,8 +744,7 @@
           }
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         },
         {
           "name": "system_program",
@@ -826,14 +823,14 @@
         {
           "name": "user_bananas_account",
           "docs": [
-            "User's $BANANAS token account (will be burned from)"
+            "User's $CRANK token account (will be burned from)"
           ],
           "writable": true
         },
         {
           "name": "bananas_mint",
           "docs": [
-            "$BANANAS mint (for burn CPI)"
+            "$CRANK mint (for burn CPI)"
           ],
           "writable": true
         },
@@ -868,8 +865,7 @@
           }
         },
         {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          "name": "token_program"
         },
         {
           "name": "system_program",
@@ -1038,6 +1034,59 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "set_bananas_mint",
+      "docs": [
+        "Set the burn mint address ($CRANK). Admin-only.",
+        "Allows migrating to a new burn token without reinitializing state."
+      ],
+      "discriminator": [
+        6,
+        125,
+        29,
+        95,
+        214,
+        209,
+        152,
+        88
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  111,
+                  110,
+                  107,
+                  101,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_mint",
+          "type": "pubkey"
+        }
+      ]
     },
     {
       "name": "set_pegged_mint",

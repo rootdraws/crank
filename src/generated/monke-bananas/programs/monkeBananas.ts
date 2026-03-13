@@ -24,6 +24,7 @@ import {
   type ParsedFeedMonkeInstruction,
   type ParsedInitializeInstruction,
   type ParsedPauseInstruction,
+  type ParsedSetBananasMintInstruction,
   type ParsedSetPeggedMintInstruction,
   type ParsedTransferAuthorityInstruction,
   type ParsedUnpauseInstruction,
@@ -79,6 +80,7 @@ export enum MonkeBananasInstruction {
   FeedMonke,
   Initialize,
   Pause,
+  SetBananasMint,
   SetPeggedMint,
   TransferAuthority,
   Unpause,
@@ -202,6 +204,17 @@ export function identifyMonkeBananasInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([6, 125, 29, 95, 214, 209, 152, 88])
+      ),
+      0
+    )
+  ) {
+    return MonkeBananasInstruction.SetBananasMint;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([2, 222, 230, 177, 221, 229, 34, 66])
       ),
       0
@@ -269,6 +282,9 @@ export type ParsedMonkeBananasInstruction<
   | ({
       instructionType: MonkeBananasInstruction.Pause;
     } & ParsedPauseInstruction<TProgram>)
+  | ({
+      instructionType: MonkeBananasInstruction.SetBananasMint;
+    } & ParsedSetBananasMintInstruction<TProgram>)
   | ({
       instructionType: MonkeBananasInstruction.SetPeggedMint;
     } & ParsedSetPeggedMintInstruction<TProgram>)

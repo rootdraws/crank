@@ -1,4 +1,4 @@
-// monke_bananas — monke.army revenue share program
+// monke_bananas — crank.money revenue share program
 //
 // Burn $BANANAS (1M per tx, unlimited stacking) against SMB Gen2 or Gen3 NFTs.
 // Each burn increments the NFT's weight in the global revenue pool.
@@ -31,8 +31,8 @@
 use anchor_lang::prelude::*;
 // Direct lamport manipulation used instead of system_instruction + invoke_signed
 // (program-owned PDAs can't use system transfers)
-use anchor_spl::token::{
-    self, Burn, burn, Mint, Token, TokenAccount, Transfer,
+use anchor_spl::token_interface::{
+    Burn, burn, Mint, TokenAccount, TokenInterface, Transfer, transfer,
 };
 
 declare_id!("myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH");
@@ -337,10 +337,10 @@ pub mod monke_bananas {
         let distributable = ctx.accounts.dist_pool_pegged_ata.amount;
         require!(distributable >= MIN_DEPOSIT_LAMPORTS, MonkeError::NothingToDeposit);
 
-        // CPI token::transfer from dist_pool ATA → program_vault ATA
+        // CPI transfer from dist_pool ATA → program_vault ATA
         // dist_pool PDA signs as the token account authority
         let bump = state.dist_pool_bump;
-        token::transfer(
+        transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
@@ -468,9 +468,9 @@ pub mod monke_bananas {
 
         require!(owed > 0, MonkeError::NothingToClaim);
 
-        // CPI token::transfer from program_vault ATA → user's $PEGGED ATA
+        // CPI transfer from program_vault ATA → user's $PEGGED ATA
         let bump = state.program_vault_bump;
-        token::transfer(
+        transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
@@ -961,7 +961,7 @@ pub struct Initialize<'info> {
     pub dist_pool: AccountInfo<'info>,
 
     /// $BANANAS token mint (must exist already)
-    pub bananas_mint: Account<'info, Mint>,
+    pub bananas_mint: InterfaceAccount<'info, Mint>,
 
     pub system_program: Program<'info, System>,
 }
@@ -979,7 +979,7 @@ pub struct FeedMonke<'info> {
     pub state: Account<'info, MonkeState>,
 
     /// The SMB Gen2 NFT mint
-    pub nft_mint: Account<'info, Mint>,
+    pub nft_mint: InterfaceAccount<'info, Mint>,
 
     /// CHECK: Metaplex metadata account for the NFT. Validated in instruction logic.
     /// PDA: ["metadata", metaplex_program_id, nft_mint]
@@ -991,22 +991,22 @@ pub struct FeedMonke<'info> {
         constraint = user_nft_account.owner == user.key() @ MonkeError::NotNftHolder,
         constraint = user_nft_account.amount == 1 @ MonkeError::NotNftHolder,
     )]
-    pub user_nft_account: Account<'info, TokenAccount>,
+    pub user_nft_account: InterfaceAccount<'info, TokenAccount>,
 
-    /// User's $BANANAS token account (will be burned from)
+    /// User's $CRANK token account (will be burned from)
     #[account(
         mut,
         constraint = user_bananas_account.mint == state.bananas_mint @ MonkeError::InvalidMint,
         constraint = user_bananas_account.owner == user.key() @ MonkeError::NotTokenOwner,
     )]
-    pub user_bananas_account: Account<'info, TokenAccount>,
+    pub user_bananas_account: InterfaceAccount<'info, TokenAccount>,
 
-    /// $BANANAS mint (for burn CPI)
+    /// $CRANK mint (for burn CPI)
     #[account(
         mut,
         constraint = bananas_mint.key() == state.bananas_mint @ MonkeError::InvalidMint
     )]
-    pub bananas_mint: Account<'info, Mint>,
+    pub bananas_mint: InterfaceAccount<'info, Mint>,
 
     /// MonkeBurn PDA — created on first burn, incremented on subsequent burns
     #[account(
@@ -1018,7 +1018,7 @@ pub struct FeedMonke<'info> {
     )]
     pub monke_burn: Account<'info, MonkeBurn>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1035,7 +1035,7 @@ pub struct FeedGoose<'info> {
     pub state: Account<'info, MonkeState>,
 
     /// The gooseswtf pixel goose NFT mint
-    pub goose_nft_mint: Account<'info, Mint>,
+    pub goose_nft_mint: InterfaceAccount<'info, Mint>,
 
     /// CHECK: Metaplex metadata account for the pixel goose. Validated in instruction logic.
     pub goose_nft_metadata: AccountInfo<'info>,
@@ -1046,26 +1046,26 @@ pub struct FeedGoose<'info> {
         constraint = user_goose_nft_account.owner == user.key() @ MonkeError::NotNftHolder,
         constraint = user_goose_nft_account.amount == 1 @ MonkeError::NotNftHolder,
     )]
-    pub user_goose_nft_account: Account<'info, TokenAccount>,
+    pub user_goose_nft_account: InterfaceAccount<'info, TokenAccount>,
 
     /// CHECK: GooseDAO Core asset account. Validated in instruction on first feed only.
     /// On subsequent feeds (share_weight > 0), this can be any account (e.g. SystemProgram).
     pub goose_dao_asset: AccountInfo<'info>,
 
-    /// User's $BANANAS token account (will be burned from)
+    /// User's $CRANK token account (will be burned from)
     #[account(
         mut,
         constraint = user_bananas_account.mint == state.bananas_mint @ MonkeError::InvalidMint,
         constraint = user_bananas_account.owner == user.key() @ MonkeError::NotTokenOwner,
     )]
-    pub user_bananas_account: Account<'info, TokenAccount>,
+    pub user_bananas_account: InterfaceAccount<'info, TokenAccount>,
 
-    /// $BANANAS mint (for burn CPI)
+    /// $CRANK mint (for burn CPI)
     #[account(
         mut,
         constraint = bananas_mint.key() == state.bananas_mint @ MonkeError::InvalidMint
     )]
-    pub bananas_mint: Account<'info, Mint>,
+    pub bananas_mint: InterfaceAccount<'info, Mint>,
 
     /// MonkeBurn PDA — created on first feed, incremented on subsequent feeds
     #[account(
@@ -1077,7 +1077,7 @@ pub struct FeedGoose<'info> {
     )]
     pub monke_burn: Account<'info, MonkeBurn>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1137,7 +1137,7 @@ pub struct DepositPegged<'info> {
         constraint = dist_pool_pegged_ata.owner == dist_pool.key() @ MonkeError::InvalidTokenAccount,
         constraint = dist_pool_pegged_ata.mint == state.pegged_mint @ MonkeError::InvalidMint,
     )]
-    pub dist_pool_pegged_ata: Account<'info, TokenAccount>,
+    pub dist_pool_pegged_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// Program vault's $PEGGED ATA — destination
     #[account(
@@ -1145,7 +1145,7 @@ pub struct DepositPegged<'info> {
         constraint = program_vault_pegged_ata.owner == program_vault.key() @ MonkeError::InvalidTokenAccount,
         constraint = program_vault_pegged_ata.mint == state.pegged_mint @ MonkeError::InvalidMint,
     )]
-    pub program_vault_pegged_ata: Account<'info, TokenAccount>,
+    pub program_vault_pegged_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// CHECK: program_vault PDA — for ATA ownership validation
     #[account(
@@ -1154,7 +1154,7 @@ pub struct DepositPegged<'info> {
     )]
     pub program_vault: AccountInfo<'info>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -1181,7 +1181,7 @@ pub struct Claim<'info> {
         constraint = user_nft_account.owner == user.key() @ MonkeError::NotNftHolder,
         constraint = user_nft_account.amount == 1 @ MonkeError::NotNftHolder,
     )]
-    pub user_nft_account: Account<'info, TokenAccount>,
+    pub user_nft_account: InterfaceAccount<'info, TokenAccount>,
 
     /// CHECK: program_vault PDA — SOL source for claim
     #[account(
@@ -1218,7 +1218,7 @@ pub struct ClaimPegged<'info> {
         constraint = user_nft_account.owner == user.key() @ MonkeError::NotNftHolder,
         constraint = user_nft_account.amount == 1 @ MonkeError::NotNftHolder,
     )]
-    pub user_nft_account: Account<'info, TokenAccount>,
+    pub user_nft_account: InterfaceAccount<'info, TokenAccount>,
 
     /// CHECK: program_vault PDA — authority for the vault $PEGGED ATA
     #[account(
@@ -1233,7 +1233,7 @@ pub struct ClaimPegged<'info> {
         constraint = program_vault_pegged_ata.owner == program_vault.key() @ MonkeError::InvalidTokenAccount,
         constraint = program_vault_pegged_ata.mint == state.pegged_mint @ MonkeError::InvalidMint,
     )]
-    pub program_vault_pegged_ata: Account<'info, TokenAccount>,
+    pub program_vault_pegged_ata: InterfaceAccount<'info, TokenAccount>,
 
     /// User's $PEGGED ATA — destination
     #[account(
@@ -1241,9 +1241,9 @@ pub struct ClaimPegged<'info> {
         constraint = user_pegged_ata.owner == user.key() @ MonkeError::InvalidTokenAccount,
         constraint = user_pegged_ata.mint == state.pegged_mint @ MonkeError::InvalidMint,
     )]
-    pub user_pegged_ata: Account<'info, TokenAccount>,
+    pub user_pegged_ata: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -1286,7 +1286,7 @@ pub struct CompostMonke<'info> {
 
     /// NFT mint — verify supply == 0 (burned)
     #[account(constraint = nft_mint.key() == monke_burn.nft_mint @ MonkeError::InvalidNftMint)]
-    pub nft_mint: Account<'info, Mint>,
+    pub nft_mint: InterfaceAccount<'info, Mint>,
 
     /// CHECK: program_vault PDA — unclaimed SOL stays here
     #[account(mut, seeds = [b"program_vault"], bump = state.program_vault_bump)]

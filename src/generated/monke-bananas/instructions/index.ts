@@ -16,6 +16,7 @@ export * from './feedGoose';
 export * from './feedMonke';
 export * from './initialize';
 export * from './pause';
+export * from './setBananasMint';
 export * from './setPeggedMint';
 export * from './transferAuthority';
 export * from './unpause';

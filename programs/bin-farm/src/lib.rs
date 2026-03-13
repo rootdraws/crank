@@ -1,4 +1,4 @@
-// monke.army Core Contract
+// crank.money Core Contract
 // Wraps Meteora DLMM with custody + auto-close capability
 //
 #![deny(clippy::integer_arithmetic)]
@@ -70,7 +70,7 @@ pub mod bin_farm {
         config.last_bot_sweep_slot = 0;
         config._reserved = [0u8; 96];
 
-        msg!("monke.army initialized | bot={} fee={}bps", bot, fee_bps);
+        msg!("crank.money initialized | bot={} fee={}bps", bot, fee_bps);
         Ok(())
     }
 
@@ -2687,7 +2687,7 @@ pub struct OpenRoverPosition<'info> {
     #[account(mut)]
     pub bin_array_upper: AccountInfo<'info>,
 
-    // --- monke.army accounts ---
+    // --- crank.money accounts ---
 
     #[account(
         init,
@@ -2871,7 +2871,7 @@ pub struct OpenFeeRover<'info> {
     #[account(mut)]
     pub bin_array_upper: AccountInfo<'info>,
 
-    // --- monke.army accounts ---
+    // --- crank.money accounts ---
 
     #[account(init, payer = bot, space = Position::SIZE, seeds = [b"position", meteora_position.key().as_ref()], bump)]
     pub position: Box<Account<'info, Position>>,

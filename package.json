@@ -1,5 +1,5 @@
 {
-  "name": "monke-army",
+  "name": "crank-money",
   "version": "0.1.0",
   "description": "Managed Meteora DLMM positions with automated bin harvesting and SMB Gen2 monke revenue sharing on Solana.",
   "type": "module",
@@ -16,7 +16,7 @@
     "@codama/renderers": "^1.0.34",
     "@codama/visitors-core": "^1.5.1",
     "@coral-xyz/anchor": "^0.30.1",
-    "@meteora-ag/alpha-vault": "^1.1.15",
+
     "@meteora-ag/dlmm": "^1.3.0",
     "@phantom/browser-sdk": "^1.0.3",
     "@solana/kit": "^6.1.0",

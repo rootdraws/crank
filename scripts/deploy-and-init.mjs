@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * deploy-and-init.mjs — Atomic deploy + initialize for monke.army
+ * deploy-and-init.mjs — Atomic deploy + initialize for crank.money
  *
  * Solves HIGH-3 (R1-2/R5-1): `initialize` is not gated to deployer on-chain.
  * Anyone who calls `initialize` first becomes the authority. This script
@@ -96,7 +96,7 @@ async function verifyAuthority(connection, programId, seedStr, expectedAuthority
 
 async function main() {
   console.log(`\n╔══════════════════════════════════════════════╗`);
-  console.log(`║  monke.army deploy + initialize            ║`);
+  console.log(`║  crank.money deploy + initialize           ║`);
   console.log(`║  Cluster: ${CLUSTER.padEnd(35)}║`);
   console.log(`╚══════════════════════════════════════════════╝\n`);
 

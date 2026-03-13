@@ -193,7 +193,7 @@ node scripts/build-frontend.mjs                      # production (Vercel)
 
 | Item | Address |
 |------|---------|
-| $CRANK Mint | Launching soon on Pump.fun |
+| $CRANK Mint | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` |
 | $PEGGED Mint (LST) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` |
 | SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` |
 

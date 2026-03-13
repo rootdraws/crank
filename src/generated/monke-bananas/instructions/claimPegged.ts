@@ -53,8 +53,7 @@ export type ClaimPeggedInstruction<
   TAccountProgramVault extends string | AccountMeta<string> = string,
   TAccountProgramVaultPeggedAta extends string | AccountMeta<string> = string,
   TAccountUserPeggedAta extends string | AccountMeta<string> = string,
-  TAccountTokenProgram extends string | AccountMeta<string> =
-    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  TAccountTokenProgram extends string | AccountMeta<string> = string,
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
@@ -135,7 +134,7 @@ export type ClaimPeggedAsyncInput<
   programVaultPeggedAta: Address<TAccountProgramVaultPeggedAta>;
   /** User's $PEGGED ATA — destination */
   userPeggedAta: Address<TAccountUserPeggedAta>;
-  tokenProgram?: Address<TAccountTokenProgram>;
+  tokenProgram: Address<TAccountTokenProgram>;
 };
 
 export async function getClaimPeggedInstructionAsync<
@@ -219,10 +218,6 @@ export async function getClaimPeggedInstructionAsync<
       ],
     });
   }
-  if (!accounts.tokenProgram.value) {
-    accounts.tokenProgram.value =
-      'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' as Address<'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'>;
-  }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
@@ -271,7 +266,7 @@ export type ClaimPeggedInput<
   programVaultPeggedAta: Address<TAccountProgramVaultPeggedAta>;
   /** User's $PEGGED ATA — destination */
   userPeggedAta: Address<TAccountUserPeggedAta>;
-  tokenProgram?: Address<TAccountTokenProgram>;
+  tokenProgram: Address<TAccountTokenProgram>;
 };
 
 export function getClaimPeggedInstruction<
@@ -329,12 +324,6 @@ export function getClaimPeggedInstruction<
     keyof typeof originalAccounts,
     ResolvedAccount
   >;
-
-  // Resolve default values.
-  if (!accounts.tokenProgram.value) {
-    accounts.tokenProgram.value =
-      'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' as Address<'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'>;
-  }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
