@@ -449,13 +449,21 @@
     </div>
   </div>
 
-  <!-- GLOBAL: MOBILE NAV BAR — visible < 1100px -->
-  <nav class="mobile-nav" id="mobileNav">
-    <button class="mobile-nav-tab active" data-page="0">trade</button>
-    <button class="mobile-nav-tab" data-page="1">positions</button>
-    <button class="mobile-nav-tab" data-page="2">rank</button>
-    <button class="mobile-nav-tab" data-page="3">ops</button>
-  </nav>
+  <!-- GLOBAL: MOBILE GATE — shown < 1100px, hides the app -->
+  <div class="mobile-gate" id="mobileGate">
+    <div class="mobile-gate-inner">
+      <pre class="ascii-cat" id="asciiCat" aria-hidden="true"></pre>
+      <div class="mobile-gate-title">crank.money</div>
+      <div class="mobile-gate-msg">is a desktop experience.</div>
+      <div class="mobile-gate-links">
+        <a href="https://x.com/rootdraws" target="_blank" rel="noopener">x</a>
+        <span class="mobile-gate-dot">&middot;</span>
+        <a href="https://discord.gg/D33huqGE3V" target="_blank" rel="noopener">discord</a>
+        <span class="mobile-gate-dot">&middot;</span>
+        <a href="https://github.com/rootdraws/crank" target="_blank" rel="noopener">github</a>
+      </div>
+    </div>
+  </div>
 
   <!-- GLOBAL: SIGIL NAVIGATOR — the astrolabe (5 orbits) -->
   <div class="sigil-nav" id="sigilNav">
@@ -524,5 +532,69 @@
   </div>
 
   <script src="app.js"></script>
+  <script>
+    (function(){
+      var el = document.getElementById('asciiCat');
+      if (!el) return;
+      var frames = [
+        [
+          "  /\\_/\\  ",
+          " ( o.o ) ",
+          "  > ^ <  ",
+          " /|   |\\ ",
+          "(_|   |_)",
+        ],
+        [
+          "  /\\_/\\  ",
+          " ( -.o ) ",
+          "  > ^ <  ",
+          " /|   |\\ ",
+          "(_|   |_)",
+        ],
+        [
+          "  /\\_/\\  ",
+          " ( o.o ) ",
+          "  > ^ <  ",
+          " /|   |\\ ",
+          "(_|   |_)",
+        ],
+        [
+          "  /\\_/\\  ",
+          " ( o.o ) ",
+          "  > ^ <  ",
+          " /|   |\\~",
+          "(_|   |_)",
+        ],
+        [
+          "  /\\_/\\  ",
+          " ( o.o ) ",
+          "  > ^ <  ",
+          " /|   |\\ ",
+          "(_|   |_)~",
+        ],
+        [
+          "  /\\_/\\  ",
+          " ( o.o ) ",
+          "  > ^ <  ",
+          " /|   |\\  ",
+          "(_|   |_)~",
+        ],
+        [
+          "  /\\_/\\  ",
+          " ( o.- ) ",
+          "  > ^ <  ",
+          " /|   |\\ ",
+          "(_|   |_)",
+        ],
+      ];
+      var i = 0;
+      function tick() {
+        el.textContent = frames[i].join('\n');
+        i = (i + 1) % frames.length;
+      }
+      tick();
+      setInterval(tick, 600);
+    })();
+  </script>
 </body>
 </html>

@@ -61,6 +61,7 @@
       background: #F2E0D0;
       color: #180E26;
       min-height: 100vh;
+      min-width: 1100px;
       min-height: 700px;
       overflow: auto;
       letter-spacing: 0.02em;
@@ -85,374 +86,67 @@
       .crt-flicker { animation: none !important; }
     }
 
-    /* ─── MOBILE NAV BAR ─── hidden on desktop, shown < 1100px */
+    /* ─── MOBILE GATE ─── blocks the app on narrow screens */
 
-    .mobile-nav {
+    .mobile-gate {
       display: none;
-      position: fixed; bottom: 0; left: 0; right: 0;
-      z-index: 200;
+      position: fixed; inset: 0;
+      z-index: 9999;
       background: #F2E0D0;
-      border-top: 1px solid #D984AC;
-      padding: 0; margin: 0;
-      justify-content: stretch;
+      align-items: center; justify-content: center;
     }
-    .mobile-nav-tab {
-      flex: 1;
-      background: transparent; border: none;
-      padding: 12px 0 max(12px, env(safe-area-inset-bottom));
-      font-family: var(--font-sys); font-size: 0.6875rem; font-weight: 400;
-      letter-spacing: 0.1em; text-transform: uppercase;
-      color: var(--steel-dim); cursor: pointer;
-      transition: color 0.15s, border-color 0.15s;
-      border-top: 2px solid transparent;
+    .mobile-gate-inner {
+      text-align: center;
+      padding: 24px;
     }
-    .mobile-nav-tab.active {
-      color: var(--nerv-orange); border-top-color: var(--nerv-orange);
+    .ascii-cat {
+      font-family: var(--font-sys);
+      font-size: 1.125rem;
+      line-height: 1.35;
+      color: #D984AC;
+      margin-bottom: 32px;
+      display: inline-block;
+      min-height: 7em;
     }
-
-    /* ═══════════════════════════════════════════════════════════
-       MOBILE LAYOUT — screens narrower than 1100px
-       ═══════════════════════════════════════════════════════════ */
+    .mobile-gate-title {
+      font-family: var(--font-label);
+      font-size: 1.8rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--nerv-orange);
+      margin-bottom: 6px;
+    }
+    .mobile-gate-msg {
+      font-family: var(--font-sys);
+      font-size: 0.8125rem;
+      letter-spacing: 0.08em;
+      color: #714BA6;
+    }
+    .mobile-gate-links {
+      margin-top: 32px;
+      display: flex; gap: 10px;
+      justify-content: center; align-items: center;
+    }
+    .mobile-gate-links a {
+      font-family: var(--font-sys);
+      font-size: 0.6875rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #D984AC;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+    .mobile-gate-links a:hover { color: #180E26; }
+    .mobile-gate-dot {
+      color: #D984AC; font-size: 0.6875rem;
+    }
 
     @media (max-width: 1099px) {
-
-      /* ─── BASE ─── */
       body {
-        min-height: 100vh; min-height: 100dvh;
-        overflow-x: hidden;
-        overflow-y: auto;
-        -webkit-text-size-adjust: 100%;
+        min-width: 0 !important;
+        overflow: hidden;
       }
-
-      /* ─── HIDE DESKTOP-ONLY CHROME ─── */
-      .corner, .tangent-ray, .sigil-nav { display: none !important; }
-
-      /* ─── MOBILE NAV ─── */
-      .mobile-nav { display: flex; }
-
-      /* ─── HEADER ─── */
-      .header {
-        position: fixed; top: 0; left: 0; right: 0;
-        padding: 10px 16px;
-        background: #F2E0D0;
-        border-bottom: 1px solid #D984AC;
-        z-index: 150;
-      }
-
-      /* ─── SITE PAGES ─── */
-      .site-page.active { display: block; }
-
-      .page-body {
-        position: static;
-        padding: 60px 12px 80px;
-        overflow-y: visible;
-        background: none;
-      }
-      body.on-rank .page-body {
-        position: static;
-        top: auto; bottom: auto; left: auto; right: auto;
-        padding: 60px 12px 80px;
-        overflow-y: visible;
-      }
-
-      /* ─── TRADE LAYOUT ─── stacked vertically */
-      .trade-layout {
-        position: static;
-        display: flex; flex-direction: column;
-        gap: 12px;
-        padding: 56px 12px 80px;
-      }
-
-      .trade-left-panel,
-      .trade-right-panel {
-        width: 100%; flex-shrink: 1;
-      }
-
-      .trade-right-panel {
-        flex-direction: column;
-      }
-
-      .trade-order-form {
-        width: 100%;
-      }
-
-      /* Address book panel: collapse to horizontal strip on mobile */
-      .address-book-panel {
-        width: 100%;
-        flex-direction: column;
-        max-height: 120px;
-        overflow-y: auto;
-      }
-      .ab-cards {
-        flex-direction: row; flex-wrap: wrap; gap: 4px;
-      }
-      .ab-card { width: auto; flex: 0 0 auto; }
-
-      /* Bin visualization */
-      .bin-viz-wrap {
-        min-height: 200px; height: 200px;
-        position: relative;
-      }
-
-      /* OHLCV chart */
-      .ohlcv-section {
-        align-self: stretch;
-      }
-      .ohlcv-wrap {
-        height: 35vh;
-      }
-
-      /* ─── POOL DISCOVERY ─── */
-      .pool-discovery {
-        gap: 4px;
-      }
-      .addressbook-active, .addressbook-recent {
-        flex-wrap: wrap; gap: 4px;
-      }
-
-      /* Pool picker */
-      .pool-picker {
-        max-height: 160px;
-      }
-
-      /* Pool info row: wrap */
-      .pool-info.visible {
-        flex-wrap: wrap; gap: 10px;
-      }
-
-      /* Pool metrics: wrap */
-      .pool-metrics {
-        gap: 10px;
-      }
-
-      /* ─── ORDER FORM INPUTS ─── bigger tap targets */
-      .pool-input,
-      .range-input,
-      .amount-input {
-        font-size: 16px;
-        padding: 10px 0;
-      }
-
-      .action-btn {
-        padding: 16px 0;
-        font-size: 0.8125rem;
-      }
-
-      /* ─── POSITIONS PAGE ─── horizontal scroll for wide grids */
-      .pos-page-header,
-      .pos-page-row {
-        display: grid;
-        grid-template-columns: 1.2fr 0.6fr 1fr 0.7fr 0.7fr 0.5fr auto auto;
-        gap: 6px;
-        font-size: 0.6875rem;
-        min-width: 600px;
-      }
-
-      #page-positions .page-body,
-      #page-ops .page-body {
-        overflow-x: auto;
-      }
-
-      #allPositionsList {
-        max-height: none;
-        overflow-x: auto;
-      }
-
-      /* ─── STATS GRID ─── 2 columns on mobile */
-      .stats-grid {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 12px;
-      }
-      .recon-stats {
-        grid-template-columns: repeat(2, 1fr);
-      }
-
-      /* ─── RANK: MONKE FRAME ─── stack vertically */
-      .monke-split {
-        flex-direction: column; gap: 16px;
-      }
-      .monke-nft-panel {
-        flex: none; width: 100%;
-        padding-right: 0; padding-bottom: 16px;
-      }
-      .monke-frame-divider {
-        flex: none;
-        width: 100%; height: 1px;
-        align-self: auto;
-      }
-      .monke-detail-panel {
-        padding-left: 0;
-      }
-
-      /* Triptych: stack first two cols, keep burn button */
-      .monke-top-triptych {
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-      }
-      .triptych-burn {
-        grid-column: 1 / -1;
-        justify-content: center;
-      }
-      .burn-btn {
-        width: 100px; height: 100px;
-      }
-      .burn-btn canvas {
-        width: 80px; height: 80px;
-      }
-
-      /* Monke rows: fewer columns */
-      .monke-header {
-        grid-template-columns: 16px 1.5fr 0.8fr 1fr 1fr;
-        gap: 8px;
-      }
-      .monke-row {
-        grid-template-columns: 16px 1.5fr 0.8fr 1fr 1fr;
-        gap: 8px;
-        padding: 10px 0;
-      }
-      .monke-header span:nth-child(6),
-      .monke-row > *:nth-child(6) {
-        display: none;
-      }
-
-      /* NFT carousel */
-      .nft-carousel {
-        max-width: 300px; margin: 0 auto;
-      }
-
-      /* Rank roster */
-      .explorer-search {
-        flex-direction: column; gap: 6px;
-      }
-      .explorer-search .pool-input {
-        width: 100%;
-      }
-
-      /* ─── OPS PAGE ─── */
-      .ops-top-row {
-        flex-direction: column; align-items: flex-start; gap: 8px;
-      }
-      .ops-stats-compact {
-        gap: 4px 8px;
-      }
-      .crank-section {
-        width: 100%; justify-content: flex-start;
-      }
-
-      .bounty-header, .bounty-row {
-        grid-template-columns: 1.5fr 0.8fr 0.8fr 0.8fr auto;
-        gap: 6px;
-        font-size: 0.6875rem;
-        min-width: 480px;
-      }
-
-      .activity-feed {
-        max-height: 300px;
-      }
-
-      /* ─── RECON PAGE ─── */
-      .recon-side-split {
-        grid-template-columns: 1fr;
-        gap: 12px;
-      }
-      .recon-pool-header, .recon-pool-row {
-        grid-template-columns: 1.5fr 0.8fr 0.8fr 1fr 1fr;
-        gap: 6px; font-size: 0.6875rem;
-        min-width: 480px;
-      }
-      .rover-deposit-section {
-        flex-direction: column; gap: 8px;
-      }
-      .rover-input, .rover-input.mint {
-        flex: none; width: 100%;
-      }
-
-      /* ─── MODALS ─── */
-      .modal-content {
-        width: 95%; max-width: none;
-        padding: 16px;
-      }
-      .pnl-modal-content {
-        max-width: none;
-      }
-      .history-modal-content {
-        max-width: none;
-      }
-      .history-event-row {
-        grid-template-columns: 60px 1fr 60px 50px;
-        gap: 6px; font-size: 0.6875rem;
-      }
-
-      /* ─── TOAST ─── */
-      .toast {
-        bottom: 80px; right: 12px; left: 12px;
-        text-align: center;
-      }
-
-      /* ─── WALLET OPTIONS DROPDOWN ─── */
-      .wallet-options {
-        top: 46px; right: 12px;
-      }
-
-      /* ─── CODEC MODAL ─── */
-      .codec { width: 98%; }
-      .codec-body {
-        flex-direction: column; gap: 16px;
-        padding: 16px;
-      }
-      .codec-portrait {
-        flex: none; width: 100%;
-        display: flex; flex-direction: column; align-items: center;
-      }
-      .codec-portrait img {
-        width: 140px; height: 140px;
-      }
-
-      /* ─── MISC TOUCH ENHANCEMENTS ─── */
-      .side-tab { padding: 12px 0; }
-      .wallet-btn { padding: 0.5em 0.8em; }
-      .action-btn-sm { padding: 0.6em 1em; }
-      .zoom-btn { width: 28px; height: 28px; }
-      .load-btn { padding: 10px 16px; }
-
-      .pool-stat-select {
-        font-size: 14px;
-      }
-      .create-pool-row {
-        flex-direction: column; gap: 6px;
-        align-items: stretch;
-      }
-    }
-
-    /* ═══ SMALL PHONES (≤480px) ═══ */
-    @media (max-width: 480px) {
-      .trade-layout {
-        padding: 52px 8px 76px;
-      }
-      .page-body,
-      body.on-rank .page-body {
-        padding: 52px 8px 76px;
-      }
-      .header {
-        padding: 8px 10px;
-      }
-      .logo { font-size: 1rem; }
-      .wallet-btn { font-size: 0.625rem; padding: 0.4em 0.6em; }
-      .mobile-nav-tab { font-size: 0.5625rem; letter-spacing: 0.06em; }
-
-      .stats-grid {
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
-      }
-      .stat-value { font-size: 16px; }
-
-      .bin-viz-wrap { min-height: 160px; height: 160px; }
-      .ohlcv-wrap { height: 28vh; }
-
-      .monke-top-triptych {
-        grid-template-columns: 1fr;
-      }
-      .triptych-burn { grid-column: auto; }
+      .mobile-gate { display: flex; }
     }
 
     /* ─── SCAFFOLD GEOMETRY ─── */

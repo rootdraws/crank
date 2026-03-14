@@ -4564,11 +4564,6 @@ function showPage(idx) {
     document.body.classList.toggle(cls, i === idx);
   });
 
-  // Sync mobile nav tabs
-  document.querySelectorAll('.mobile-nav-tab').forEach(t => {
-    t.classList.toggle('active', parseInt(t.dataset.page) === idx);
-  });
-
   // Sigil navigator: orbits + dots with per-page accent color
   const accent = PAGE_ACCENT[idx];
   document.querySelectorAll('.sigil-orbit').forEach(o => {
@@ -4716,15 +4711,6 @@ async function init() {
 
   // Action
   document.getElementById('actionBtn')?.addEventListener('click', createPosition);
-
-  // Mobile nav tabs
-  document.querySelectorAll('.mobile-nav-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      const idx = parseInt(tab.dataset.page);
-      showPage(idx);
-      document.querySelectorAll('.mobile-nav-tab').forEach(t => t.classList.toggle('active', parseInt(t.dataset.page) === idx));
-    });
-  });
 
   // Sigil navigator: orbits + dots are clickable
   document.querySelectorAll('.sigil-orbit').forEach(o => {
