@@ -395,19 +395,30 @@ function handleRelayEvent(msg) {
 
 function formatRelayEvent(msg) {
   const d = msg.data || {};
+  const pool = (d.lbPair || '').slice(0, 8);
+  const owner = (d.owner || '').slice(0, 6);
+  const side = d.side ? ` · ${d.side.toLowerCase()}` : '';
   switch (msg.type) {
     case 'harvestExecuted':
-      return `harvested ${d.binCount || '?'} bins on ${(d.lbPair || '').slice(0, 8)}... → ${(d.owner || '').slice(0, 6)}...`;
+      return `harvested ${d.binCount || '?'} bins · ${pool}...${side} → ${owner}...`;
     case 'positionClosed':
-      return `position closed ${(d.lbPair || '').slice(0, 8)}... → ${(d.owner || '').slice(0, 6)}...`;
+      return `closed · ${pool}...${side} → ${owner}...`;
     case 'harvestNeeded':
-      return `${d.safeBinCount || '?'} bins ready on ${(d.lbPair || '').slice(0, 8)}...`;
+      return `${d.safeBinCount || '?'} bins ready · ${pool}...${side}`;
     case 'positionChanged':
-      return `position ${d.action || '?'}: ${(d.positionPDA || '').slice(0, 8)}...`;
-    case 'activeBinChanged':
-      return `price moved on ${(d.lbPair || '').slice(0, 8)}... → bin ${d.newActiveId}`;
+      return `position ${d.action || '?'} · ${pool}...${side}`;
+    case 'activeBinChanged': {
+      const dir = d.previousActiveId != null
+        ? (d.newActiveId > d.previousActiveId ? ' ▲' : d.newActiveId < d.previousActiveId ? ' ▼' : '')
+        : '';
+      if (state.binStep && state.tokenXDecimals !== undefined) {
+        const price = binToPrice(d.newActiveId, state.binStep, state.tokenXDecimals, state.tokenYDecimals);
+        return `${pool}... $${formatPrice(price)}${dir}`;
+      }
+      return `${pool}... bin ${d.newActiveId}${dir}`;
+    }
     case 'roverTvlUpdated':
-      return `rover TVL updated: ${d.count || 0} pools, $${d.totalTvl || 0}`;
+      return `rover TVL: ${d.count || 0} pools · $${(d.totalTvl || 0).toFixed(0)}`;
     default:
       return `${msg.type}: ${JSON.stringify(d).slice(0, 80)}`;
   }
@@ -485,6 +496,16 @@ function formatPrice(price) {
   if (price >= 1) return price.toFixed(2);
   if (price >= 0.0001) return price.toFixed(6);
   return price.toExponential(2);
+}
+
+function formatAge(unixSeconds) {
+  const elapsed = Math.floor(Date.now() / 1000) - unixSeconds;
+  if (elapsed < 60) return '<1m';
+  if (elapsed < 3600) return Math.floor(elapsed / 60) + 'm';
+  if (elapsed < 86400) return Math.floor(elapsed / 3600) + 'h ' + Math.floor((elapsed % 3600) / 60) + 'm';
+  const d = Math.floor(elapsed / 86400);
+  const h = Math.floor((elapsed % 86400) / 3600);
+  return d + 'd ' + h + 'h';
 }
 
 /** Fee calculation (from transaction.js) */
@@ -1926,12 +1947,15 @@ async function renderPositionsPage() {
     const minPrice = meta.binStep ? formatPrice(binToPrice(pos.minBinId, meta.binStep, meta.decimalsX, meta.decimalsY)) : pos.minBinId;
     const maxPrice = meta.binStep ? formatPrice(binToPrice(pos.maxBinId, meta.binStep, meta.decimalsX, meta.decimalsY)) : pos.maxBinId;
 
+    const age = pos.createdAt ? formatAge(pos.createdAt) : '';
+    const harvested = (pos.harvestedAmount / 1e9).toFixed(4);
     html += `<div class="pos-page-row">
       <span class="pos-pool">${escapeHtml(poolName)}</span>
       <span class="pos-side ${pos.side}">${pos.side}</span>
       <span class="pos-range">${minPrice} → ${maxPrice}</span>
-      <span class="pos-filled">${fillPct}%<div class="pos-fill-bar"><div class="pos-fill-bar-inner ${pos.side}" style="width:${fillPct}%"></div></div></span>
+      <span class="pos-filled">${fillPct}%<div class="pos-fill-bar"><div class="pos-fill-bar-inner ${pos.side}" style="width:${fillPct}%"></div></div><span class="pos-harvested-amt">${harvested}</span></span>
       <span class="pos-amount">${(pos.initialAmount / 1e9).toFixed(4)}</span>
+      <span class="pos-age">${age}</span>
       <span class="pos-status ${status}">${status}</span>
       <button class="claim-fees-btn action-btn-sm" data-pubkey="${pos.pubkey.toBase58()}" data-lbpair="${pos.lbPair}" data-metpos="${pos.meteoraPosition.toBase58()}" data-min="${pos.minBinId}" data-max="${pos.maxBinId}">fees</button>
       <button class="close-btn" data-pubkey="${pos.pubkey.toBase58()}" data-lbpair="${pos.lbPair}" data-metpos="${pos.meteoraPosition.toBase58()}" data-min="${pos.minBinId}" data-max="${pos.maxBinId}">close</button>
@@ -3794,18 +3818,78 @@ let reconPnlData = null;
 let reconFilter = 'all';
 
 async function loadReconDashboard() {
-  try {
-    const data = await relayFetch('/api/protocol-pnl');
-    if (!data) {
-      document.getElementById('reconPoolBreakdown').innerHTML =
-        '<div class="empty-state">bot relay unavailable — protocol PnL requires the bot</div>';
-      return;
+  const el = id => document.getElementById(id);
+  const setText = (id, v) => { const e = el(id); if (e) e.textContent = v; };
+
+  const [pnlData, botWallet, fees, stats, roverTop5] = await Promise.all([
+    relayFetch('/api/protocol-pnl').catch(() => null),
+    relayFetch('/api/bot-wallet').catch(() => null),
+    relayFetch('/api/fees').catch(() => null),
+    relayFetch('/api/stats').catch(() => null),
+    relayFetch('/api/rovers/top5').catch(() => null),
+  ]);
+
+  if (pnlData) {
+    reconPnlData = pnlData;
+    renderReconDashboard(pnlData);
+
+    const totalDep = (pnlData.byPool || []).reduce((s, p) => s + parseFloat(p.depositedUsd || 0), 0);
+    const totalWith = (pnlData.byPool || []).reduce((s, p) => s + parseFloat(p.withdrawnUsd || 0), 0);
+    setText('reconTotalDeposited', '$' + totalDep.toLocaleString(undefined, { maximumFractionDigits: 0 }));
+    setText('reconTotalWithdrawn', '$' + totalWith.toLocaleString(undefined, { maximumFractionDigits: 0 }));
+    const profitable = (pnlData.byPool || []).filter(p => parseFloat(p.netPnlUsd) > 0).length;
+    const unprofitable = (pnlData.byPool || []).filter(p => parseFloat(p.netPnlUsd) <= 0).length;
+    setText('reconProfitableCount', profitable.toString());
+    setText('reconUnprofitableCount', unprofitable.toString());
+  } else {
+    const bd = el('reconPoolBreakdown');
+    if (bd) bd.innerHTML = '<div class="empty-state">bot relay unavailable — protocol PnL requires the bot</div>';
+  }
+
+  if (botWallet) {
+    setText('reconBotBalance', botWallet.balanceSol?.toFixed(4) + ' SOL');
+    const balEl = el('reconBotBalance');
+    if (balEl) balEl.className = 'stat-value ' + (botWallet.status === 'critical' ? 'red' : botWallet.status === 'warning' ? 'yellow' : 'green');
+    setText('reconBotSpendRate', botWallet.spendRatePerHour != null ? botWallet.spendRatePerHour.toFixed(4) + ' SOL/hr' : '—');
+    setText('reconBotRunway', botWallet.estimatedHoursRemaining != null ? botWallet.estimatedHoursRemaining.toFixed(1) + 'h' : '—');
+    setText('reconBotStatus', botWallet.status || '—');
+    const statusEl = el('reconBotStatus');
+    if (statusEl) statusEl.className = 'stat-value ' + (botWallet.status === 'healthy' ? 'green' : botWallet.status === 'warning' ? 'yellow' : 'red');
+    setText('reconBotUptime', botWallet.uptimeHours != null ? botWallet.uptimeHours.toFixed(1) + 'h' : '—');
+  }
+
+  if (fees) {
+    const rover = fees.roverAuthority || {};
+    setText('reconRoverSol', (rover.solBalance || 0).toFixed(4));
+    setText('reconRoverWsol', (rover.wsolBalance || 0).toFixed(4));
+    const dist = fees.distPool || {};
+    setText('reconDistSol', (dist.solBalance || 0).toFixed(4));
+    setText('reconDistPegged', dist.peggedBalance != null ? dist.peggedBalance.toFixed(2) : '—');
+    const vault = fees.programVault || {};
+    setText('reconVaultSol', (vault.solBalance || 0).toFixed(4));
+    setText('reconVaultPegged', vault.peggedBalance != null ? vault.peggedBalance.toFixed(2) : '—');
+    setText('reconTotalPipeline', (fees.totalInPipeline || 0).toFixed(4) + ' SOL');
+  }
+
+  if (stats) {
+    setText('reconWatchedPools', stats.watchedPools?.toString() || '0');
+    setText('reconGrpcReconnects', stats.grpcReconnects?.toString() || '0');
+    setText('reconTotalCloses', stats.totalCloses?.toString() || '0');
+    setText('reconQueueDepth', stats.queueDepth?.toString() || '0');
+    setText('reconInflightTxs', stats.inflightTxs?.toString() || '0');
+    setText('reconWsClients', stats.wsClients?.toString() || '0');
+  }
+
+  if (roverTop5?.top5) {
+    const lb = el('reconRoverLeaderboard');
+    if (lb) {
+      if (roverTop5.top5.length === 0) {
+        lb.innerHTML = '<div class="empty-state">no rovers active</div>';
+      } else {
+        lb.innerHTML = '<div class="recon-pool-header"><span>#</span><span>pool</span><span>TVL</span></div>' +
+          roverTop5.top5.map(r => `<div class="recon-pool-row"><span>${r.rank}</span><span>${(r.pool || '').slice(0, 8)}...</span><span>$${(r.tvl || 0).toFixed(2)}</span></div>`).join('');
+      }
     }
-    reconPnlData = data;
-    renderReconDashboard(data);
-  } catch {
-    document.getElementById('reconPoolBreakdown').innerHTML =
-      '<div class="empty-state">failed to load protocol data</div>';
   }
 }
 
@@ -3927,19 +4011,31 @@ async function handleRoverDeposit() {
 async function renderOpsStats() {
   const el = id => document.getElementById(id);
   try {
-    const [stats, pending] = await Promise.all([
+    const [stats, pending, botWallet] = await Promise.all([
       relayFetch('/api/stats'),
       relayFetch('/api/pending-harvests'),
+      relayFetch('/api/bot-wallet'),
     ]);
     if (stats) {
       if (el('opsPositionCount')) el('opsPositionCount').textContent = stats.positionCount || 0;
       if (el('opsTotalHarvested')) el('opsTotalHarvested').textContent = (stats.totalHarvests || 0) + ' txs';
+      if (el('opsTotalCloses')) el('opsTotalCloses').textContent = stats.totalCloses || 0;
+      if (el('opsQueueDepth')) el('opsQueueDepth').textContent = (stats.queueDepth || 0) + (stats.inflightTxs ? ` (${stats.inflightTxs} inflight)` : '');
       if (el('opsBotStatus')) el('opsBotStatus').textContent = stats.grpcConnected ? 'connected' : 'offline';
     } else {
       if (el('opsBotStatus')) el('opsBotStatus').textContent = 'offline';
     }
     if (pending) {
       if (el('opsPendingCount')) el('opsPendingCount').textContent = pending.count || 0;
+    }
+    if (botWallet) {
+      const balEl = el('opsBotBalance');
+      if (balEl) {
+        balEl.textContent = `(${botWallet.balanceSol?.toFixed(3)} SOL)`;
+        balEl.className = 'stat-value-inline ' + (botWallet.status === 'critical' ? 'red' : botWallet.status === 'warning' ? 'yellow' : 'green');
+        balEl.style.marginLeft = '4px';
+        balEl.style.opacity = '0.6';
+      }
     }
   } catch {
     if (el('opsBotStatus')) el('opsBotStatus').textContent = 'offline';
@@ -4468,6 +4564,11 @@ function showPage(idx) {
     document.body.classList.toggle(cls, i === idx);
   });
 
+  // Sync mobile nav tabs
+  document.querySelectorAll('.mobile-nav-tab').forEach(t => {
+    t.classList.toggle('active', parseInt(t.dataset.page) === idx);
+  });
+
   // Sigil navigator: orbits + dots with per-page accent color
   const accent = PAGE_ACCENT[idx];
   document.querySelectorAll('.sigil-orbit').forEach(o => {
@@ -4615,6 +4716,15 @@ async function init() {
 
   // Action
   document.getElementById('actionBtn')?.addEventListener('click', createPosition);
+
+  // Mobile nav tabs
+  document.querySelectorAll('.mobile-nav-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      const idx = parseInt(tab.dataset.page);
+      showPage(idx);
+      document.querySelectorAll('.mobile-nav-tab').forEach(t => t.classList.toggle('active', parseInt(t.dataset.page) === idx));
+    });
+  });
 
   // Sigil navigator: orbits + dots are clickable
   document.querySelectorAll('.sigil-orbit').forEach(o => {

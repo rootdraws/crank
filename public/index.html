@@ -323,7 +323,12 @@
           <span class="ops-sep">·</span>
           <span class="stat-label">harvested</span> <span class="stat-value-inline green" id="opsTotalHarvested">0 SOL</span>
           <span class="ops-sep">·</span>
+          <span class="stat-label">closed</span> <span class="stat-value-inline" id="opsTotalCloses">0</span>
+          <span class="ops-sep">·</span>
+          <span class="stat-label">queue</span> <span class="stat-value-inline" id="opsQueueDepth">0</span>
+          <span class="ops-sep">·</span>
           <span class="stat-label">bot</span> <span class="stat-value-inline" id="opsBotStatus">offline</span>
+          <span class="stat-value-inline" id="opsBotBalance" style="margin-left:4px;opacity:0.6;"></span>
         </div>
         <div class="crank-section">
           <button class="action-btn-sm" id="crankSweep">sweep</button><span class="crank-balance" id="opsSweepBalance"></span>
@@ -392,6 +397,47 @@
       <div class="recon-section-title">rover portfolio</div>
       <div id="reconRoverSection"><div class="empty-state">loading rover data...</div></div>
 
+      <div class="recon-section-title">bot health</div>
+      <div class="stats-grid recon-stats">
+        <div><div class="stat-label">balance</div><div class="stat-value" id="reconBotBalance">—</div></div>
+        <div><div class="stat-label">spend rate</div><div class="stat-value" id="reconBotSpendRate">—</div></div>
+        <div><div class="stat-label">runway</div><div class="stat-value" id="reconBotRunway">—</div></div>
+        <div><div class="stat-label">status</div><div class="stat-value" id="reconBotStatus">—</div></div>
+        <div><div class="stat-label">uptime</div><div class="stat-value" id="reconBotUptime">—</div></div>
+      </div>
+
+      <div class="recon-section-title">fee pipeline</div>
+      <div class="stats-grid recon-stats">
+        <div><div class="stat-label">rover SOL</div><div class="stat-value" id="reconRoverSol">—</div></div>
+        <div><div class="stat-label">rover wSOL</div><div class="stat-value" id="reconRoverWsol">—</div></div>
+        <div><div class="stat-label">dist SOL</div><div class="stat-value" id="reconDistSol">—</div></div>
+        <div><div class="stat-label">dist pegged</div><div class="stat-value" id="reconDistPegged">—</div></div>
+        <div><div class="stat-label">vault SOL</div><div class="stat-value" id="reconVaultSol">—</div></div>
+        <div><div class="stat-label">vault pegged</div><div class="stat-value" id="reconVaultPegged">—</div></div>
+        <div><div class="stat-label">total pipeline</div><div class="stat-value green" id="reconTotalPipeline">—</div></div>
+      </div>
+
+      <div class="recon-section-title">system stats</div>
+      <div class="stats-grid recon-stats">
+        <div><div class="stat-label">watched pools</div><div class="stat-value" id="reconWatchedPools">—</div></div>
+        <div><div class="stat-label">grpc reconnects</div><div class="stat-value" id="reconGrpcReconnects">—</div></div>
+        <div><div class="stat-label">total closes</div><div class="stat-value" id="reconTotalCloses">—</div></div>
+        <div><div class="stat-label">queue depth</div><div class="stat-value" id="reconQueueDepth">—</div></div>
+        <div><div class="stat-label">inflight txs</div><div class="stat-value" id="reconInflightTxs">—</div></div>
+        <div><div class="stat-label">ws clients</div><div class="stat-value" id="reconWsClients">—</div></div>
+      </div>
+
+      <div class="recon-section-title">gross flow</div>
+      <div class="stats-grid recon-stats">
+        <div><div class="stat-label">total deposited</div><div class="stat-value" id="reconTotalDeposited">—</div></div>
+        <div><div class="stat-label">total withdrawn</div><div class="stat-value" id="reconTotalWithdrawn">—</div></div>
+        <div><div class="stat-label">profitable</div><div class="stat-value green" id="reconProfitableCount">—</div></div>
+        <div><div class="stat-label">unprofitable</div><div class="stat-value red" id="reconUnprofitableCount">—</div></div>
+      </div>
+
+      <div class="recon-section-title">rover leaderboard</div>
+      <div id="reconRoverLeaderboard"><div class="empty-state">loading leaderboard...</div></div>
+
       <!-- Bribe deposit (preserved) -->
       <div class="rover-deposit-section" style="margin-top:24px;">
         <input type="text" class="rover-input mint" id="roverTokenMint" placeholder="token mint address">
@@ -402,6 +448,14 @@
 
     </div>
   </div>
+
+  <!-- GLOBAL: MOBILE NAV BAR — visible < 1100px -->
+  <nav class="mobile-nav" id="mobileNav">
+    <button class="mobile-nav-tab active" data-page="0">trade</button>
+    <button class="mobile-nav-tab" data-page="1">positions</button>
+    <button class="mobile-nav-tab" data-page="2">rank</button>
+    <button class="mobile-nav-tab" data-page="3">ops</button>
+  </nav>
 
   <!-- GLOBAL: SIGIL NAVIGATOR — the astrolabe (5 orbits) -->
   <div class="sigil-nav" id="sigilNav">

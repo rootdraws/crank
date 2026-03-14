@@ -1011,28 +1011,62 @@ export class RelayServer {
     }
   }
 
+  private static KNOWN_DECIMALS: Record<string, number> = {
+    'So11111111111111111111111111111111111111112': 9,
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6,
+    'Es9vMFrzaCERmKKR9So4z3YQfBJoL8n1RYfSBgdGGBXd': 6,
+    'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 5,
+    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 6,
+    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 9,
+    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': 9,
+    '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj': 9,
+  };
+
+  private binToPrice(binId: number, binStep: number, mintX: string, mintY: string): number | null {
+    const decX = RelayServer.KNOWN_DECIMALS[mintX];
+    const decY = RelayServer.KNOWN_DECIMALS[mintY];
+    if (decX === undefined || decY === undefined) return null;
+    return Math.pow(1 + binStep / 10000, binId) * Math.pow(10, decX - decY);
+  }
+
+  private formatPrice(p: number): string {
+    if (p >= 1000) return p.toFixed(0);
+    if (p >= 1) return p.toFixed(2);
+    if (p >= 0.01) return p.toFixed(4);
+    return p.toPrecision(4);
+  }
+
   private buildFeedText(type: string, data: any): string {
     const lbPair = data?.lbPair || '';
     const info = lbPair ? this.subscriber.getPoolInfo(lbPair) : null;
-    const knownSymbol = (mint: string) => {
-      const cached = this.meteoraCache.get(mint);
-      return cached?.data?.symbol || mint.slice(0, 6) + '...';
-    };
+    const poolData = lbPair ? this.meteoraCache.get(lbPair)?.data : null;
+    const knownSymbol = (mint: string) => poolData?.mint_x === mint ? poolData?.token_x_symbol
+      : poolData?.mint_y === mint ? poolData?.token_y_symbol
+      : mint.slice(0, 6) + '...';
     const symX = info ? knownSymbol(info.tokenXMint.toBase58()) : lbPair.slice(0, 6);
     const symY = info ? knownSymbol(info.tokenYMint.toBase58()) : '...';
     const pair = symX !== lbPair.slice(0, 6) ? `${symX}/${symY}` : lbPair.slice(0, 8) + '...';
+    const side = data?.side ? ` · ${(data.side as string).toLowerCase()}` : '';
 
     switch (type) {
       case 'harvestExecuted':
-        return `harvested ${data.binCount || '?'} bins · ${pair} → ${(data.owner || '').slice(0, 6)}...`;
+        return `harvested ${data.binCount || '?'} bins · ${pair}${side} → ${(data.owner || '').slice(0, 6)}...`;
       case 'positionClosed':
-        return `position closed · ${pair} → ${(data.owner || '').slice(0, 6)}...`;
+        return `position closed · ${pair}${side} → ${(data.owner || '').slice(0, 6)}...`;
       case 'harvestNeeded':
-        return `${data.safeBinCount || '?'} bins ready · ${pair}`;
+        return `${data.safeBinCount || '?'} bins ready · ${pair}${side}`;
       case 'positionChanged':
-        return `position ${data.action || '?'} · ${pair}`;
-      case 'activeBinChanged':
-        return `${pair} price → bin ${data.newActiveId}`;
+        return `position ${data.action || '?'} · ${pair}${side}`;
+      case 'activeBinChanged': {
+        const dir = data.previousActiveId != null
+          ? (data.newActiveId > data.previousActiveId ? ' ▲' : data.newActiveId < data.previousActiveId ? ' ▼' : '')
+          : '';
+        if (info) {
+          const price = this.binToPrice(data.newActiveId, info.binStep, info.tokenXMint.toBase58(), info.tokenYMint.toBase58());
+          if (price !== null) return `${pair} $${this.formatPrice(price)}${dir}`;
+        }
+        return `${pair} bin ${data.newActiveId}${dir}`;
+      }
       case 'roverTvlUpdated':
         return `rover TVL: ${data.count || 0} pools · $${(data.totalTvl || 0).toFixed(0)}`;
       default:
