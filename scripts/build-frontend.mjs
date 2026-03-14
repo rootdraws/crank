@@ -66,7 +66,7 @@ html = html.replace('src="app.js"', 'src="app.min.js"');
 writeFileSync(join(distDir, 'index.html'), html);
 
 // 3. Copy static assets
-for (const file of ['styles.css', 'monke.png', 'filler.svg']) {
+for (const file of ['styles.css', 'monke.png', 'filler.svg', 'gate.js']) {
   const src = join(publicDir, file);
   if (existsSync(src)) {
     copyFileSync(src, join(distDir, file));
