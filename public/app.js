@@ -4876,6 +4876,17 @@ async function init() {
     document.body.prepend(banner);
   }
 
+  // Landing page → app transition
+  function exitLanding(targetPage) {
+    document.body.classList.remove('on-landing');
+    document.getElementById('landing').style.display = 'none';
+    showPage(typeof targetPage === 'number' ? targetPage : 0);
+  }
+  document.getElementById('launchApp')?.addEventListener('click', () => exitLanding(0));
+  document.querySelectorAll('.feature-card').forEach(card => {
+    card.addEventListener('click', () => exitLanding(parseInt(card.dataset.page)));
+  });
+
   // Wallet
   document.getElementById('connectWallet')?.addEventListener('click', toggleWalletMenu);
 
@@ -5091,9 +5102,11 @@ async function init() {
     }
   }
 
-  // Initial render
+  // Initial render — skip if on landing page
   requestAnimationFrame(() => {
-    showPage(0);
+    if (!document.body.classList.contains('on-landing')) {
+      showPage(0);
+    }
   });
 
   // Auto-connect if wallet was previously connected
