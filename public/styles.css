@@ -894,26 +894,57 @@
       font-variant-numeric: tabular-nums;
     }
     .triptych-burn {
-      display: flex; align-items: stretch; justify-content: stretch;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 14px 16px 14px 20px;
+      border-left: 1px solid var(--alert-red-dim);
+      margin-left: 4px;
     }
-    .burn-btn {
+    .burn-panel {
+      display: flex; align-items: stretch; gap: 12px;
+    }
+    .burn-fire {
       display: flex; align-items: center; justify-content: center;
-      background: transparent;
       border: 2px solid var(--alert-red-dim);
-      cursor: pointer; font-family: var(--font-sys);
-      transition: all 0.15s; padding: 0;
+      background: transparent;
       position: relative; overflow: hidden;
-      width: 144px; height: 144px;
-      margin: 0 auto;
-    }
-    .burn-btn:hover {
-      border-color: var(--alert-red);
-      background: var(--alert-red-fill);
-    }
-    .burn-btn canvas {
-      display: block; image-rendering: pixelated;
       width: 120px; height: 120px;
       flex-shrink: 0;
+      cursor: pointer; transition: all 0.15s;
+      padding: 0;
+    }
+    .burn-fire:hover {
+      border-color: var(--alert-red);
+      background: var(--alert-red-fill);
+      box-shadow: 0 0 12px rgba(255, 80, 60, 0.25);
+    }
+    .burn-fire canvas {
+      display: block; image-rendering: pixelated;
+      width: 104px; height: 104px;
+      flex-shrink: 0;
+    }
+    .burn-actions {
+      display: flex; flex-direction: column; justify-content: stretch; gap: 6px;
+    }
+    .burn-amount-btn {
+      display: flex; align-items: center; justify-content: center;
+      background: transparent;
+      border: 1px solid var(--alert-red-dim);
+      color: var(--alert-red);
+      font-family: var(--font-sys); font-size: 0.875rem; font-weight: 600;
+      letter-spacing: 0.1em;
+      cursor: pointer; transition: all 0.15s;
+      padding: 0 22px; flex: 1;
+      min-width: 68px;
+    }
+    .burn-amount-btn:hover {
+      border-color: var(--alert-red);
+      background: var(--alert-red-fill);
+      color: var(--alert-red-hot);
+    }
+    .burn-tagline {
+      font-size: 0.75rem; color: var(--steel);
+      letter-spacing: 0.06em; text-align: center;
+      margin-top: 8px; font-weight: 500;
     }
 
     .jupiter-embed-section { margin-top: 24px; }

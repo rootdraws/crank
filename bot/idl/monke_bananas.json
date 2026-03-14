@@ -634,7 +634,8 @@
     {
       "name": "feed_goose",
       "docs": [
-        "Feed a gooseswtf pixel goose. Burns BANANAS_PER_FEED and increments weight by 1.",
+        "Feed a gooseswtf pixel goose. Burns $CRANK and increments weight.",
+        "`count` controls how many units to burn (1-25). Each unit = 1M $CRANK, +1 weight.",
         "On first feed (share_weight == 0), GooseDAO Core membership is required.",
         "On subsequent feeds, membership is not checked (once in, always in)."
       ],
@@ -751,13 +752,18 @@
           "address": "11111111111111111111111111111111"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "count",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "feed_monke",
       "docs": [
-        "Feed your monke — burn 1M $BANANAS, stack weight on an SMB Gen2 NFT.",
-        "",
+        "Feed your monke — burn $CRANK, stack weight on an SMB Gen2/Gen3 NFT.",
+        "`count` controls how many units to burn (1-25). Each unit = 1M $CRANK, +1 weight.",
         "First call for an NFT creates the MonkeBurn PDA (init_if_needed).",
         "Subsequent calls increment weight. Pending rewards are settled before",
         "weight change to prevent retroactive earnings (MasterChef pattern)."
@@ -872,7 +878,12 @@
           "address": "11111111111111111111111111111111"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "count",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "initialize",

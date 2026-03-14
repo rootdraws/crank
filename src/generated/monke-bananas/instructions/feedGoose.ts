@@ -16,13 +16,15 @@ import {
   getProgramDerivedAddress,
   getStructDecoder,
   getStructEncoder,
+  getU64Decoder,
+  getU64Encoder,
   transformEncoder,
   type AccountMeta,
   type AccountSignerMeta,
   type Address,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
+  type Codec,
+  type Decoder,
+  type Encoder,
   type Instruction,
   type InstructionWithAccounts,
   type InstructionWithData,
@@ -103,24 +105,33 @@ export type FeedGooseInstruction<
     ]
   >;
 
-export type FeedGooseInstructionData = { discriminator: ReadonlyUint8Array };
+export type FeedGooseInstructionData = {
+  discriminator: ReadonlyUint8Array;
+  count: bigint;
+};
 
-export type FeedGooseInstructionDataArgs = {};
+export type FeedGooseInstructionDataArgs = {
+  count: number | bigint;
+};
 
-export function getFeedGooseInstructionDataEncoder(): FixedSizeEncoder<FeedGooseInstructionDataArgs> {
+export function getFeedGooseInstructionDataEncoder(): Encoder<FeedGooseInstructionDataArgs> {
   return transformEncoder(
-    getStructEncoder([['discriminator', fixEncoderSize(getBytesEncoder(), 8)]]),
+    getStructEncoder([
+      ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
+      ['count', getU64Encoder()],
+    ]),
     (value) => ({ ...value, discriminator: FEED_GOOSE_DISCRIMINATOR })
   );
 }
 
-export function getFeedGooseInstructionDataDecoder(): FixedSizeDecoder<FeedGooseInstructionData> {
+export function getFeedGooseInstructionDataDecoder(): Decoder<FeedGooseInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
+    ['count', getU64Decoder()],
   ]);
 }
 
-export function getFeedGooseInstructionDataCodec(): FixedSizeCodec<
+export function getFeedGooseInstructionDataCodec(): Codec<
   FeedGooseInstructionDataArgs,
   FeedGooseInstructionData
 > {
@@ -158,6 +169,7 @@ export type FeedGooseAsyncInput<
   bananasMint: Address<TAccountBananasMint>;
   /** MonkeBurn PDA — created on first feed, incremented on subsequent feeds */
   monkeBurn?: Address<TAccountMonkeBurn>;
+  count: FeedGooseInstructionDataArgs['count'];
   tokenProgram: Address<TAccountTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
 };
@@ -280,7 +292,9 @@ export async function getFeedGooseInstructionAsync<
       getAccountMeta(accounts.tokenProgram),
       getAccountMeta(accounts.systemProgram),
     ],
-    data: getFeedGooseInstructionDataEncoder().encode({}),
+    data: getFeedGooseInstructionDataEncoder().encode(
+      { count: input.count } as FeedGooseInstructionDataArgs
+    ),
     programAddress,
   } as FeedGooseInstruction<
     TProgramAddress,
@@ -326,6 +340,7 @@ export type FeedGooseInput<
   bananasMint: Address<TAccountBananasMint>;
   /** MonkeBurn PDA — created on first feed, incremented on subsequent feeds */
   monkeBurn: Address<TAccountMonkeBurn>;
+  count: FeedGooseInstructionDataArgs['count'];
   tokenProgram: Address<TAccountTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
 };
@@ -425,7 +440,9 @@ export function getFeedGooseInstruction<
       getAccountMeta(accounts.tokenProgram),
       getAccountMeta(accounts.systemProgram),
     ],
-    data: getFeedGooseInstructionDataEncoder().encode({}),
+    data: getFeedGooseInstructionDataEncoder().encode(
+      { count: input.count } as FeedGooseInstructionDataArgs
+    ),
     programAddress,
   } as FeedGooseInstruction<
     TProgramAddress,

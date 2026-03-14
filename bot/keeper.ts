@@ -26,6 +26,11 @@ import {
   Keypair,
   SystemProgram,
   ComputeBudgetProgram,
+  Transaction,
+  TransactionInstruction,
+  SYSVAR_CLOCK_PUBKEY,
+  SYSVAR_STAKE_HISTORY_PUBKEY,
+  sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import { Program } from '@coral-xyz/anchor';
 import { logger } from './logger';
@@ -301,6 +306,123 @@ export class MonkeKeeper {
     }
   }
 
+  // ─── SANCTUM POOL EPOCH UPDATE ───
+
+  private static readonly STAKE_PROGRAM = new PublicKey('Stake11111111111111111111111111111111111111');
+  private static readonly VALIDATOR_ENTRY_SIZE = 73;
+  private static readonly VALIDATOR_ENTRIES_OFFSET = 9;
+
+  /**
+   * Update the Sanctum SPL stake pool epoch — permissionless, zero signers required.
+   * Sends UpdateValidatorListBalance (variant 6) + UpdateStakePoolBalance (variant 7).
+   * Must run before stake_and_forward each epoch to avoid StakeListAndPoolOutOfDate error.
+   *
+   * Validated on-chain: TX 2owBCguE6iHAZQNyibkdgEK7zcAyM2PESmsrfbRL4BftyKPEqzjSFWnc1dzSGw9g9YLvc8e3Pa7tyaUoK3E9vaE3
+   */
+  private async updateSanctumPool(stakePool: PublicKey, sanctumProgram: PublicKey): Promise<void> {
+    const stakePoolInfo = await this.connection.getAccountInfo(stakePool);
+    if (!stakePoolInfo || stakePoolInfo.data.length < 258) {
+      logger.warn('  [keeper] updateSanctumPool: could not read stake pool');
+      return;
+    }
+    const poolData = stakePoolInfo.data;
+    const validatorListPk = new PublicKey(poolData.subarray(98, 130));
+    const reserveStake    = new PublicKey(poolData.subarray(130, 162));
+    const poolMint        = new PublicKey(poolData.subarray(162, 194));
+    const managerFeeAcct  = new PublicKey(poolData.subarray(194, 226));
+    const tokenProgramId  = new PublicKey(poolData.subarray(226, 258));
+
+    const [withdrawAuth] = PublicKey.findProgramAddressSync(
+      [stakePool.toBuffer(), Buffer.from('withdraw')], sanctumProgram,
+    );
+
+    const validatorListInfo = await this.connection.getAccountInfo(validatorListPk);
+    if (!validatorListInfo) {
+      logger.warn('  [keeper] updateSanctumPool: validator list not found');
+      return;
+    }
+    const vlData = validatorListInfo.data as Buffer;
+    const count = vlData.readUInt32LE(5);
+
+    // Parse validator entries and derive stake PDAs
+    const validatorStakePairs: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] = [];
+    for (let i = 0; i < count; i++) {
+      const off = MonkeKeeper.VALIDATOR_ENTRIES_OFFSET + i * MonkeKeeper.VALIDATOR_ENTRY_SIZE;
+      if (off + MonkeKeeper.VALIDATOR_ENTRY_SIZE > vlData.length) break;
+
+      const status = vlData[off + 40];
+      if (status === 2) continue; // ReadyForRemoval
+      const voteAccount = new PublicKey(vlData.subarray(off + 41, off + 73));
+      if (voteAccount.equals(PublicKey.default)) continue;
+
+      const validatorSeedSuffix = vlData.readUInt32LE(off + 36);
+      const transientSeedSuffix = vlData.readBigUInt64LE(off + 24);
+
+      // Validator stake PDA: seeds = [vote_account, stake_pool, optional_suffix]
+      const valSeeds: Buffer[] = [voteAccount.toBuffer(), stakePool.toBuffer()];
+      if (validatorSeedSuffix !== 0) {
+        const sfx = Buffer.alloc(4);
+        sfx.writeUInt32LE(validatorSeedSuffix);
+        valSeeds.push(sfx);
+      }
+      const [valStake] = PublicKey.findProgramAddressSync(valSeeds, sanctumProgram);
+
+      // Transient stake PDA: seeds = [b"transient", vote, pool, seed_u64_le]
+      const tsfxBuf = Buffer.alloc(8);
+      tsfxBuf.writeBigUInt64LE(transientSeedSuffix);
+      const [transStake] = PublicKey.findProgramAddressSync(
+        [Buffer.from('transient'), voteAccount.toBuffer(), stakePool.toBuffer(), tsfxBuf],
+        sanctumProgram,
+      );
+
+      validatorStakePairs.push({ pubkey: valStake, isSigner: false, isWritable: true });
+      validatorStakePairs.push({ pubkey: transStake, isSigner: false, isWritable: true });
+    }
+
+    // UpdateValidatorListBalance — variant 6
+    const uvlbData = Buffer.alloc(6);
+    uvlbData[0] = 6;
+    uvlbData.writeUInt32LE(0, 1);
+    uvlbData[5] = 0;
+    const uvlbIx = new TransactionInstruction({
+      programId: sanctumProgram,
+      keys: [
+        { pubkey: stakePool,    isSigner: false, isWritable: false },
+        { pubkey: withdrawAuth, isSigner: false, isWritable: false },
+        { pubkey: validatorListPk, isSigner: false, isWritable: true },
+        { pubkey: reserveStake, isSigner: false, isWritable: true },
+        { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_STAKE_HISTORY_PUBKEY, isSigner: false, isWritable: false },
+        { pubkey: MonkeKeeper.STAKE_PROGRAM, isSigner: false, isWritable: false },
+        ...validatorStakePairs,
+      ],
+      data: uvlbData,
+    });
+
+    // UpdateStakePoolBalance — variant 7
+    const uspbIx = new TransactionInstruction({
+      programId: sanctumProgram,
+      keys: [
+        { pubkey: stakePool,    isSigner: false, isWritable: true },
+        { pubkey: withdrawAuth, isSigner: false, isWritable: false },
+        { pubkey: validatorListPk, isSigner: false, isWritable: true },
+        { pubkey: reserveStake, isSigner: false, isWritable: false },
+        { pubkey: managerFeeAcct, isSigner: false, isWritable: true },
+        { pubkey: poolMint,     isSigner: false, isWritable: true },
+        { pubkey: tokenProgramId, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from([7]),
+    });
+
+    const tx = new Transaction();
+    tx.add(...this.priorityIxs);
+    tx.add(uvlbIx);
+    tx.add(uspbIx);
+
+    const sig = await sendAndConfirmTransaction(this.connection, tx, [this.botKeypair], { commitment: 'confirmed' });
+    logger.info(`  [keeper] ✓ Sanctum pool epoch update TX: ${sig}`);
+  }
+
   // ─── CRANK: STAKE AND FORWARD ($PEGGED bridge) ───
 
   /**
@@ -338,26 +460,27 @@ export class MonkeKeeper {
       const peggedMint = config.peggedMint as PublicKey;
       const distPoolPeggedAta = config.distPoolPeggedAta as PublicKey;
 
-      // Derive stake pool withdraw authority PDA
       const SPL_STAKE_POOL_PROGRAM = new PublicKey('SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY');
+
+      // Update Sanctum pool epoch before staking (prevents StakeListAndPoolOutOfDate)
+      try {
+        await this.updateSanctumPool(stakePool, SPL_STAKE_POOL_PROGRAM);
+      } catch (e: any) {
+        logger.warn(`  [keeper] Sanctum epoch update failed (non-fatal): ${e.message?.slice(0, 120)}`);
+      }
+
       const [withdrawAuthority] = PublicKey.findProgramAddressSync(
         [stakePool.toBuffer(), Buffer.from('withdraw')],
         SPL_STAKE_POOL_PROGRAM
       );
 
-      // Bridge vault's $PEGGED ATA
       const bridgePeggedAta = getAssociatedTokenAddressSync(peggedMint, bridgeVault, true);
 
-      // Read stake pool state for reserve_stake and manager_fee_account
       const stakePoolInfo = await this.connection.getAccountInfo(stakePool);
       if (!stakePoolInfo || stakePoolInfo.data.length < 300) {
         logger.warn('  [keeper] stake_and_forward error: could not read stake pool state');
         return;
       }
-      // SPL stake pool layout offsets (Borsh, v5+):
-      //   account_type(1) + manager(32) + staker(32) + stake_deposit_authority(32)
-      //   + stake_withdraw_bump(1) + validator_list(32) + reserve_stake(32) = end 162
-      //   pool_mint(32) = end 194, manager_fee_account(32) = end 226
       const data = stakePoolInfo.data;
       const reserveStake = new PublicKey(data.subarray(130, 162));
       const managerFeeAccount = new PublicKey(data.subarray(194, 226));

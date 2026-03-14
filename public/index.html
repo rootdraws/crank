@@ -269,9 +269,17 @@
                   </div>
                 </div>
                 <div class="triptych-col triptych-burn">
-                  <button class="burn-btn" id="feedMonkeBtn">
-                    <canvas id="burnFireCanvas" width="64" height="64"></canvas>
-                  </button>
+                  <div class="burn-panel">
+                    <button class="burn-fire" id="burnFire1M" title="Burn 1M $CRANK">
+                      <canvas id="burnFireCanvas" width="64" height="64"></canvas>
+                    </button>
+                    <div class="burn-actions">
+                      <button class="burn-amount-btn" data-count="5">5M</button>
+                      <button class="burn-amount-btn" data-count="10">10M</button>
+                      <button class="burn-amount-btn" data-count="25">25M</button>
+                    </div>
+                  </div>
+                  <div class="burn-tagline">Burn CRANK, get $PEGGED.</div>
                 </div>
               </div>
 
@@ -331,9 +339,9 @@
           <span class="stat-value-inline" id="opsBotBalance" style="margin-left:4px;opacity:0.6;"></span>
         </div>
         <div class="crank-section">
-          <button class="action-btn-sm" id="crankSweep">sweep</button><span class="crank-balance" id="opsSweepBalance"></span>
-          <button class="action-btn-sm" id="crankDeposit">deposit</button><span class="crank-balance" id="opsDepositBalance"></span>
-          <button class="action-btn-sm" id="crankDistribute">distribute</button>
+          <button class="action-btn-sm" id="crankSweep" disabled>sweep</button><span class="crank-balance" id="opsSweepBalance"></span>
+          <button class="action-btn-sm" id="crankStakeForward" disabled>stake</button><span class="crank-balance" id="opsStakeBalance"></span>
+          <button class="action-btn-sm" id="crankDeposit" disabled>deposit</button><span class="crank-balance" id="opsDepositBalance"></span>
         </div>
       </div>
 

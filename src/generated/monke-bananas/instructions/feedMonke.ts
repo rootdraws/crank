@@ -16,13 +16,15 @@ import {
   getProgramDerivedAddress,
   getStructDecoder,
   getStructEncoder,
+  getU64Decoder,
+  getU64Encoder,
   transformEncoder,
   type AccountMeta,
   type AccountSignerMeta,
   type Address,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
+  type Codec,
+  type Decoder,
+  type Encoder,
   type Instruction,
   type InstructionWithAccounts,
   type InstructionWithData,
@@ -99,24 +101,33 @@ export type FeedMonkeInstruction<
     ]
   >;
 
-export type FeedMonkeInstructionData = { discriminator: ReadonlyUint8Array };
+export type FeedMonkeInstructionData = {
+  discriminator: ReadonlyUint8Array;
+  count: bigint;
+};
 
-export type FeedMonkeInstructionDataArgs = {};
+export type FeedMonkeInstructionDataArgs = {
+  count: number | bigint;
+};
 
-export function getFeedMonkeInstructionDataEncoder(): FixedSizeEncoder<FeedMonkeInstructionDataArgs> {
+export function getFeedMonkeInstructionDataEncoder(): Encoder<FeedMonkeInstructionDataArgs> {
   return transformEncoder(
-    getStructEncoder([['discriminator', fixEncoderSize(getBytesEncoder(), 8)]]),
+    getStructEncoder([
+      ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
+      ['count', getU64Encoder()],
+    ]),
     (value) => ({ ...value, discriminator: FEED_MONKE_DISCRIMINATOR })
   );
 }
 
-export function getFeedMonkeInstructionDataDecoder(): FixedSizeDecoder<FeedMonkeInstructionData> {
+export function getFeedMonkeInstructionDataDecoder(): Decoder<FeedMonkeInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
+    ['count', getU64Decoder()],
   ]);
 }
 
-export function getFeedMonkeInstructionDataCodec(): FixedSizeCodec<
+export function getFeedMonkeInstructionDataCodec(): Codec<
   FeedMonkeInstructionDataArgs,
   FeedMonkeInstructionData
 > {
@@ -138,6 +149,7 @@ export type FeedMonkeAsyncInput<
   TAccountTokenProgram extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
+  count: FeedMonkeInstructionDataArgs['count'];
   user: TransactionSigner<TAccountUser>;
   state?: Address<TAccountState>;
   /** The SMB Gen2 NFT mint */
@@ -263,7 +275,9 @@ export async function getFeedMonkeInstructionAsync<
       getAccountMeta(accounts.tokenProgram),
       getAccountMeta(accounts.systemProgram),
     ],
-    data: getFeedMonkeInstructionDataEncoder().encode({}),
+    data: getFeedMonkeInstructionDataEncoder().encode(
+      { count: input.count } as FeedMonkeInstructionDataArgs
+    ),
     programAddress,
   } as FeedMonkeInstruction<
     TProgramAddress,
@@ -292,6 +306,7 @@ export type FeedMonkeInput<
   TAccountTokenProgram extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
+  count: FeedMonkeInstructionDataArgs['count'];
   user: TransactionSigner<TAccountUser>;
   state: Address<TAccountState>;
   /** The SMB Gen2 NFT mint */
@@ -394,7 +409,9 @@ export function getFeedMonkeInstruction<
       getAccountMeta(accounts.tokenProgram),
       getAccountMeta(accounts.systemProgram),
     ],
-    data: getFeedMonkeInstructionDataEncoder().encode({}),
+    data: getFeedMonkeInstructionDataEncoder().encode(
+      { count: input.count } as FeedMonkeInstructionDataArgs
+    ),
     programAddress,
   } as FeedMonkeInstruction<
     TProgramAddress,

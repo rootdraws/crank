@@ -1,17 +1,18 @@
 // monke_bananas — crank.money revenue share program
 //
-// Burn $BANANAS (1M per tx, unlimited stacking) against SMB Gen2 or Gen3 NFTs.
+// Burn $CRANK against SMB Gen2, Gen3, or gooseswtf pixel goose NFTs.
 // Each burn increments the NFT's weight in the global revenue pool.
-// Gen2 burns add 2 weight per feed. Gen3 burns add 1 weight per feed.
-// Whoever holds the SMB NFT at claim time receives SOL.
-// Weight and unclaimed SOL travel with the NFT on secondary markets.
+// All collections = 1x weight per burn unit. count parameter controls how many
+// units to burn in a single instruction (1-25, each unit = 1M $CRANK).
+// Whoever holds the NFT at claim time receives $PEGGED.
+// Weight and unclaimed rewards travel with the NFT on secondary markets.
 //
 // Architecture: MasterChef-style pull-based accumulator
-//   Keeper calls deposit_sol once per distribution. Updates global accumulator. O(1).
-//   Holders call claim whenever they want. O(1).
+//   Keeper calls deposit_pegged once per distribution. Updates global accumulator. O(1).
+//   Holders call claim_pegged whenever they want. O(1).
 //   Weight changes (new burns) settle pending rewards before incrementing.
 //
-// SMB Gen2 collection: SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W (2x weight)
+// SMB Gen2 collection: SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W (1x weight)
 // SMB Gen3 collection: 8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH (1x weight)
 //
 // Security:
@@ -44,13 +45,13 @@ pub const PRECISION: u128 = 1_000_000_000_000; // 1e12
 /// Minimum SOL to trigger deposit (0.01 SOL)
 pub const MIN_DEPOSIT_LAMPORTS: u64 = 10_000_000;
 
-/// Burn amount per feed_monke call: exactly 1,000,000 tokens (in base units).
-/// Assumes $BANANAS has some number of decimals — this constant should be
-/// adjusted to reflect 1M human-readable tokens in base units.
-/// For a 6-decimal token: 1_000_000 * 1_000_000 = 1_000_000_000_000
-/// For a 9-decimal token: 1_000_000 * 1_000_000_000 = 1_000_000_000_000_000
-/// Set at initialization via `bananas_decimals` or hardcode after token launch.
+/// Burn amount per feed unit: exactly 1,000,000 tokens (in base units).
+/// 6-decimal token: 1_000_000 * 1_000_000 = 1_000_000_000_000.
+/// The `count` parameter (1-25) multiplies this per instruction.
 pub const BANANAS_PER_FEED: u64 = 1_000_000_000_000; // 1M tokens with 6 decimals
+
+/// Maximum count per feed instruction (25 units = 25M $CRANK)
+pub const MAX_FEED_COUNT: u64 = 25;
 
 /// Metaplex Token Metadata program ID (mainnet)
 pub const MPL_TOKEN_METADATA_ID: Pubkey = anchor_lang::solana_program::pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
@@ -113,18 +114,19 @@ pub mod monke_bananas {
         Ok(())
     }
 
-    /// Feed your monke — burn 1M $BANANAS, stack weight on an SMB Gen2 NFT.
+    /// Feed your monke — burn $CRANK, stack weight on an SMB Gen2/Gen3 NFT.
     ///
+    /// `count` controls how many units to burn (1-25). Each unit = 1M $CRANK, +1 weight.
     /// First call for an NFT creates the MonkeBurn PDA (init_if_needed).
     /// Subsequent calls increment weight. Pending rewards are settled before
     /// weight change to prevent retroactive earnings (MasterChef pattern).
-    pub fn feed_monke(ctx: Context<FeedMonke>) -> Result<()> {
+    pub fn feed_monke(ctx: Context<FeedMonke>, count: u64) -> Result<()> {
+        require!(count >= 1 && count <= MAX_FEED_COUNT, MonkeError::InvalidCount);
         let state = &ctx.accounts.state;
         require!(!state.paused, MonkeError::Paused);
 
-        // 1. Validate NFT is from SMB Gen2 or Gen3 collection.
-        //    Returns weight multiplier: 2 for Gen2, 1 for Gen3.
-        let weight_multiplier = validate_collection_and_weight(
+        // 1. Validate NFT is from SMB Gen2 or Gen3 collection (returns 1 for both)
+        let weight_per_unit = validate_collection_and_weight(
             &ctx.accounts.nft_metadata,
             &ctx.accounts.nft_mint.key(),
             &state.smb_collection,
@@ -141,7 +143,8 @@ pub mod monke_bananas {
             MonkeError::NotNftHolder
         );
 
-        // 3. Burn exactly BANANAS_PER_FEED $BANANAS
+        // 3. Burn BANANAS_PER_FEED * count
+        let burn_amount = BANANAS_PER_FEED.checked_mul(count).ok_or(MonkeError::Overflow)?;
         let burn_cpi = Burn {
             mint: ctx.accounts.bananas_mint.to_account_info(),
             from: ctx.accounts.user_bananas_account.to_account_info(),
@@ -149,37 +152,31 @@ pub mod monke_bananas {
         };
         burn(
             CpiContext::new(ctx.accounts.token_program.to_account_info(), burn_cpi),
-            BANANAS_PER_FEED,
+            burn_amount,
         )?;
 
         // 4. MasterChef settlement + weight increment.
-        //    reward_debt is stored in the same PRECISION-scaled units as
-        //    (weight * accumulated_sol_per_share). All math stays in that scale
-        //    until the final claim division to avoid precision loss.
+        let weight_add = weight_per_unit.checked_mul(count).ok_or(MonkeError::Overflow)?;
         let monke_burn = &mut ctx.accounts.monke_burn;
         let accumulated = state.accumulated_sol_per_share;
 
         if monke_burn.share_weight == 0 {
-            // First burn — initialize the PDA fields
             monke_burn.nft_mint = ctx.accounts.nft_mint.key();
             monke_burn.first_fed_at = Clock::get()?.unix_timestamp;
             monke_burn.claimed_sol = 0;
             monke_burn.reward_debt = 0;
         }
 
-        // Calculate pending rewards at current weight (PRECISION-scaled)
+        // Settle pending rewards at current weight before incrementing
         let pending_scaled = (monke_burn.share_weight as u128)
             .checked_mul(accumulated).ok_or(MonkeError::Overflow)?
             .checked_sub(monke_burn.reward_debt).unwrap_or(0);
 
-        // 5. Increment weight (Gen2 = +2, Gen3 = +1)
+        // 5. Increment weight
         monke_burn.share_weight = monke_burn.share_weight
-            .checked_add(weight_multiplier).ok_or(MonkeError::Overflow)?;
+            .checked_add(weight_add).ok_or(MonkeError::Overflow)?;
 
-        // 6. Update reward_debt for new weight, preserving pending rewards.
-        //    new_debt = new_weight * accumulated - pending_scaled
-        //    This ensures the pending amount earned before this burn is still
-        //    claimable, while the new weight unit starts earning from now.
+        // 6. Update reward_debt for new weight, preserving pending rewards
         let new_entitled = (monke_burn.share_weight as u128)
             .checked_mul(accumulated).ok_or(MonkeError::Overflow)?;
         monke_burn.reward_debt = new_entitled
@@ -188,9 +185,9 @@ pub mod monke_bananas {
         // 7. Update global state
         let state = &mut ctx.accounts.state;
         state.total_share_weight = state.total_share_weight
-            .checked_add(weight_multiplier).ok_or(MonkeError::Overflow)?;
+            .checked_add(weight_add).ok_or(MonkeError::Overflow)?;
         state.total_bananas_burned = state.total_bananas_burned
-            .checked_add(BANANAS_PER_FEED).ok_or(MonkeError::Overflow)?;
+            .checked_add(burn_amount).ok_or(MonkeError::Overflow)?;
 
         emit!(FeedEvent {
             user: ctx.accounts.user.key(),
@@ -201,15 +198,18 @@ pub mod monke_bananas {
         });
 
         msg!("Monke fed: nft={}, weight={} (+{}), total_weight={}",
-            monke_burn.nft_mint, monke_burn.share_weight, weight_multiplier, state.total_share_weight);
+            monke_burn.nft_mint, monke_burn.share_weight, weight_add, state.total_share_weight);
 
         Ok(())
     }
 
-    /// Feed a gooseswtf pixel goose. Burns BANANAS_PER_FEED and increments weight by 1.
+    /// Feed a gooseswtf pixel goose. Burns $CRANK and increments weight.
+    ///
+    /// `count` controls how many units to burn (1-25). Each unit = 1M $CRANK, +1 weight.
     /// On first feed (share_weight == 0), GooseDAO Core membership is required.
     /// On subsequent feeds, membership is not checked (once in, always in).
-    pub fn feed_goose(ctx: Context<FeedGoose>) -> Result<()> {
+    pub fn feed_goose(ctx: Context<FeedGoose>, count: u64) -> Result<()> {
+        require!(count >= 1 && count <= MAX_FEED_COUNT, MonkeError::InvalidCount);
         let state = &ctx.accounts.state;
         require!(!state.paused, MonkeError::Paused);
 
@@ -228,7 +228,8 @@ pub mod monke_bananas {
             )?;
         }
 
-        // 3. Burn exactly BANANAS_PER_FEED $BANANAS
+        // 3. Burn BANANAS_PER_FEED * count
+        let burn_amount = BANANAS_PER_FEED.checked_mul(count).ok_or(MonkeError::Overflow)?;
         let burn_cpi = Burn {
             mint: ctx.accounts.bananas_mint.to_account_info(),
             from: ctx.accounts.user_bananas_account.to_account_info(),
@@ -236,10 +237,11 @@ pub mod monke_bananas {
         };
         burn(
             CpiContext::new(ctx.accounts.token_program.to_account_info(), burn_cpi),
-            BANANAS_PER_FEED,
+            burn_amount,
         )?;
 
-        // 4. MasterChef settlement + weight increment (identical to feed_monke)
+        // 4. MasterChef settlement + weight increment
+        let weight_add = count; // 1x weight per unit for goose
         let monke_burn = &mut ctx.accounts.monke_burn;
         let accumulated = state.accumulated_sol_per_share;
 
@@ -254,9 +256,8 @@ pub mod monke_bananas {
             .checked_mul(accumulated).ok_or(MonkeError::Overflow)?
             .checked_sub(monke_burn.reward_debt).unwrap_or(0);
 
-        let weight_increment: u64 = 1;
         monke_burn.share_weight = monke_burn.share_weight
-            .checked_add(weight_increment).ok_or(MonkeError::Overflow)?;
+            .checked_add(weight_add).ok_or(MonkeError::Overflow)?;
 
         let new_entitled = (monke_burn.share_weight as u128)
             .checked_mul(accumulated).ok_or(MonkeError::Overflow)?;
@@ -266,9 +267,9 @@ pub mod monke_bananas {
         // 5. Update global state
         let state = &mut ctx.accounts.state;
         state.total_share_weight = state.total_share_weight
-            .checked_add(weight_increment).ok_or(MonkeError::Overflow)?;
+            .checked_add(weight_add).ok_or(MonkeError::Overflow)?;
         state.total_bananas_burned = state.total_bananas_burned
-            .checked_add(BANANAS_PER_FEED).ok_or(MonkeError::Overflow)?;
+            .checked_add(burn_amount).ok_or(MonkeError::Overflow)?;
 
         emit!(FeedEvent {
             user: ctx.accounts.user.key(),
@@ -278,8 +279,8 @@ pub mod monke_bananas {
             timestamp: Clock::get()?.unix_timestamp,
         });
 
-        msg!("Goose fed: nft={}, weight={}, total_weight={}",
-            monke_burn.nft_mint, monke_burn.share_weight, state.total_share_weight);
+        msg!("Goose fed: nft={}, weight={} (+{}), total_weight={}",
+            monke_burn.nft_mint, monke_burn.share_weight, weight_add, state.total_share_weight);
 
         Ok(())
     }
@@ -596,7 +597,7 @@ pub mod monke_bananas {
 
 /// Validate that an NFT belongs to the SMB Gen2 or Gen3 collection by deserializing
 /// its Metaplex metadata account and checking the collection field.
-/// Returns weight multiplier: 2 for Gen2, 1 for Gen3.
+/// Returns weight per unit: 1 for both Gen2 and Gen3.
 ///
 /// Metaplex metadata layout (simplified — we parse from raw bytes):
 ///   key(1) + update_authority(32) + mint(32) + name(4+32) + symbol(4+10) + uri(4+200)
@@ -877,7 +878,7 @@ pub struct MonkeState {
     pub authority: Pubkey,                   // Admin
     pub pending_authority: Pubkey,            // Two-step transfer (default = zeroed)
     pub bananas_mint: Pubkey,                // $BANANAS token mint
-    pub smb_collection: Pubkey,              // SMB Gen2 collection address (2x weight)
+    pub smb_collection: Pubkey,              // SMB Gen2 collection address (1x weight)
     pub smb_gen3_collection: Pubkey,         // SMB Gen3 collection address (1x weight)
     pub dist_pool: Pubkey,                   // dist_pool PDA address (for reference)
     pub total_share_weight: u64,             // Sum of all monke burn weights
@@ -1401,4 +1402,7 @@ pub enum MonkeError {
 
     #[msg("Invalid Metaplex Core asset account")]
     InvalidCoreAsset,
+
+    #[msg("Invalid count (must be 1-25)")]
+    InvalidCount,
 }

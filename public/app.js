@@ -35,6 +35,9 @@ import {
   decodeMonkeBurn, decodeMonkeState,
   MONKE_BANANAS_PROGRAM_ADDRESS,
 } from '../src/generated/monke-bananas/index.js';
+import {
+  getStakeAndForwardInstructionAsync,
+} from '../src/generated/pegged-bridge/index.js';
 
 // ============================================================
 // CONFIG — matches .env.example
@@ -878,6 +881,9 @@ const state = {
   currentSubPage: 'monke',
   ohlcvTimeframe: '24h',
   activePoolOrbital: 0,
+
+  // Burn
+  crankBalance: 0n,
 };
 
 // ============================================================
@@ -3051,8 +3057,10 @@ async function updateUserMonkeStats(nfts) {
       if (ataInfo) {
         const data = new Uint8Array(ataInfo.data);
         const amount = new DataView(data.buffer, data.byteOffset).getBigUint64(64, true);
+        state.crankBalance = amount;
         if (el('bananasBalance')) el('bananasBalance').textContent = (Number(amount) / 1e6).toLocaleString();
       } else {
+        state.crankBalance = 0n;
         if (el('bananasBalance')) el('bananasBalance').textContent = '0';
       }
     } catch (err) {
@@ -3348,8 +3356,13 @@ function handleMonkeBurnLookup() {
 // RANK ACTIONS — feed_monke, claim, claim_all
 // ============================================================
 
-async function handleFeedMonke(nftMintStr) {
+async function handleFeedMonke(nftMintStr, count = 1) {
   if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
+  const required = BigInt(count) * 1_000_000_000_000n;
+  if (state.crankBalance < required) {
+    showToast(`Need ${count}M $CRANK (have ${(Number(state.crankBalance) / 1e6).toLocaleString()})`, 'error');
+    return;
+  }
   const conn = state.connection;
   const user = state.publicKey;
   const nftMint = new solanaWeb3.PublicKey(nftMintStr);
@@ -3364,6 +3377,7 @@ async function handleFeedMonke(nftMintStr) {
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
     tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
     const feedIx = await getFeedMonkeInstructionAsync({
+      count,
       user: asSigner(user),
       nftMint: address(nftMint.toBase58()),
       nftMetadata: address(metadataPDA.toBase58()),
@@ -3383,7 +3397,7 @@ async function handleFeedMonke(nftMintStr) {
     const sig = await walletSendTransaction(tx);
     showToast('Confirming burn...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
-    showToast('1M $CRANK burned!', 'success');
+    showToast(`${count}M $CRANK burned!`, 'success');
     renderMonkeList();
   } catch (err) {
     console.error('[monke] feed_monke failed:', err);
@@ -3391,15 +3405,19 @@ async function handleFeedMonke(nftMintStr) {
   }
 }
 
-async function handleFeedGoose(nftMintStr) {
+async function handleFeedGoose(nftMintStr, count = 1) {
   if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
+  const required = BigInt(count) * 1_000_000_000_000n;
+  if (state.crankBalance < required) {
+    showToast(`Need ${count}M $CRANK (have ${(Number(state.crankBalance) / 1e6).toLocaleString()})`, 'error');
+    return;
+  }
   const conn = state.connection;
   const user = state.publicKey;
   const gooseNftMint = new solanaWeb3.PublicKey(nftMintStr);
   const bananasMint = new solanaWeb3.PublicKey(CONFIG.BANANAS_MINT);
 
   const nftData = (state.monkeNfts || []).find(n => n.mint === nftMintStr);
-  // Use GooseDAO Core asset if available, otherwise SystemProgram as placeholder (already-fed geese)
   const gooseDaoAssetStr = nftData?.gooseDaoAsset || '11111111111111111111111111111111';
 
   try {
@@ -3411,6 +3429,7 @@ async function handleFeedGoose(nftMintStr) {
     tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
     tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
     const feedIx = await getFeedGooseInstructionAsync({
+      count,
       user: asSigner(user),
       gooseNftMint: address(gooseNftMint.toBase58()),
       gooseNftMetadata: address(metadataPDA.toBase58()),
@@ -3431,7 +3450,7 @@ async function handleFeedGoose(nftMintStr) {
     const sig = await walletSendTransaction(tx);
     showToast('Confirming burn...', 'info');
     await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
-    showToast('1M $CRANK burned!', 'success');
+    showToast(`${count}M $CRANK burned!`, 'success');
     renderMonkeList();
   } catch (err) {
     console.error('[monke] feed_goose failed:', err);
@@ -4041,31 +4060,65 @@ async function renderOpsStats() {
     if (el('opsBotStatus')) el('opsBotStatus').textContent = 'offline';
   }
 
-  // Fee pipeline balances (SOL + $PEGGED)
+  // Fee pipeline balances + conditional crank buttons
+  const RENT_EXEMPT = 890880;
   try {
     if (state.connection) {
       const roverAuthority = getRoverAuthorityPDA()[0];
       const distPool = getDistPoolPDA()[0];
-      const [roverBal, distBal] = await Promise.all([
+
+      const fetches = [
         state.connection.getBalance(roverAuthority),
         state.connection.getBalance(distPool),
-      ]);
-      if (el('opsSweepBalance')) el('opsSweepBalance').textContent = (roverBal / 1e9).toFixed(4) + ' SOL';
+      ];
 
-      // Show $PEGGED balance if configured, otherwise show SOL
+      // Bridge vault balance for the stake button
+      let bridgeVaultPk = null;
+      if (CONFIG.BRIDGE_PROGRAM_ID) {
+        const bridgeProgramId = new solanaWeb3.PublicKey(CONFIG.BRIDGE_PROGRAM_ID);
+        [bridgeVaultPk] = solanaWeb3.PublicKey.findProgramAddressSync(
+          [new TextEncoder().encode('bridge_vault')], bridgeProgramId
+        );
+        fetches.push(state.connection.getBalance(bridgeVaultPk));
+      }
+
+      const results = await Promise.all(fetches);
+      const roverBal = results[0];
+      const distBal = results[1];
+      const bridgeVaultBal = results[2] ?? 0;
+
+      const roverAvail = Math.max(0, roverBal - RENT_EXEMPT);
+      const bridgeAvail = Math.max(0, bridgeVaultBal - RENT_EXEMPT);
+
+      // Sweep button: enabled when rover_authority has SOL above rent
+      if (el('opsSweepBalance')) el('opsSweepBalance').textContent = (roverAvail / 1e9).toFixed(4) + ' SOL';
+      const sweepBtn = el('crankSweep');
+      if (sweepBtn) sweepBtn.disabled = roverAvail <= 0;
+
+      // Stake button: enabled when bridge_vault has SOL above rent
+      if (el('opsStakeBalance')) el('opsStakeBalance').textContent = (bridgeAvail / 1e9).toFixed(4) + ' SOL';
+      const stakeBtn = el('crankStakeForward');
+      if (stakeBtn) stakeBtn.disabled = bridgeAvail <= 0;
+
+      // Deposit button: enabled when dist_pool has $PEGGED > 0
+      let peggedBal = 0;
       if (CONFIG.PEGGED_MINT) {
         try {
           const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
           const distPoolAta = getAssociatedTokenAddressSync(peggedMint, distPool, true);
           const info = await state.connection.getAccountInfo(distPoolAta);
-          const peggedBal = info && info.data.length >= 72 ? Number(info.data.readBigUInt64LE(64)) : 0;
+          peggedBal = info && info.data.length >= 72 ? Number(info.data.readBigUInt64LE(64)) : 0;
           if (el('opsDepositBalance')) el('opsDepositBalance').textContent = (peggedBal / 1e9).toFixed(4) + ' $PEGGED';
         } catch {
           if (el('opsDepositBalance')) el('opsDepositBalance').textContent = (distBal / 1e9).toFixed(4) + ' SOL';
+          peggedBal = Math.max(0, distBal - RENT_EXEMPT);
         }
       } else {
         if (el('opsDepositBalance')) el('opsDepositBalance').textContent = (distBal / 1e9).toFixed(4) + ' SOL';
+        peggedBal = Math.max(0, distBal - RENT_EXEMPT);
       }
+      const depositBtn = el('crankDeposit');
+      if (depositBtn) depositBtn.disabled = peggedBal <= 0;
     }
   } catch {}
 }
@@ -4179,8 +4232,160 @@ async function handleCrankSweep() {
   }
 }
 
-async function handleCrankDistribute() {
-  return handleCrankDeposit();
+async function handleCrankStakeForward() {
+  if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
+  const conn = state.connection;
+  const user = state.publicKey;
+
+  if (!CONFIG.BRIDGE_PROGRAM_ID || !CONFIG.STAKE_POOL || !CONFIG.PEGGED_MINT) {
+    showToast('Bridge/stake pool not configured', 'error'); return;
+  }
+
+  try {
+    const bridgeProgramId = new solanaWeb3.PublicKey(CONFIG.BRIDGE_PROGRAM_ID);
+    const stakePoolPk = new solanaWeb3.PublicKey(CONFIG.STAKE_POOL);
+    const peggedMint = new solanaWeb3.PublicKey(CONFIG.PEGGED_MINT);
+    const SANCTUM_PROGRAM = new solanaWeb3.PublicKey('SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY');
+    const STAKE_PROGRAM_ID = new solanaWeb3.PublicKey('Stake11111111111111111111111111111111111111');
+
+    showToast('Fetching stake pool state...', 'info');
+
+    // Read stake pool account to get validator_list, reserve_stake, pool_mint, manager_fee, token_program
+    const stakePoolInfo = await conn.getAccountInfo(stakePoolPk);
+    if (!stakePoolInfo || stakePoolInfo.data.length < 258) {
+      showToast('Could not read stake pool state', 'error'); return;
+    }
+    const spData = stakePoolInfo.data;
+    const validatorListPk = new solanaWeb3.PublicKey(spData.subarray(98, 130));
+    const reserveStake    = new solanaWeb3.PublicKey(spData.subarray(130, 162));
+    const poolMintPk      = new solanaWeb3.PublicKey(spData.subarray(162, 194));
+    const managerFeeAcct  = new solanaWeb3.PublicKey(spData.subarray(194, 226));
+    const tokenProgramPk  = new solanaWeb3.PublicKey(spData.subarray(226, 258));
+
+    const [withdrawAuth] = solanaWeb3.PublicKey.findProgramAddressSync(
+      [stakePoolPk.toBytes(), new TextEncoder().encode('withdraw')], SANCTUM_PROGRAM
+    );
+
+    // Parse validator list
+    const vlInfo = await conn.getAccountInfo(validatorListPk);
+    if (!vlInfo) { showToast('Validator list not found', 'error'); return; }
+    const vlData = vlInfo.data;
+    const vlCount = new DataView(vlData.buffer, vlData.byteOffset).getUint32(5, true);
+
+    const ENTRY_SIZE = 73;
+    const ENTRIES_OFF = 9;
+    const validatorStakeKeys = [];
+
+    for (let i = 0; i < vlCount; i++) {
+      const off = ENTRIES_OFF + i * ENTRY_SIZE;
+      if (off + ENTRY_SIZE > vlData.length) break;
+
+      const status = vlData[off + 40];
+      if (status === 2) continue; // ReadyForRemoval
+      const voteBytes = vlData.subarray(off + 41, off + 73);
+      const voteAccount = new solanaWeb3.PublicKey(voteBytes);
+      if (voteAccount.equals(solanaWeb3.PublicKey.default)) continue;
+
+      const validatorSeedSuffix = new DataView(vlData.buffer, vlData.byteOffset).getUint32(off + 36, true);
+      const transientBuf = vlData.subarray(off + 24, off + 32);
+
+      // Validator stake PDA: seeds = [vote, pool, optional_suffix]
+      const valSeeds = [voteAccount.toBytes(), stakePoolPk.toBytes()];
+      if (validatorSeedSuffix !== 0) {
+        const sfx = new Uint8Array(4);
+        new DataView(sfx.buffer).setUint32(0, validatorSeedSuffix, true);
+        valSeeds.push(sfx);
+      }
+      const [valStake] = solanaWeb3.PublicKey.findProgramAddressSync(valSeeds, SANCTUM_PROGRAM);
+
+      // Transient stake PDA: seeds = [b"transient", vote, pool, seed_u64_le]
+      const [transStake] = solanaWeb3.PublicKey.findProgramAddressSync(
+        [new TextEncoder().encode('transient'), voteAccount.toBytes(), stakePoolPk.toBytes(), transientBuf],
+        SANCTUM_PROGRAM
+      );
+
+      validatorStakeKeys.push({ pubkey: valStake, isSigner: false, isWritable: true });
+      validatorStakeKeys.push({ pubkey: transStake, isSigner: false, isWritable: true });
+    }
+
+    // UpdateValidatorListBalance — variant 6
+    const uvlbData = new Uint8Array(6);
+    uvlbData[0] = 6;
+    // start_index = 0, no_merge = false (remaining bytes are already 0)
+    const SYSVAR_CLOCK = new solanaWeb3.PublicKey('SysvarC1ock11111111111111111111111111111111');
+    const SYSVAR_STAKE_HISTORY = new solanaWeb3.PublicKey('SysvarStakeHistory1111111111111111111111111');
+
+    const uvlbIx = new solanaWeb3.TransactionInstruction({
+      programId: SANCTUM_PROGRAM,
+      keys: [
+        { pubkey: stakePoolPk, isSigner: false, isWritable: false },
+        { pubkey: withdrawAuth, isSigner: false, isWritable: false },
+        { pubkey: validatorListPk, isSigner: false, isWritable: true },
+        { pubkey: reserveStake, isSigner: false, isWritable: true },
+        { pubkey: SYSVAR_CLOCK, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_STAKE_HISTORY, isSigner: false, isWritable: false },
+        { pubkey: STAKE_PROGRAM_ID, isSigner: false, isWritable: false },
+        ...validatorStakeKeys,
+      ],
+      data: uvlbData,
+    });
+
+    // UpdateStakePoolBalance — variant 7
+    const uspbIx = new solanaWeb3.TransactionInstruction({
+      programId: SANCTUM_PROGRAM,
+      keys: [
+        { pubkey: stakePoolPk, isSigner: false, isWritable: true },
+        { pubkey: withdrawAuth, isSigner: false, isWritable: false },
+        { pubkey: validatorListPk, isSigner: false, isWritable: true },
+        { pubkey: reserveStake, isSigner: false, isWritable: false },
+        { pubkey: managerFeeAcct, isSigner: false, isWritable: true },
+        { pubkey: poolMintPk, isSigner: false, isWritable: true },
+        { pubkey: tokenProgramPk, isSigner: false, isWritable: false },
+      ],
+      data: new Uint8Array([7]),
+    });
+
+    // stake_and_forward via Codama
+    const [bridgeVaultPDA] = solanaWeb3.PublicKey.findProgramAddressSync(
+      [new TextEncoder().encode('bridge_vault')], bridgeProgramId
+    );
+    const bridgePeggedAta = getAssociatedTokenAddressSync(peggedMint, bridgeVaultPDA, true);
+
+    const [distPoolPDA] = getDistPoolPDA();
+    const distPoolPeggedAta = getAssociatedTokenAddressSync(peggedMint, distPoolPDA, true);
+
+    const sfIx = await getStakeAndForwardInstructionAsync({
+      crank: asSigner(user),
+      bridgePeggedAta: address(bridgePeggedAta.toBase58()),
+      distPoolPeggedAta: address(distPoolPeggedAta.toBase58()),
+      peggedMint: address(peggedMint.toBase58()),
+      stakePool: address(stakePoolPk.toBase58()),
+      stakePoolWithdrawAuthority: address(withdrawAuth.toBase58()),
+      reserveStake: address(reserveStake.toBase58()),
+      managerFeeAccount: address(managerFeeAcct.toBase58()),
+      stakePoolProgram: address(SANCTUM_PROGRAM.toBase58()),
+    });
+
+    const tx = new solanaWeb3.Transaction();
+    tx.add(solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }));
+    tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_MICROLAMPORTS));
+    tx.add(uvlbIx);
+    tx.add(uspbIx);
+    tx.add(kitIxToWeb3(sfIx));
+
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+    tx.recentBlockhash = blockhash; tx.lastValidBlockHeight = lastValidBlockHeight; tx.feePayer = user;
+
+    showToast('Approve stake & forward...', 'info');
+    const sig = await walletSendTransaction(tx);
+    showToast('Confirming...', 'info');
+    await confirmAndCheck(conn, sig, blockhash, lastValidBlockHeight);
+    showToast('SOL staked → $PEGGED forwarded to dist pool!', 'success');
+    renderOpsStats();
+  } catch (err) {
+    console.error('[monke] stake_and_forward failed:', err);
+    showToast('Stake & forward failed: ' + (err?.message || err), 'error');
+  }
 }
 
 async function handleCrankDeposit() {
@@ -4774,12 +4979,23 @@ async function init() {
     });
   });
 
-  // Rank: feed + claim
-  document.getElementById('feedMonkeBtn')?.addEventListener('click', () => {
+  // Rank: fire canvas = 1M burn
+  document.getElementById('burnFire1M')?.addEventListener('click', () => {
     if (!state.selectedMonkeMint) { showToast('Select a monke first', 'error'); return; }
     const nft = (state.monkeNfts || []).find(n => n.mint === state.selectedMonkeMint);
-    if (nft && nft.gen === 'goose') handleFeedGoose(state.selectedMonkeMint);
-    else handleFeedMonke(state.selectedMonkeMint);
+    if (nft && nft.gen === 'goose') handleFeedGoose(state.selectedMonkeMint, 1);
+    else handleFeedMonke(state.selectedMonkeMint, 1);
+  });
+
+  // Rank: 5M / 10M / 25M burn buttons
+  document.querySelectorAll('.burn-amount-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const count = parseInt(btn.dataset.count, 10);
+      if (!state.selectedMonkeMint) { showToast('Select a monke first', 'error'); return; }
+      const nft = (state.monkeNfts || []).find(n => n.mint === state.selectedMonkeMint);
+      if (nft && nft.gen === 'goose') handleFeedGoose(state.selectedMonkeMint, count);
+      else handleFeedMonke(state.selectedMonkeMint, count);
+    });
   });
   document.getElementById('claimAllBtn')?.addEventListener('click', handleClaimAll);
 
@@ -4827,7 +5043,7 @@ async function init() {
 
   // Ops: crank buttons
   document.getElementById('crankSweep')?.addEventListener('click', handleCrankSweep);
-  document.getElementById('crankDistribute')?.addEventListener('click', handleCrankDistribute);
+  document.getElementById('crankStakeForward')?.addEventListener('click', handleCrankStakeForward);
   document.getElementById('crankDeposit')?.addEventListener('click', handleCrankDeposit);
   document.getElementById('harvestAllBtn')?.addEventListener('click', handleHarvestAll);
 
