@@ -1,0 +1,11 @@
+{
+  "name": "crankSOL",
+  "symbol": "PEGGED",
+  "description": "crankSOL is Liquid Staked SOL from crank.money. Backed by a Sanctum SPL multi-validator stake pool delegating to Helius, Meteora LP Army, and MonkeDAO validators. 50% of crank.money protocol fees are converted to crankSOL and distributed to $CRANK burners.",
+  "image": "https://crank.money/pegged-logo.png",
+  "external_url": "https://crank.money/",
+  "attributes": [],
+  "properties": {
+    "category": "fungible"
+  }
+}
