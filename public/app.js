@@ -384,13 +384,14 @@ function handleRelayEvent(msg) {
       break;
 
     case 'feedHistory':
-      // Catch-up events on WebSocket connect (only if preload hasn't already populated the feed)
       if (msg.data && Array.isArray(msg.data)) {
         const feed = document.getElementById('activityFeed');
         const hasFeedContent = feed && feed.children.length > 0 && !feed.querySelector('.empty-state');
         if (!hasFeedContent) {
           for (const evt of [...msg.data].reverse()) {
-            addFeedEvent(evt.text || formatRelayEvent(evt), evt.timestamp);
+            const text = evt.text || formatRelayEvent(evt);
+            if (text.includes('rover TVL') && text.includes('$0')) continue;
+            addFeedEvent(text, evt.timestamp);
           }
         }
       }
@@ -4185,7 +4186,9 @@ async function preloadFeed() {
       const feed = document.getElementById('activityFeed');
       if (feed) feed.innerHTML = '';
       for (const evt of [...data.events].reverse()) {
-        addFeedEvent(evt.text || formatRelayEvent(evt), evt.timestamp);
+        const text = evt.text || formatRelayEvent(evt);
+        if (text.includes('rover TVL') && text.includes('$0')) continue;
+        addFeedEvent(text, evt.timestamp);
       }
     }
   } catch {
