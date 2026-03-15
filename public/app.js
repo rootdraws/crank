@@ -377,8 +377,10 @@ function handleRelayEvent(msg) {
       break;
 
     case 'harvestNeeded':
-    case 'roverTvlUpdated':
       addFeedEvent(formatRelayEvent(msg));
+      break;
+    case 'roverTvlUpdated':
+      if (msg.data?.totalTvl > 0) addFeedEvent(formatRelayEvent(msg));
       break;
 
     case 'feedHistory':
@@ -5292,7 +5294,10 @@ async function init() {
 
   // Recon access: ?recon=1 or Ctrl+Shift+R
   const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.get('recon') === '1') activateReconPage();
+  if (urlParams.get('recon') === '1') {
+    exitLanding();
+    activateReconPage();
+  }
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.shiftKey && e.key === 'R') {
       e.preventDefault();
