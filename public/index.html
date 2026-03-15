@@ -333,10 +333,16 @@
 
   <!-- ═══════════════════════════════════════════════════════════
        PAGE 2: RANK — burn $CRANK, claim $PEGGED
-       Sub-pages: Monke (personal) + Roster (leaderboard)
+       Sub-pages: Monke (personal) + Roster (leaderboard) + Pegged (mint/redeem)
        ═══════════════════════════════════════════════════════════ -->
   <div class="site-page" id="page-rank">
     <div class="page-body">
+
+      <div class="rank-sub-tabs">
+        <button class="rank-sub-tab active" data-sub="monke">monke</button>
+        <button class="rank-sub-tab" data-sub="roster">roster</button>
+        <button class="rank-sub-tab" data-sub="pegged">$pegged</button>
+      </div>
 
       <!-- Sub-page: MONKE (personal) -->
       <div class="sub-content active" data-sub="monke">
@@ -428,6 +434,52 @@
 
         <div class="monke-header"><span>#</span><span>monke</span><span>weight</span><span>claimed</span></div>
         <div id="rosterList"><div class="empty-state">loading roster...</div></div>
+      </div>
+
+      <!-- Sub-page: PEGGED (mint / redeem $PEGGED) -->
+      <div class="sub-content" data-sub="pegged">
+        <div class="pegged-section">
+          <div class="pegged-header">
+            <div class="pegged-title">$PEGGED</div>
+            <div class="pegged-subtitle">liquid staked SOL — Helius · LP Army · MonkeDAO validators</div>
+          </div>
+
+          <div class="stats-grid pegged-stats">
+            <div><div class="stat-label">your balance</div><div class="stat-value green" id="peggedUserBalance">0</div></div>
+            <div><div class="stat-label">exchange rate</div><div class="stat-value" id="peggedExchangeRate">—</div></div>
+            <div><div class="stat-label">reserve liquidity</div><div class="stat-value" id="peggedReserveLiquidity">—</div></div>
+          </div>
+
+          <div class="pegged-panels">
+            <!-- MINT: SOL → $PEGGED -->
+            <div class="pegged-panel">
+              <div class="pegged-panel-label">mint</div>
+              <div class="pegged-panel-desc">deposit SOL, receive $PEGGED</div>
+              <div class="pegged-input-row">
+                <input type="number" class="pegged-input" id="peggedMintAmount" placeholder="0.0" min="0" step="0.01">
+                <span class="pegged-input-suffix">SOL</span>
+              </div>
+              <div class="pegged-estimate" id="peggedMintEstimate">≈ 0 $PEGGED</div>
+              <div class="pegged-fee-note">0% deposit fee</div>
+              <button class="action-btn-sm pegged-action-btn" id="peggedMintBtn" disabled>mint $PEGGED</button>
+            </div>
+
+            <!-- REDEEM: $PEGGED → SOL -->
+            <div class="pegged-panel">
+              <div class="pegged-panel-label">redeem</div>
+              <div class="pegged-panel-desc">burn $PEGGED, receive SOL</div>
+              <div class="pegged-input-row">
+                <input type="number" class="pegged-input" id="peggedRedeemAmount" placeholder="0.0" min="0" step="0.01">
+                <span class="pegged-input-suffix">$PEGGED</span>
+                <button class="pegged-max-btn" id="peggedRedeemMax">max</button>
+              </div>
+              <div class="pegged-estimate" id="peggedRedeemEstimate">≈ 0 SOL</div>
+              <div class="pegged-fee-note">0.1% withdrawal fee</div>
+              <div class="pegged-reserve-warning" id="peggedReserveWarning" style="display:none;">exceeds reserve liquidity</div>
+              <button class="action-btn-sm pegged-action-btn" id="peggedRedeemBtn" disabled>redeem SOL</button>
+            </div>
+          </div>
+        </div>
       </div>
 
     </div>
