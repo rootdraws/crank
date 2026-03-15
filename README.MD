@@ -2,7 +2,7 @@
 
 **Limit orders that earn fees. Burn $CRANK, earn $PEGGED.**
 
-Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream and NFT revenue sharing (SMB Gen2/Gen3) on Solana.
+Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream and NFT revenue sharing (SMB Gen2/Gen3/gooseswtf) on Solana.
 
 ## Programs
 
@@ -52,7 +52,7 @@ A pipeline of information coming straight from the source, enables sub-second Cr
 
 If our bot goes down, you can always harvest or close your position by yourself, or another Crank user can do so for you, and earn a small fee.
 
-Every step in the revenue pipeline is permissionless. Harvest, close, sweep, distribute, deposit — all crankable by anyone. crank.money is built to be fast and convenient through running our own infrastructure, but the system is resilient without it. 
+Every step in the revenue pipeline is permissionless. Harvest, close, sweep, stake, deposit — all crankable by anyone. crank.money is built to be fast and convenient through running our own infrastructure, but the system is resilient without it. 
 
 ### Performance Fee
 
@@ -80,8 +80,8 @@ Users are providing discretionary liquidity to the market and withdrawing on fil
 
 To support existing NFT communities, MonkeDAO has been integrated into the tokenomics of crank.money.
 
-1. Hold an eligible NFT — SMB Gen2 or SMB Gen3 to launch.
-2. Burn $CRANK to that monke.
+1. Hold an eligible NFT — SMB Gen2, SMB Gen3, or gooseswtf pixel goose (GooseDAO membership required on first burn).
+2. Burn $CRANK to that NFT.
 3. Claim $PEGGED.
 
 - 1M $CRANK minimum per burn.
@@ -97,7 +97,7 @@ To support existing NFT communities, MonkeDAO has been integrated into the token
 - Meteora LP Army Validator
 - MonkeDAO Validator
 
-The $PEGGED token is Liquid Staked SOL, launched on top of Sanctum. 
+The $PEGGED token (on-chain name: crankSOL) is Liquid Staked SOL, launched on top of Sanctum. 
 
 APRs on $PEGGED will be around 7%, depending on Solana Staking Yield Rates.
 
@@ -194,7 +194,7 @@ node scripts/build-frontend.mjs                      # production (Vercel)
 | Item | Address |
 |------|---------|
 | $CRANK Mint | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` |
-| $PEGGED Mint (LST) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` |
+| $PEGGED Mint (crankSOL LST) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` |
 | SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` |
 
 ## Deployment
