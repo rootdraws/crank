@@ -2355,8 +2355,9 @@ async function loadBinVizData() {
     : [{ address: state.poolAddress, activeId: state.activeBin, active_id: state.activeBin, binStep: state.binStep, bin_step: state.binStep }];
 
   try {
-    vizState.poolBins = await fetchAggregatedLiquidity(dlmmPools);
+    const fetchedBins = await fetchAggregatedLiquidity(dlmmPools);
     if (state.poolAddress !== requestedPool) return;
+    vizState.poolBins = fetchedBins;
   } catch (err) {
     if (err.name === 'AbortError') return;
     if (CONFIG.DEBUG) console.error('Failed to fetch bin arrays:', err);
@@ -2923,8 +2924,9 @@ function initBurnFireCanvas() {
   const stars = [];
   let t = 0, last = 0;
 
+  window._burnFireStep = step;
   function step(ts) {
-    if (!window._isRankPageVisible) { burnFireRAF = requestAnimationFrame(step); return; }
+    if (!window._isRankPageVisible) { burnFireRAF = null; return; }
     if (ts - last < 70) { burnFireRAF = requestAnimationFrame(step); return; }
     last = ts; t++;
 
@@ -4402,6 +4404,7 @@ async function handleCrankStakeForward() {
   const user = state.publicKey;
 
   if (!CONFIG.BRIDGE_PROGRAM_ID || !CONFIG.STAKE_POOL || !CONFIG.PEGGED_MINT) {
+    if (btn) btn.disabled = false;
     showToast('Bridge/stake pool not configured', 'error'); return;
   }
 
@@ -4869,12 +4872,16 @@ function renderPnlCard(position) {
 
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
-  const containerW = canvas.parentElement?.clientWidth || Math.min(1200, window.innerWidth - 32);
-  const maxW = Math.min(1200, containerW);
-  const w = Math.round(maxW * dpr);
-  const h = Math.round(w * 675 / 1200);
-  canvas.width = w;
-  canvas.height = h;
+  const containerW = canvas.parentElement?.clientWidth || Math.min(660, window.innerWidth - 32);
+  const cssW = Math.min(1200, containerW);
+  const cssH = Math.round(cssW * 675 / 1200);
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = cssW;
+  const h = cssH;
 
   ctx.fillStyle = '#F2E0D0';
   ctx.fillRect(0, 0, w, h);
@@ -4929,7 +4936,7 @@ function renderPnlCard(position) {
   ctx.setLineDash([]);
 
   const fontBase = "'IBM Plex Mono', monospace";
-  const s = w < 500 ? 0.6 : 1;  // scale factor for mobile
+  const s = cssW < 500 ? 0.6 : 1;
 
   ctx.font = `500 ${Math.round(28 * s)}px ${fontBase}`;
   ctx.fillStyle = '#180E26';
@@ -5087,6 +5094,9 @@ const PAGE_ACCENT = ['#F2B6C6', '#F2B6C6', '#F2B6C6', '#F2B6C6', '#F2B6C6'];
 function showPage(idx) {
   state.currentPage = idx;
   window._isRankPageVisible = (idx === 2);
+  if (idx === 2 && !burnFireRAF && window._burnFireStep) {
+    burnFireRAF = requestAnimationFrame(window._burnFireStep);
+  }
 
   // Reset scroll position on page switch (important for mobile)
   window.scrollTo(0, 0);
@@ -5123,9 +5133,11 @@ function showPage(idx) {
     }
   });
 
-  // Mobile nav: sync active tab
+  // Mobile nav: sync active tab + ARIA state
   document.querySelectorAll('.mobile-nav-tab').forEach(tab => {
-    tab.classList.toggle('active', parseInt(tab.dataset.page) === idx);
+    const isActive = parseInt(tab.dataset.page) === idx;
+    tab.classList.toggle('active', isActive);
+    tab.setAttribute('aria-current', isActive ? 'page' : 'false');
   });
 
   // Nav arrows: show dot on boundaries, arrow when navigable
@@ -5234,7 +5246,10 @@ async function init() {
   // Pool
   document.getElementById('loadPool')?.addEventListener('click', loadPool);
   document.getElementById('poolAddress')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') loadPool();
+    if (e.key === 'Enter') {
+      const loadBtn = document.getElementById('loadPool');
+      if (loadBtn && !loadBtn.disabled) loadPool();
+    }
   });
 
   // Zoom controls (price-percentage)
@@ -5289,11 +5304,6 @@ async function init() {
   // Mobile nav tabs
   document.querySelectorAll('.mobile-nav-tab').forEach(tab => {
     tab.addEventListener('click', () => showPage(parseInt(tab.dataset.page)));
-  });
-
-  // Mobile rank sub-tabs (monke / roster)
-  document.querySelectorAll('.rank-sub-tab').forEach(tab => {
-    tab.addEventListener('click', () => showSubPage(tab.dataset.sub));
   });
 
   // Arrow hover highlights target orbit

@@ -1471,7 +1471,7 @@
       z-index: 1000; font-family: var(--font-sys);
       animation: slideUp 0.3s ease;
       max-width: 90vw; max-height: 200px; overflow-y: auto;
-      word-wrap: break-word; white-space: pre-wrap;
+      overflow-wrap: break-word; white-space: pre-wrap;
     }
     .toast.error { border-color: var(--alert-red); color: var(--alert-red); }
     .toast.success { border-color: var(--data-green); color: var(--data-green); }
