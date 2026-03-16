@@ -60,9 +60,7 @@
       line-height: 1.5;
       background: #F2E0D0;
       color: #180E26;
-      min-height: 100vh;
-      min-width: 1100px;
-      min-height: 700px;
+      min-height: 100dvh;
       overflow: auto;
       letter-spacing: 0.02em;
       cursor: default;
@@ -86,68 +84,9 @@
       .crt-flicker { animation: none !important; }
     }
 
-    /* ─── MOBILE GATE ─── blocks the app on narrow screens */
-
-    .mobile-gate {
-      display: none;
-      position: fixed; inset: 0;
-      z-index: 9999;
-      background: #F2E0D0;
-      align-items: center; justify-content: center;
-    }
-    .mobile-gate-inner {
-      text-align: center;
-      padding: 24px;
-    }
-    .ascii-cat {
-      font-family: var(--font-sys);
-      font-size: clamp(0.75rem, 3.2vw, 1.25rem);
-      line-height: 1.3;
-      color: #D984AC;
-      margin-bottom: 32px;
-      display: inline-block;
-      min-height: 10em;
-      white-space: pre;
-    }
-    .mobile-gate-title {
-      font-family: var(--font-label);
-      font-size: 1.8rem;
-      letter-spacing: 0.15em;
-      text-transform: uppercase;
-      color: var(--nerv-orange);
-      margin-bottom: 6px;
-    }
-    .mobile-gate-msg {
-      font-family: var(--font-sys);
-      font-size: 0.8125rem;
-      letter-spacing: 0.08em;
-      color: #714BA6;
-    }
-    .mobile-gate-links {
-      margin-top: 32px;
-      display: flex; gap: 10px;
-      justify-content: center; align-items: center;
-    }
-    .mobile-gate-links a {
-      font-family: var(--font-sys);
-      font-size: 0.6875rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #D984AC;
-      text-decoration: none;
-      transition: color 0.15s;
-    }
-    .mobile-gate-links a:hover { color: #180E26; }
-    .mobile-gate-dot {
-      color: #D984AC; font-size: 0.6875rem;
-    }
-
-    @media (max-width: 1099px) {
-      body {
-        min-width: 0 !important;
-        overflow: hidden;
-      }
-      .mobile-gate { display: flex; }
+    /* ─── TAP DELAY FIX ─── eliminate 300ms tap delay on all interactive elements */
+    button, a, input, select, .ab-card, .picker-row, .monke-row, .sigil-orbit, .sigil-dot {
+      touch-action: manipulation;
     }
 
     /* ─── LANDING PAGE ─── the gate before the app */
@@ -1033,7 +972,7 @@
       letter-spacing: 0.08em; text-transform: uppercase; padding: 8px 16px;
       cursor: pointer; transition: color 0.2s, border-color 0.2s;
     }
-    .rank-sub-tab:hover { color: var(--fg); }
+    .rank-sub-tab:hover { color: var(--data-green); }
     .rank-sub-tab.active {
       color: var(--nerv-orange); border-bottom-color: var(--nerv-orange);
     }
@@ -1304,7 +1243,7 @@
     }
     .pegged-input {
       flex: 1; background: var(--void-warm); border: 1px solid var(--wire-cyan-dim);
-      color: var(--fg); padding: 8px 10px; font-family: var(--font-mono);
+      color: var(--data-green); padding: 8px 10px; font-family: var(--font-mono);
       font-size: 0.875rem; outline: none; min-width: 0;
     }
     .pegged-input:focus { border-color: var(--nerv-orange); }
@@ -1496,12 +1435,14 @@
       background: rgba(24, 14, 38, 0.50);
       z-index: 500; display: none;
       align-items: center; justify-content: center;
+      padding: 24px;
     }
     .modal-overlay.visible { display: flex; }
     .modal-content {
       background: #F2B6C6;
       border: 1px solid #D984AC;
       padding: 24px; max-width: 500px; width: 90%;
+      max-height: 100%; overflow-y: auto; overscroll-behavior: contain;
     }
     .pnl-modal-content {
       max-width: 660px; padding: 16px;
@@ -1529,6 +1470,8 @@
       font-size: 0.8125rem; font-weight: 400; letter-spacing: 0.04em;
       z-index: 1000; font-family: var(--font-sys);
       animation: slideUp 0.3s ease;
+      max-width: 90vw; max-height: 200px; overflow-y: auto;
+      word-wrap: break-word; white-space: pre-wrap;
     }
     .toast.error { border-color: var(--alert-red); color: var(--alert-red); }
     .toast.success { border-color: var(--data-green); color: var(--data-green); }
@@ -1821,6 +1764,68 @@
     .pnl-positive { color: var(--thermal-yellow); }
     .pnl-negative { color: var(--nerv-orange); }
 
+/* ─── RANK SUB-TABS ─── hidden on desktop, shown on mobile */
+
+    .rank-sub-tabs {
+      display: none;
+    }
+
+/* ─── MOBILE NAV BAR ─── hidden on desktop, shown on mobile */
+
+    .mobile-nav {
+      display: none;
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      z-index: 200;
+      background: #F2E0D0;
+      border-top: 1px solid var(--wire-cyan-dim);
+      height: 60px;
+      align-items: stretch;
+      justify-content: space-around;
+      padding: 0 4px;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    .mobile-nav-tab {
+      flex: 1;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 3px;
+      background: none; border: none;
+      color: var(--steel-dim);
+      font-family: var(--font-sys);
+      font-size: 0.5625rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: color 0.2s ease;
+      padding: 6px 4px;
+      position: relative;
+    }
+    .mobile-nav-tab::before {
+      content: '';
+      position: absolute; top: 0; left: 25%; right: 25%;
+      height: 2px;
+      background: var(--nerv-orange);
+      transform: scaleX(0);
+      transition: transform 0.25s ease;
+    }
+    .mobile-nav-tab:hover { color: var(--nerv-orange); }
+    .mobile-nav-tab.active {
+      color: var(--nerv-orange-hot);
+    }
+    .mobile-nav-tab.active::before {
+      transform: scaleX(1);
+    }
+    .mobile-nav-tab svg {
+      opacity: 0.5;
+      transition: opacity 0.2s ease;
+    }
+    .mobile-nav-tab.active svg {
+      opacity: 1;
+      stroke: var(--nerv-orange);
+    }
+
 /* ─── ACCESSIBILITY ─── */
 @media (prefers-reduced-motion: reduce) {
   .crt-flicker,
@@ -1832,4 +1837,428 @@
     --alert-red: #D984AC;
     --data-green: #F2E0D0;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE — full app on every screen
+   ═══════════════════════════════════════════════════════════════ */
+
+@media (max-width: 1099px) {
+
+  /* ─── BASE ─── */
+  body {
+    min-width: 0 !important;
+    min-height: 0 !important;
+    overflow: auto !important;
+    font-size: 13px;
+  }
+
+  /* ─── SCAFFOLD: hide decorative corners & tangent rays ─── */
+  .corner, .tangent-ray { display: none !important; }
+
+  /* ─── HEADER ─── */
+  .header {
+    position: fixed; top: 0; left: 0; right: 0;
+    padding: 12px 16px;
+    background: #F2E0D0;
+    border-bottom: 1px solid var(--wire-cyan-dim);
+    z-index: 200;
+  }
+  .wallet-btn { font-size: 0.625rem; padding: 0.35em 0.8em; }
+  .wallet-options {
+    top: calc(44px + env(safe-area-inset-top, 0px));
+    right: 16px;
+    left: 16px;
+    z-index: 210;
+  }
+
+  /* ─── LANDING PAGE ─── */
+  .landing {
+    padding: calc(24px + env(safe-area-inset-top, 0px)) 20px calc(32px + env(safe-area-inset-bottom, 0px));
+  }
+  .landing-sigil { width: 120px; height: 120px; margin-bottom: 24px; }
+  .landing-title { font-size: clamp(2.5rem, 12vw, 4rem); letter-spacing: 0.2em; }
+  .landing-subtitle { font-size: 0.75rem; }
+  .landing-desc { font-size: 0.6875rem; max-width: 320px; margin-bottom: 24px; }
+  .landing-cta { padding: 12px 32px; font-size: 0.75rem; }
+  .landing-hero { margin-bottom: 36px; }
+
+  .landing-features {
+    grid-template-columns: 1fr 1fr;
+    max-width: 100%;
+    margin-bottom: 32px;
+  }
+  .feature-card { padding: 20px 16px; }
+  .feature-title { font-size: 1.2rem; }
+  .feature-desc { font-size: 0.625rem; }
+
+  .landing-token { padding: 6px 14px; margin-bottom: 24px; }
+
+  .landing-stats {
+    flex-direction: column; gap: 12px; align-items: center;
+    margin-bottom: 24px;
+  }
+  .landing-stat-sep { display: none; }
+  .landing-stat { flex-direction: column; align-items: center; gap: 2px; text-align: center; }
+
+  /* ─── SIGIL NAVIGATOR — hidden on mobile ─── */
+  .sigil-nav { display: none !important; }
+
+  /* ─── MOBILE NAV — bottom tab bar ─── */
+  .mobile-nav { display: flex !important; }
+
+  /* ─── SITE PAGES — unfix everything, let it scroll ─── */
+  .site-page.active { display: block; }
+
+  .page-body {
+    position: static !important;
+    top: auto !important; bottom: auto !important;
+    left: auto !important; right: auto !important;
+    padding: calc(52px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) calc(72px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+    overflow-y: visible;
+    min-height: auto;
+  }
+  body.on-rank .page-body {
+    position: static !important;
+    top: auto !important; bottom: auto !important;
+    left: auto !important; right: auto !important;
+    padding: calc(52px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) calc(72px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  }
+
+  /* ─── TRADE PAGE ─── stacked layout */
+  .trade-layout {
+    position: static !important;
+    top: auto !important; bottom: auto !important;
+    left: auto !important; right: auto !important;
+    flex-direction: column;
+    gap: 16px;
+    padding: calc(52px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) calc(72px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+    overflow-y: visible;
+  }
+  .trade-left-panel {
+    width: 100% !important; flex-shrink: 1;
+    min-height: 300px;
+  }
+  .trade-right-panel {
+    width: 100% !important; flex-shrink: 1;
+    flex-direction: column;
+  }
+  .trade-order-form { flex: none; }
+  .address-book-panel {
+    width: 100% !important;
+    max-height: none;
+  }
+  .ab-cards, .ab-trending {
+    flex-direction: row !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: 8px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ab-cards .addressbook-pill,
+  .ab-trending .trending-pill {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .bin-viz-wrap { min-height: 250px; }
+
+  /* OHLCV chart */
+  .ohlcv-section { display: flex !important; }
+  .ohlcv-wrap { height: clamp(150px, 28svh, 250px); }
+
+  /* Pool section */
+  .pool-search-row { flex-direction: column; }
+  .pool-input { font-size: 0.75rem; }
+  .create-pool-row { flex-direction: column; align-items: stretch; }
+  .load-btn { align-self: flex-end; }
+  .pool-info { flex-wrap: wrap; gap: 8px; }
+  .pool-metrics { gap: 8px; }
+
+  /* Range inputs */
+  .range-input { max-width: none; }
+  .range-row { flex-wrap: wrap; }
+
+  /* ─── POSITIONS PAGE ─── horizontal scroll for tables */
+  .pos-page-header,
+  .pos-page-row {
+    display: grid;
+    grid-template-columns: 120px 60px 100px 70px 80px 60px auto auto auto auto;
+    min-width: 700px;
+    font-size: 0.6875rem;
+    gap: 6px;
+  }
+  #allPositionsList {
+    overflow-x: auto;
+    max-height: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .pos-page-header { position: sticky; top: -1px; background: #F2E0D0; z-index: 5; }
+
+  /* ─── RANK PAGE ─── */
+  .rank-sub-tabs {
+    display: flex !important;
+    gap: 0;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--steel-faint);
+  }
+  .rank-sub-tab {
+    flex: 1;
+    padding: 10px 0;
+    min-height: 44px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--steel-dim);
+    font-family: var(--font-sys);
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-align: center;
+    transition: color 0.2s, border-color 0.2s;
+  }
+  .rank-sub-tab:hover { color: var(--nerv-orange); }
+  .rank-sub-tab.active {
+    color: var(--nerv-orange-hot);
+    border-bottom-color: var(--nerv-orange);
+  }
+
+  .monke-split {
+    flex-direction: column;
+  }
+  .monke-nft-panel {
+    flex: none !important;
+    width: 100%;
+    padding-right: 0;
+    padding-bottom: 16px;
+  }
+  .monke-frame-divider {
+    width: 100%; height: 1px;
+    flex: none !important;
+    align-self: auto;
+  }
+  .monke-detail-panel {
+    padding-left: 0;
+    padding-top: 16px;
+  }
+  .monke-frame { padding: 10px; }
+
+  /* Triptych — stack on narrow */
+  .monke-top-triptych {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .triptych-burn {
+    grid-column: 1 / -1;
+    border-left: none;
+    border-top: 1px solid var(--alert-red-dim);
+    margin-left: 0;
+    padding: 16px 0 0 0;
+    flex-direction: row;
+    gap: 16px;
+  }
+  .burn-fire { width: 80px; height: 80px; }
+  .burn-fire canvas { width: 68px; height: 68px; }
+
+  /* NFT carousel */
+  .carousel-frame { max-width: 280px; margin: 0 auto; }
+  .nft-carousel { justify-content: center; }
+
+  /* Monke table — horizontal scroll */
+  .monke-header, .monke-row {
+    grid-template-columns: 16px 1.2fr 0.6fr 0.8fr 1fr 0.6fr;
+    min-width: 500px;
+    font-size: 0.6875rem;
+    gap: 8px;
+  }
+  #monkeList, #rosterList {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Roster search */
+  .explorer-search { flex-direction: column; gap: 8px; }
+  .explorer-search .load-btn { align-self: flex-end; }
+
+  /* Stats grids */
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px;
+  }
+  .stat-value { font-size: 16px; }
+
+  /* Jupiter embed */
+  .jupiter-embed-section { margin-top: 16px; }
+
+  /* ─── OPS PAGE ─── */
+  .ops-top-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .ops-stats-compact { font-size: 0.6875rem; }
+  .crank-section { width: 100%; justify-content: flex-start; }
+
+  .bounty-header, .bounty-row {
+    grid-template-columns: 1.5fr 0.8fr 0.8fr 1fr 0.6fr;
+    min-width: 500px;
+    font-size: 0.6875rem;
+    gap: 8px;
+  }
+  #bountyBoard { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Address overflow — truncate long hex strings */
+  .pos-page-row .pos-pool,
+  .bounty-row > :first-child,
+  .monke-row > :nth-child(2),
+  .recon-pool-row > :first-child,
+  .rover-row > :nth-child(2),
+  .picker-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+  }
+
+  .activity-feed { max-height: 300px; }
+  .feed-event {
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .feed-event .event-time { float: none; display: block; margin-top: 2px; }
+
+  /* ─── RECON PAGE ─── */
+  .recon-stats { grid-template-columns: repeat(2, 1fr) !important; }
+  .recon-side-split { grid-template-columns: 1fr; gap: 12px; }
+
+  .recon-pool-header, .recon-pool-row {
+    grid-template-columns: 1.5fr 0.8fr 0.8fr 1fr 1fr;
+    min-width: 500px;
+    font-size: 0.6875rem;
+  }
+  #reconPoolBreakdown, #reconRoverLeaderboard { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  .rover-deposit-section { flex-direction: column; gap: 8px; }
+  .rover-input.mint { flex: none; width: 100%; }
+
+  /* Codec modal */
+  .codec-body { flex-direction: column; gap: 16px; }
+  .codec-portrait { flex: none; }
+  .codec-portrait img { width: 120px; height: 120px; margin: 0 auto; display: block; }
+
+  /* ─── MODALS ─── */
+  .modal-content { max-width: 94vw; padding: 16px; }
+  .pnl-modal-content { max-width: 94vw; }
+  .history-modal-content { max-width: 94vw; }
+  .warning-modal { max-width: 90vw; }
+
+  /* ─── $PEGGED SECTION ─── */
+  .pegged-section { max-width: 100%; padding: 0; }
+  .pegged-title { font-size: 1.2rem; }
+  .pegged-panel { padding: 12px; }
+  .pegged-input-row { flex-wrap: wrap; }
+  .pegged-input-suffix { font-size: 0.625rem; }
+  .history-event-row {
+    grid-template-columns: 60px 1fr 60px 50px;
+    font-size: 0.6875rem; gap: 4px;
+  }
+
+  /* Toast */
+  .toast { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); right: 16px; left: 16px; text-align: center; }
+
+  /* ─── iOS INPUT ZOOM FIX ─── font-size < 16px triggers auto-zoom on focus */
+  .pool-input,
+  .range-input,
+  .amount-input,
+  .rover-input,
+  .pegged-input,
+  .create-pool-select,
+  #monkeBurnLookup,
+  select,
+  textarea,
+  input[type="text"],
+  input[type="number"] {
+    font-size: 16px !important;
+  }
+
+  /* ─── TOUCH TARGETS ─── min 44px per Apple HIG */
+  .zoom-btn { width: 44px; height: 44px; font-size: 18px; }
+  .action-btn-sm { padding: 0.7em 1.4em; min-height: 44px; }
+  .side-tab { padding: 12px 0; min-height: 44px; }
+  .load-btn { padding: 10px 16px; min-height: 44px; }
+  .carousel-arrow { padding: 10px; font-size: 20px; min-width: 44px; min-height: 44px; }
+  .burn-amount-btn { min-height: 44px; padding: 0 16px; }
+  .ohlcv-tf-btn { padding: 6px 10px; min-height: 36px; }
+  .recon-filter-btn { padding: 6px 12px; min-height: 36px; }
+  .wallet-btn { min-height: 40px; padding: 0.5em 1em; }
+  .wallet-option { padding: 12px 20px; min-height: 44px; }
+  .landing-cta { min-height: 48px; }
+  .addressbook-pill, .trending-pill { padding: 6px 12px; min-height: 36px; }
+  .picker-row { padding: 10px; min-height: 44px; }
+  .social-links a { padding: 10px; min-width: 44px; min-height: 44px; }
+  .codec-close { min-height: 44px; min-width: 44px; padding: 8px 12px; }
+  .pegged-max-btn { min-height: 36px; padding: 6px 10px; }
+  .pegged-action-btn { min-height: 44px; }
+  .rover-btn { min-height: 44px; }
+
+  /* ─── SAFE AREA INSETS ─── iPhone notch + home bar */
+  .header {
+    padding-top: max(12px, env(safe-area-inset-top, 12px));
+  }
+  .mobile-nav {
+    padding-bottom: max(4px, env(safe-area-inset-bottom, 4px));
+  }
+  /* safe-area bottom padding handled in page-body and trade-layout definitions above */
+
+  /* Horizontal scroll tables rely on native scrolling — no permanent fade mask
+     that would obscure the rightmost action buttons (Close, Harvest, etc.) */
+
+  /* ─── CANVAS TOUCH ─── prevent pan/zoom on interactive canvases */
+  canvas { touch-action: none; }
+
+  /* ─── PREVENT BODY SCROLL BEHIND MODALS ─── */
+  body.modal-open,
+  html.modal-open {
+    overflow: hidden !important;
+  }
+
+  /* ─── POOL SEARCH ─── keep input + button side by side */
+  .pool-search-row {
+    flex-direction: row !important;
+  }
+  .pool-search-row .pool-input {
+    min-width: 0;
+  }
+
+  /* ─── EMPTY STATES ─── */
+  .empty-state { padding: 24px 16px; }
+
+  /* ─── LANDING hides mobile nav ─── */
+  body.on-landing .mobile-nav { display: none !important; }
+}
+
+/* ─── SMALL PHONE BREAKPOINT ─── */
+@media (max-width: 480px) {
+  .landing-features { grid-template-columns: 1fr; }
+  .feature-card { padding: 16px 14px; }
+
+  .landing-title { letter-spacing: 0.15em; }
+
+  .monke-top-triptych { grid-template-columns: 1fr; }
+  .triptych-burn { flex-direction: column; align-items: center; }
+
+  .stats-grid { grid-template-columns: 1fr !important; }
+
+  .trade-layout { padding-left: 10px; padding-right: 10px; }
+  .page-body, body.on-rank .page-body { padding-left: 10px !important; padding-right: 10px !important; }
+
+  .header { padding: 10px 12px; }
+
+  .burn-panel { flex-direction: column; align-items: center; gap: 8px; }
+  .burn-fire { width: 64px; height: 64px; }
+  .burn-fire canvas { width: 56px; height: 56px; }
+  .burn-actions { flex-direction: row; gap: 4px; }
+  .burn-amount-btn { min-width: 56px; padding: 0 12px; font-size: 0.75rem; }
+
+  .pool-search-row { gap: 0; }
+
+  .sigil-nav svg { width: 180px; }
 }

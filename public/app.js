@@ -347,7 +347,7 @@ function handleRelayEvent(msg) {
         state.discoveredDlmmPools.some(p => p.address === msg.data.lbPair)
       );
       if (isWatchedPool) {
-        if (msg.data.lbPair === state.poolAddress) {
+        if (msg.data.lbPair === state.poolAddress && state.binStep && state.tokenXDecimals !== undefined && state.tokenYDecimals !== undefined) {
           const newPrice = binToPrice(msg.data.newActiveId, state.binStep, state.tokenXDecimals, state.tokenYDecimals);
           state.currentPrice = newPrice;
           state.activeBin = msg.data.newActiveId;
@@ -825,14 +825,19 @@ function escapeHtml(str) {
 }
 
 /** Read mint decimals at runtime (works without wallet connection) */
+const DECIMALS_CACHE = {};
 async function getMintDecimals(mintAddress) {
+  if (!mintAddress) return 9;
+  if (DECIMALS_CACHE[mintAddress] !== undefined) return DECIMALS_CACHE[mintAddress];
   try {
     const conn = state.connection || new solanaWeb3.Connection(
       CONFIG.HELIUS_RPC_URL || CONFIG.RPC_URL, 'confirmed'
     );
     const pubkey = new solanaWeb3.PublicKey(mintAddress);
     const info = await conn.getParsedAccountInfo(pubkey);
-    return info.value?.data?.parsed?.info?.decimals ?? 9;
+    const dec = info.value?.data?.parsed?.info?.decimals ?? 9;
+    DECIMALS_CACHE[mintAddress] = dec;
+    return dec;
   } catch {
     return 9;
   }
@@ -895,8 +900,11 @@ const state = {
 
 function percentToPrice(pct, side) {
   if (!state.currentPrice) return 0;
-  if (side === 'buy') return state.currentPrice * (1 - pct / 100);
-  return state.currentPrice * (1 + pct / 100);
+  if (side === 'buy') {
+    const safePct = Math.min(pct, 99.99);
+    return state.currentPrice * (1 - safePct / 100);
+  }
+  return state.currentPrice * (1 + Math.max(0, pct) / 100);
 }
 
 function getRangeBins() {
@@ -1076,12 +1084,18 @@ async function connectWallet() {
     renderMonkeList();
     updateFee();
     loadAddressBook();
-    loadAddressBook();
     if (state.currentSubPage === 'pegged') loadPeggedSection();
   } catch (err) {
     console.error('Wallet connection failed:', err);
     if (btn) btn.textContent = 'connect wallet';
-    showToast('Connection failed', 'error');
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile && (err?.message?.includes('provider') || !window.solana)) {
+      const deepLink = `https://phantom.app/ul/browse/${encodeURIComponent(window.location.href)}`;
+      showToast('Redirecting to Phantom...', 'info');
+      setTimeout(() => { window.location.href = deepLink; }, 1500);
+    } else {
+      showToast('Connection failed', 'error');
+    }
   }
 }
 
@@ -1090,7 +1104,10 @@ async function disconnectWallet() {
 
   state.connected = false;
   state.publicKey = null;
+  state.positions = [];
   state.addressBook = { active: [], recent: [] };
+  vizState.userBins.clear();
+  vizState.previewBins.clear();
   renderAddressBook();
 
   window.__monkeWallet = null;
@@ -1638,8 +1655,8 @@ async function loadPool() {
         address: addr,
         active_id: relayData.activeId,
         bin_step: relayData.binStep,
-        token_x: { address: xMint, symbol: relayData.tokenXSymbol || 'TOKEN' },
-        token_y: { address: yMint, symbol: relayData.tokenYSymbol || 'SOL' },
+        token_x: { address: xMint, symbol: relayData.tokenXSymbol || KNOWN_TOKENS[xMint] || 'TOKEN' },
+        token_y: { address: yMint, symbol: relayData.tokenYSymbol || KNOWN_TOKENS[yMint] || 'SOL' },
       };
     } else {
       // Step 2 — try direct on-chain parse
@@ -2135,7 +2152,7 @@ function renderBinViz() {
   if (maxUserLiq === 0) maxUserLiq = 1;
 
   const yMargin = 24;
-  const xLabelWidth = 72;
+  const xLabelWidth = W < 400 ? 56 : 72;
   const barAreaW = W - xLabelWidth - 12;
   const barAreaH = H - yMargin * 2;
   const rowH = barAreaH / totalBins;
@@ -2266,7 +2283,8 @@ function updateBinVizPreview() {
 
   const amount = parseFloat(document.getElementById('amount')?.value) || 0;
   const { minBin, maxBin } = getRangeBins();
-  const amountLamports = amount * 1e9;
+  const decimals = state.side === 'sell' ? state.tokenXDecimals : state.tokenYDecimals;
+  const amountLamports = amount * Math.pow(10, decimals);
 
   vizState.previewBins = computeBidAskPreview(amountLamports, minBin, maxBin, state.activeBin);
   renderBinViz();
@@ -2324,6 +2342,7 @@ async function fetchAggregatedLiquidity(dlmmPools) {
 
 async function loadBinVizData() {
   if (!state.poolAddress || !state.activeBin || !state.binStep) return;
+  const requestedPool = state.poolAddress;
 
   if (vizState.fetchController) vizState.fetchController.abort();
   vizState.fetchController = new AbortController();
@@ -2337,6 +2356,7 @@ async function loadBinVizData() {
 
   try {
     vizState.poolBins = await fetchAggregatedLiquidity(dlmmPools);
+    if (state.poolAddress !== requestedPool) return;
   } catch (err) {
     if (err.name === 'AbortError') return;
     if (CONFIG.DEBUG) console.error('Failed to fetch bin arrays:', err);
@@ -2344,11 +2364,13 @@ async function loadBinVizData() {
   }
 
   await loadUserBins();
+  if (state.poolAddress !== requestedPool) return;
   updateBinVizPreview();
 }
 
 async function loadUserBins() {
   if (!state.poolAddress) return;
+  const requestedPool = state.poolAddress;
 
   // Try real on-chain bin data from bot relay first
   if (state.publicKey) {
@@ -2356,6 +2378,7 @@ async function loadUserBins() {
       const data = await relayFetch(
         `/api/user-bins?pool=${state.poolAddress}&owner=${state.publicKey.toBase58()}`
       );
+      if (state.poolAddress !== requestedPool) return;
       if (data && data.bins && data.bins.length > 0) {
         const map = new Map();
         for (const b of data.bins) {
@@ -2373,6 +2396,7 @@ async function loadUserBins() {
   // Fallback: synthetic approximation from on-chain position accounts
   try {
     const positions = await fetchUserPositions(state.poolAddress);
+    if (state.poolAddress !== requestedPool) return;
     vizState.userBins = aggregateUserBins(positions, state.activeBin);
   } catch {
     vizState.userBins = new Map();
@@ -2385,12 +2409,18 @@ async function loadUserBins() {
 
 async function createPosition() {
   if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
-  if (!state.poolAddress) { showToast('Load a pool first', 'error'); return; }
+  if (!state.poolAddress || state.activeBin == null || !state.currentPrice) {
+    showToast('Waiting for pool data...', 'error'); return;
+  }
 
   const amount = parseFloat(document.getElementById('amount')?.value);
   if (!amount || amount <= 0) { showToast('Enter a valid amount', 'error'); return; }
 
   const { minBin, maxBin } = getRangeBins();
+
+  if (isNaN(minBin) || isNaN(maxBin)) {
+    showToast('Invalid price range', 'error'); return;
+  }
 
   if (state.side === 'buy' && maxBin >= state.activeBin) {
     showToast('Buy range must be below current price', 'error'); return;
@@ -2408,6 +2438,11 @@ async function createPosition() {
 
     const decimals = state.side === 'sell' ? state.tokenXDecimals : state.tokenYDecimals;
     const depositAmount = BigInt(Math.round(amount * Math.pow(10, decimals)));
+    if (depositAmount <= 0n) {
+      showToast('Amount too small for token decimals', 'error');
+      if (btn) { btn.textContent = original; btn.disabled = false; }
+      return;
+    }
     const numBins = maxBin - minBin + 1;
 
     if (numBins > 70) {
@@ -2889,6 +2924,7 @@ function initBurnFireCanvas() {
   let t = 0, last = 0;
 
   function step(ts) {
+    if (!window._isRankPageVisible) { burnFireRAF = requestAnimationFrame(step); return; }
     if (ts - last < 70) { burnFireRAF = requestAnimationFrame(step); return; }
     last = ts; t++;
 
@@ -3637,22 +3673,34 @@ function updatePoolMetrics(poolData) {
 // OHLCV CHART — candlestick/line chart from DataPI
 // ============================================================
 
+let ohlcvController = null;
 async function fetchAndRenderOHLCV(poolAddress, timeframe) {
   const section = document.getElementById('ohlcvSection');
   if (!section) return;
 
+  if (ohlcvController) ohlcvController.abort();
+  ohlcvController = new AbortController();
+  const signal = ohlcvController.signal;
+
   let data = null;
   try {
     const relayData = await relayFetch(`/api/pool-ohlcv/${poolAddress}?timeframe=${timeframe}`);
+    if (signal.aborted) return;
     if (relayData?.data?.length) data = relayData;
-  } catch {}
+  } catch (e) {
+    if (e?.name === 'AbortError') return;
+  }
 
   if (!data) {
     try {
-      const resp = await fetch(`${METEORA_API_BASE()}/pools/${poolAddress}/ohlcv?timeframe=${timeframe}`);
+      const resp = await fetch(`${METEORA_API_BASE()}/pools/${poolAddress}/ohlcv?timeframe=${timeframe}`, { signal });
       if (resp.ok) data = await resp.json();
-    } catch {}
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+    }
   }
+
+  if (signal.aborted) return;
 
   if (!data?.data?.length) {
     section.style.display = 'none';
@@ -3660,6 +3708,7 @@ async function fetchAndRenderOHLCV(poolAddress, timeframe) {
   }
 
   section.style.display = '';
+  state._lastOhlcv = { candles: data.data, timeframe };
   renderOHLCVCanvas(data.data, timeframe);
 }
 
@@ -3684,10 +3733,11 @@ function renderOHLCVCanvas(candles, timeframe) {
   const font = "'IBM Plex Mono', monospace";
   const axisColor = '#714BA6';
   const gridColor = 'rgba(113, 75, 166, 0.12)';
-  const fontSize = 8;
+  const isMobileChart = W < 500;
+  const fontSize = isMobileChart ? 6 : 8;
 
-  const marginRight = 52;
-  const marginBottom = 20;
+  const marginRight = isMobileChart ? 36 : 52;
+  const marginBottom = isMobileChart ? 14 : 20;
   const marginTop = 6;
   const marginLeft = 4;
 
@@ -3795,6 +3845,7 @@ async function showPositionHistory(meteoraPositionAddress) {
 
   eventsEl.innerHTML = '<div class="empty-state">loading...</div>';
   modal.classList.add('visible');
+  document.body.classList.add('modal-open'); document.documentElement.classList.add('modal-open');
 
   let data = null;
   try {
@@ -4198,6 +4249,8 @@ async function preloadFeed() {
 
 async function handleCrankSweep() {
   if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
+  const btn = document.getElementById('crankSweep');
+  if (btn) btn.disabled = true;
   const conn = state.connection;
   const user = state.publicKey;
 
@@ -4235,6 +4288,8 @@ async function handleCrankSweep() {
   } catch (err) {
     console.error('[monke] sweep_rover failed:', err);
     showToast('Sweep failed: ' + (err?.message || err), 'error');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -4341,6 +4396,8 @@ async function buildSanctumEpochUpdateIxs(conn) {
 
 async function handleCrankStakeForward() {
   if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
+  const btn = document.getElementById('crankStakeForward');
+  if (btn) btn.disabled = true;
   const conn = state.connection;
   const user = state.publicKey;
 
@@ -4393,11 +4450,15 @@ async function handleCrankStakeForward() {
   } catch (err) {
     console.error('[monke] stake_and_forward failed:', err);
     showToast('Stake & forward failed: ' + (err?.message || err), 'error');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
 async function handleCrankDeposit() {
   if (!state.connected) { showToast('Connect wallet first', 'error'); return; }
+  const btn = document.getElementById('crankDeposit');
+  if (btn) btn.disabled = true;
   const conn = state.connection;
   const user = state.publicKey;
   const usePegged = !!CONFIG.PEGGED_MINT;
@@ -4438,6 +4499,8 @@ async function handleCrankDeposit() {
   } catch (err) {
     console.error('[monke] deposit failed:', err);
     showToast('Deposit failed: ' + (err?.message || err), 'error');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -4805,7 +4868,11 @@ function renderPnlCard(position) {
   if (!canvas) return;
 
   const ctx = canvas.getContext('2d');
-  const w = 1200, h = 675;
+  const dpr = window.devicePixelRatio || 1;
+  const containerW = canvas.parentElement?.clientWidth || Math.min(1200, window.innerWidth - 32);
+  const maxW = Math.min(1200, containerW);
+  const w = Math.round(maxW * dpr);
+  const h = Math.round(w * 675 / 1200);
   canvas.width = w;
   canvas.height = h;
 
@@ -4838,8 +4905,8 @@ function renderPnlCard(position) {
   ctx.setLineDash([]);
 
   // Determine profit/loss
-  const pnl = position.amount * (position.filled / 100) + (position.lpFees || 0) - position.amount;
-  const isProfit = pnl >= 0;
+  const pnl = position.lpFees || 0;
+  const isProfit = pnl > 0;
   const accentColor = isProfit ? '#ADD96C' : '#F2B6C6';
 
   // Accent: colored inner arcs
@@ -4862,41 +4929,42 @@ function renderPnlCard(position) {
   ctx.setLineDash([]);
 
   const fontBase = "'IBM Plex Mono', monospace";
+  const s = w < 500 ? 0.6 : 1;  // scale factor for mobile
 
-  ctx.font = `500 28px ${fontBase}`;
+  ctx.font = `500 ${Math.round(28 * s)}px ${fontBase}`;
   ctx.fillStyle = '#180E26';
   ctx.textAlign = 'left';
-  ctx.fillText(position.pool, margin + 20, margin + 70);
+  ctx.fillText(position.pool, margin + 20 * s, margin + 70 * s);
 
-  ctx.font = `500 15px ${fontBase}`;
+  ctx.font = `500 ${Math.round(15 * s)}px ${fontBase}`;
   ctx.fillStyle = position.side === 'buy' ? '#ADD96C' : '#F2B6C6';
-  ctx.fillText(position.side.toUpperCase(), margin + 20, margin + 100);
+  ctx.fillText(position.side.toUpperCase(), margin + 20 * s, margin + 100 * s);
 
-  ctx.font = `400 17px ${fontBase}`;
+  ctx.font = `400 ${Math.round(17 * s)}px ${fontBase}`;
   ctx.fillStyle = '#714BA6';
-  ctx.fillText(`$${formatPrice(position.minPrice)} - $${formatPrice(position.maxPrice)}`, margin + 20, h / 2 - 20);
+  ctx.fillText(`$${formatPrice(position.minPrice)} - $${formatPrice(position.maxPrice)}`, margin + 20 * s, h / 2 - 20 * s);
 
-  ctx.font = `400 15px ${fontBase}`;
+  ctx.font = `400 ${Math.round(15 * s)}px ${fontBase}`;
   ctx.fillStyle = '#714BA6';
-  ctx.fillText(`${position.filled}% filled`, margin + 20, h / 2 + 10);
+  ctx.fillText(`${position.filled}% filled`, margin + 20 * s, h / 2 + 10 * s);
 
-  ctx.fillText(`LP fees: ${(position.lpFees || 0).toFixed(4)} SOL`, margin + 20, h / 2 + 40);
+  ctx.fillText(`LP fees: ${(position.lpFees || 0).toFixed(4)} SOL`, margin + 20 * s, h / 2 + 40 * s);
 
-  ctx.font = `700 50px ${fontBase}`;
+  ctx.font = `700 ${Math.round(50 * s)}px ${fontBase}`;
   ctx.fillStyle = accentColor;
   ctx.textAlign = 'right';
   const pnlText = (isProfit ? '+' : '') + pnl.toFixed(4) + ' SOL';
-  ctx.fillText(pnlText, w - margin - 20, h / 2 + 15);
+  ctx.fillText(pnlText, w - margin - 20 * s, h / 2 + 15 * s);
 
-  ctx.font = `400 13px ${fontBase}`;
+  ctx.font = `400 ${Math.round(13 * s)}px ${fontBase}`;
   ctx.fillStyle = '#714BA6';
-  ctx.fillText('NET P/L', w - margin - 20, h / 2 - 30);
+  ctx.fillText('EST. FEES', w - margin - 20 * s, h / 2 - 30 * s);
 
-  ctx.font = `400 11px ${fontBase}`;
+  ctx.font = `400 ${Math.round(11 * s)}px ${fontBase}`;
   ctx.fillStyle = '#714BA6';
   ctx.textAlign = 'center';
   ctx.letterSpacing = '2px';
-  ctx.fillText('HARVESTED BY CRANK.MONEY', w / 2, h - margin - 10);
+  ctx.fillText('HARVESTED BY CRANK.MONEY', w / 2, h - margin - 10 * s);
 }
 
 function showPnlModal(positionIndex) {
@@ -4906,27 +4974,26 @@ function showPnlModal(positionIndex) {
   renderPnlCard(position);
 
   const modal = document.getElementById('pnlModal');
-  if (modal) modal.classList.add('visible');
+  if (modal) { modal.classList.add('visible'); document.body.classList.add('modal-open'); document.documentElement.classList.add('modal-open'); }
 }
 
 function closePnlModal() {
   const modal = document.getElementById('pnlModal');
-  if (modal) modal.classList.remove('visible');
+  if (modal) { modal.classList.remove('visible'); document.body.classList.remove('modal-open'); document.documentElement.classList.remove('modal-open'); }
 }
 
 async function downloadPnlCard() {
   const canvas = document.getElementById('pnlCanvas');
   if (!canvas) return;
-
-  canvas.toBlob(blob => {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
+  try {
+    const dataUrl = canvas.toDataURL('image/png');
     const a = document.createElement('a');
-    a.href = url;
-    a.download = 'monke-pnl.png';
+    a.href = dataUrl;
+    a.download = 'crank-pnl.png';
     a.click();
-    URL.revokeObjectURL(url);
-  }, 'image/png');
+  } catch {
+    showToast('Download failed', 'error');
+  }
 }
 
 async function copyPnlCard() {
@@ -4940,7 +5007,16 @@ async function copyPnlCard() {
       showToast('Copied to clipboard', 'success');
     }
   } catch {
-    showToast('Copy failed — try download instead', 'error');
+    // Fallback for mobile Safari / browsers without ClipboardItem support
+    try {
+      const url = URL.createObjectURL(await new Promise(resolve => canvas.toBlob(resolve, 'image/png')));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'crank-pnl.png'; a.click();
+      URL.revokeObjectURL(url);
+      showToast('Downloaded as image', 'success');
+    } catch {
+      showToast('Copy failed — try screenshot instead', 'error');
+    }
   }
 }
 
@@ -4953,12 +5029,12 @@ function showUnclaimedWarning(amount) {
   const amountEl = document.getElementById('unclaimedAmount');
   const token = CONFIG.PEGGED_MINT ? '$PEGGED' : 'SOL';
   if (amountEl) amountEl.textContent = amount.toFixed(4) + ' ' + token;
-  if (modal) modal.classList.add('visible');
+  if (modal) { modal.classList.add('visible'); document.body.classList.add('modal-open'); document.documentElement.classList.add('modal-open'); }
 }
 
 function closeUnclaimedWarning() {
   const modal = document.getElementById('unclaimedWarning');
-  if (modal) modal.classList.remove('visible');
+  if (modal) { modal.classList.remove('visible'); document.body.classList.remove('modal-open'); document.documentElement.classList.remove('modal-open'); }
 }
 
 // ============================================================
@@ -4979,7 +5055,7 @@ function showSubPage(subName) {
   document.querySelectorAll('.orbital-sigil').forEach(g => {
     g.setAttribute('opacity', g.dataset.sub === subName ? '0.4' : '0');
   });
-  // Sync tab bar highlight
+  // Sync rank sub-tabs (mobile + desktop)
   document.querySelectorAll('.rank-sub-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.sub === subName);
   });
@@ -5010,6 +5086,10 @@ const PAGE_ACCENT = ['#F2B6C6', '#F2B6C6', '#F2B6C6', '#F2B6C6', '#F2B6C6'];
 
 function showPage(idx) {
   state.currentPage = idx;
+  window._isRankPageVisible = (idx === 2);
+
+  // Reset scroll position on page switch (important for mobile)
+  window.scrollTo(0, 0);
 
   // Toggle site-page visibility
   PAGE_IDS.forEach((id, i) => {
@@ -5043,6 +5123,11 @@ function showPage(idx) {
     }
   });
 
+  // Mobile nav: sync active tab
+  document.querySelectorAll('.mobile-nav-tab').forEach(tab => {
+    tab.classList.toggle('active', parseInt(tab.dataset.page) === idx);
+  });
+
   // Nav arrows: show dot on boundaries, arrow when navigable
   const leftArrow = document.getElementById('navLeft');
   const rightArrow = document.getElementById('navRight');
@@ -5070,6 +5155,8 @@ function showPage(idx) {
   if (idx === 0) {
     const orbitals = document.querySelectorAll('.orbital');
     orbitals.forEach((o, i) => o.classList.toggle('sub-active', i === state.activePoolOrbital));
+    // Force reflow before measuring canvas (layout may have changed desktop↔mobile)
+    void document.body.offsetHeight;
     setTimeout(renderBinViz, 50);
   }
 
@@ -5096,9 +5183,10 @@ function showToast(msg, type = 'info') {
   const existing = document.querySelector('.toast');
   if (existing) existing.remove();
 
+  const safeMsg = String(msg).length > 200 ? String(msg).slice(0, 200) + '...' : String(msg);
   const toast = document.createElement('div');
   toast.className = 'toast ' + type;
-  toast.textContent = msg;
+  toast.textContent = safeMsg;
   document.body.appendChild(toast);
 
   setTimeout(() => {
@@ -5145,7 +5233,7 @@ async function init() {
 
   // Pool
   document.getElementById('loadPool')?.addEventListener('click', loadPool);
-  document.getElementById('poolAddress')?.addEventListener('keypress', e => {
+  document.getElementById('poolAddress')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') loadPool();
   });
 
@@ -5196,6 +5284,16 @@ async function init() {
   document.getElementById('navRight')?.addEventListener('click', () => {
     const maxPublicPage = 3; // ops is last public page; recon (4) is hidden
     if (state.currentPage < maxPublicPage) showPage(state.currentPage + 1);
+  });
+
+  // Mobile nav tabs
+  document.querySelectorAll('.mobile-nav-tab').forEach(tab => {
+    tab.addEventListener('click', () => showPage(parseInt(tab.dataset.page)));
+  });
+
+  // Mobile rank sub-tabs (monke / roster)
+  document.querySelectorAll('.rank-sub-tab').forEach(tab => {
+    tab.addEventListener('click', () => showSubPage(tab.dataset.sub));
   });
 
   // Arrow hover highlights target orbit
@@ -5265,7 +5363,7 @@ async function init() {
 
   // Rank: MonkeBurn lookup
   document.getElementById('monkeBurnSearchBtn')?.addEventListener('click', handleMonkeBurnLookup);
-  document.getElementById('monkeBurnLookup')?.addEventListener('keypress', e => {
+  document.getElementById('monkeBurnLookup')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') handleMonkeBurnLookup();
   });
 
@@ -5273,6 +5371,7 @@ async function init() {
   document.getElementById('roverDepositBtn')?.addEventListener('click', handleRoverDeposit);
   document.getElementById('historyClose')?.addEventListener('click', () => {
     document.getElementById('positionHistoryModal')?.classList.remove('visible');
+    document.body.classList.remove('modal-open'); document.documentElement.classList.remove('modal-open');
   });
 
   // OHLCV timeframe toggles
@@ -5349,10 +5448,13 @@ async function init() {
   });
   document.getElementById('warningDismissBtn')?.addEventListener('click', closeUnclaimedWarning);
 
-  // Close modals on overlay click
+  // Close modals on overlay click + lock body scroll on mobile
   document.querySelectorAll('.modal-overlay').forEach(overlay => {
     overlay.addEventListener('click', e => {
-      if (e.target === overlay) overlay.classList.remove('visible');
+      if (e.target === overlay) {
+        overlay.classList.remove('visible');
+        document.body.classList.remove('modal-open'); document.documentElement.classList.remove('modal-open');
+      }
     });
   });
 
@@ -5396,11 +5498,28 @@ async function init() {
   }, 500);
 }
 
-// Canvas resize handler
+// Mobile: scroll focused inputs into view when keyboard opens
+if (window.innerWidth <= 1099 && ('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
+  document.addEventListener('focusin', (e) => {
+    if (e.target.matches('input, select, textarea')) {
+      setTimeout(() => e.target.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
+    }
+  });
+}
+
+// Canvas resize handler — only redraw on width change (ignore iOS URL bar height changes)
 let resizeTimer;
+let lastWindowWidth = window.innerWidth;
 window.addEventListener('resize', () => {
+  if (window.innerWidth === lastWindowWidth) return;
+  lastWindowWidth = window.innerWidth;
+
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(renderBinViz, 100);
+  const delay = ('ontouchstart' in window) ? 350 : 100;
+  resizeTimer = setTimeout(() => {
+    renderBinViz();
+    if (state._lastOhlcv) renderOHLCVCanvas(state._lastOhlcv.candles, state._lastOhlcv.timeframe);
+  }, delay);
 });
 
 // Start
