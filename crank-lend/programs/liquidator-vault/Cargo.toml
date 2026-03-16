@@ -1,0 +1,25 @@
+[package]
+name = "liquidator-vault"
+version = "0.1.0"
+description = "Protocol-owned liquidator vault for crank-lend"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "liquidator_vault"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = ["mainnet-beta"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+devnet = []
+mainnet-beta = []
+
+[dependencies]
+anchor-lang = { workspace = true }
+anchor-spl = { workspace = true }
+marginfi = { path = "../marginfi", package = "crank-lend", features = ["cpi"] }
+marginfi-type-crate = { workspace = true, features = ["anchor"] }

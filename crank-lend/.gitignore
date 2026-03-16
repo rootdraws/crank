@@ -1,0 +1,36 @@
+# cargo
+target
+
+# rustfmt
+**/*.rs.bk
+
+# solana
+.anchor
+/scripts/test-ledger
+/scripts/VALIDATOR_OUT
+
+# TS
+**/dist/
+**/yarn-error.log
+
+# IDEs
+.idea
+*.iml
+
+# other
+.env*
+.DS_Store
+node_modules
+.idea/
+test-ledger/
+*.profraw
+
+# keypairs
+*-keypair.json
+deploy-keys/
+
+# Allow specific json files
+!tests/fixtures/**/*.json
+!programs/marginfi/tests/fixtures/**/*.json
+!.vscode/tasks.json
+!idls/*.json

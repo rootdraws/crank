@@ -1,0 +1,22 @@
+{
+  "name": "crank-lend-liquidation-keeper",
+  "version": "0.1.0",
+  "description": "Liquidation keeper bot for crank-lend: health monitoring, liquidation execution, keeper oracle updates, and Meteora poke trades",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.0",
+    "@solana/web3.js": "^1.95.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.6.0"
+  }
+}
