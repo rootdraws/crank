@@ -16,6 +16,74 @@
 </head>
 <body class="on-landing nerv-console crt-overlay crt-vignette crt-flicker">
 
+  <!-- MOBILE GATE — block mobile users until ready -->
+  <div id="mobileGate" class="mobile-gate" style="display:none">
+    <pre class="mobile-gate-cat" id="sadCat"></pre>
+    <div class="mobile-gate-msg">sorry bro, mobile is not ready.</div>
+    <div class="mobile-gate-sub">come back on desktop — we're on it.</div>
+  </div>
+  <script>
+  (function(){
+    var isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || window.innerWidth <= 1099;
+    if (!isMobile) return;
+
+    var g = document.getElementById('mobileGate');
+    g.style.display = '';
+    document.body.classList.add('mobile-gated');
+
+    var cry1 = [
+      "    /\\_____/\\",
+      "   /  ;   ;  \\",
+      "  ( ==  ^  == )",
+      "   )  '---'  (",
+      "  (  :'   ':  )",
+      " ( (  )   (  ) )",
+      "(__(__)___(__)__)",
+    ];
+    var cry2 = [
+      "    /\\_____/\\",
+      "   /  ;   ;  \\",
+      "  ( ==  ^  == )",
+      "   )  '---'  (",
+      "  ( :'     ': )",
+      " ( (  )   (  ) )",
+      "(__(__)___(__)__)",
+    ];
+    var cry3 = [
+      "    /\\_____/\\",
+      "   /  T   T  \\",
+      "  ( ==  ^  == )",
+      "   )  '---'  (",
+      "  (  ;     ;  )",
+      " ( (  )   (  ) )",
+      "(__(__)___(__)__)",
+    ];
+    var sniff = [
+      "    /\\_____/\\",
+      "   /  ;   ;  \\",
+      "  ( ==  ^  == )",
+      "   )   w    (",
+      "  (  :'   ':  )",
+      " ( (  )   (  ) )",
+      "(__(__)___(__)__)",
+    ];
+
+    var seq = [
+      cry1, cry1, cry2, cry2, cry3, cry3,
+      cry1, cry1, sniff, sniff, cry2, cry2,
+      cry3, cry3, cry1, cry1, cry2, sniff,
+    ];
+    var el = document.getElementById('sadCat');
+    var i = 0;
+    function tick() {
+      el.textContent = seq[i].join('\n');
+      i = (i + 1) % seq.length;
+    }
+    tick();
+    setInterval(tick, 500);
+  })();
+  </script>
+
   <!-- GLOBAL SCAFFOLD: corners + outer tangent rays (always visible) -->
   <div class="tangent-ray top"></div>
   <div class="tangent-ray left"></div>

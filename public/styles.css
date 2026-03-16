@@ -2262,3 +2262,41 @@
 
   .sigil-nav svg { width: 180px; }
 }
+
+/* ── MOBILE GATE ─────────────────────────────────────── */
+.mobile-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--void, #F2E0D0);
+  padding: 2rem;
+  text-align: center;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.mobile-gate-cat {
+  font-size: clamp(0.65rem, 3.2vw, 1rem);
+  line-height: 1.25;
+  color: var(--nerv-orange-dim, #714BA6);
+  margin-bottom: 1.5rem;
+  white-space: pre;
+  user-select: none;
+}
+.mobile-gate-msg {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: clamp(1.6rem, 7vw, 2.4rem);
+  letter-spacing: 0.04em;
+  color: var(--nerv-orange-hot, #180E26);
+  margin-bottom: 0.5rem;
+}
+.mobile-gate-sub {
+  font-size: 0.85rem;
+  color: var(--nerv-orange, #D984AC);
+  opacity: 0.85;
+}
+body.mobile-gated > *:not(.mobile-gate):not(script) {
+  display: none !important;
+}

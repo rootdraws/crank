@@ -41,3 +41,8 @@ claude.md
 ref/
 .vercel
 .env*.local
+
+# crank-lend (nested Anchor workspace)
+crank-lend/target/
+crank-lend/deploy-keys/
+crank-lend/crank-lend-keypair.json

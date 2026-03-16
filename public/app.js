@@ -3655,7 +3655,7 @@ function updatePoolMetrics(poolData) {
   const dynFee = poolData.dynamic_fee_pct ?? poolData.pool_config?.base_fee_pct;
   const cumVol = poolData.cumulative_metrics?.volume;
 
-  if (apr != null || feeTvl != null) {
+  if (apr != null || feeTvl != null || cumVol != null || dynFee != null) {
     const aprEl = document.getElementById('poolApr');
     const feeTvlEl = document.getElementById('poolFeeTvl');
     const dynFeeEl = document.getElementById('poolDynFee');
