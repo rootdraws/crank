@@ -645,6 +645,7 @@ export async function handleClaimMonke(nftMintStr) {
         userNftAccount: address(userNftAccount.toBase58()),
         programVaultPeggedAta: address(programVaultAta.toBase58()),
         userPeggedAta: address(userPeggedAta.toBase58()),
+        tokenProgram: address(TOKEN_PROGRAM_ID.toBase58()),
       });
       tx.add(kitIxToWeb3(claimIx));
     } else {
@@ -709,6 +710,7 @@ export async function handleClaimAll() {
           userNftAccount: address(userNftAccount.toBase58()),
           programVaultPeggedAta: address(programVaultAta.toBase58()),
           userPeggedAta: address(userPeggedAta.toBase58()),
+          tokenProgram: address(TOKEN_PROGRAM_ID.toBase58()),
         });
         claimIxs.push(kitIxToWeb3(ix));
       } else {
