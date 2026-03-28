@@ -146,9 +146,10 @@ Yes. All CPI uses V2 variants natively (Token-2022 compatible). Zero additional 
 crank-money/
 ├── programs/           # Anchor workspace: bin-farm, monke-bananas, pegged-bridge
 ├── bot/                # Crank's Harvester (off-chain infrastructure)
-├── public/             # Frontend: Trade / Positions / Rank / Ops / Recon
-├── scripts/            # Deploy, build, codama generation, utilities
+├── public/             # Static assets: HTML, CSS, config
+├── src/frontend/       # Modular frontend: pages, plugins, tribes
 ├── src/generated/      # Codama-generated TypeScript clients
+├── scripts/            # Build, deploy, tribe scaffolding
 └── ref/dlmm-sdk/       # Cloned Meteora DLMM SDK (CPI source of truth)
 ```
 
@@ -175,9 +176,20 @@ npm run bot
 ## Run Frontend
 
 ```bash
-node scripts/build-frontend.mjs && npx serve dist   # local dev
-node scripts/build-frontend.mjs                      # production (Vercel)
+node scripts/build-frontend.mjs && npx serve dist              # crank.money (default)
+node scripts/build-frontend.mjs --tribe=gsd && npx serve dist  # gsd.crank.money
 ```
+
+## Tribe Frontends
+
+Tribes are branded community frontends sharing the same protocol. Each gets a subdomain (e.g., `gsd.crank.money`).
+
+**Create a new tribe:**
+```bash
+node scripts/create-tribe.mjs --id=newtribe --title="NewTribe" --mint=<token-address> --bg="#1a1a2e" --accent="#e94560" --text="#eaeaea"
+```
+
+**Deploy:** Each tribe is a separate Vercel project importing this repo, with build command `npm run build:frontend -- --tribe=<id>`.
 
 ## Mainnet Addresses
 
@@ -202,6 +214,7 @@ node scripts/build-frontend.mjs                      # production (Vercel)
 | Component | URL |
 |-----------|-----|
 | Frontend | [crank.money](https://www.crank.money/) |
+| GSD Frontend | gsd.crank.money |
 | Bot Relay | `wss://bot.crank.money` |
 
 ## Security

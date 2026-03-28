@@ -1,0 +1,35 @@
+:root {
+  --void:             #1B1C26;
+  --void-warm:        #162840;
+  --void-panel:       #162840;
+
+  --nerv-orange:      #49728C;
+  --nerv-orange-dim:  #7EC6F2;
+  --nerv-orange-hot:  #79D0F2;
+
+  --data-green:       #E8F4FD;
+  --data-green-dim:   #7EC6F2;
+  --data-green-faint: rgba(126, 198, 242, 0.08);
+
+  --wire-cyan:        #7EC6F2;
+  --wire-cyan-dim:    #49728C;
+  --wire-cyan-glow:   rgba(126, 198, 242, 0.12);
+
+  --alert-red:        #F27E7E;
+  --alert-red-dim:    #8C4949;
+  --alert-red-hot:    #F2A07E;
+  --alert-red-fill:   rgba(242, 126, 126, 0.10);
+
+  --thermal-yellow:   #79D0F2;
+  --thermal-magenta:  #49728C;
+  --thermal-blue:     #7EC6F2;
+  --thermal-purple:   #E8F4FD;
+
+  --steel:            #7EC6F2;
+  --steel-dim:        #49728C;
+  --steel-faint:      rgba(73, 114, 140, 0.35);
+}
+
+body {
+  background: #1B1C26;
+}

@@ -1240,9 +1240,28 @@ pub mod bin_farm {
         rover.total_rover_positions = 0;
         rover.pending_revenue_dest = Pubkey::default();
         rover.revenue_dest_change_at = 0;
-        rover._reserved = [0u8; 64];
+        rover.trader_dest = Pubkey::default();
+        rover._reserved = [0u8; 32];
 
         msg!("Rover authority initialized. revenue_dest={}", revenue_dest);
+        Ok(())
+    }
+
+    /// Set the trader reward destination. Admin only.
+    /// Must be called before sweep_rover will include trader share.
+    pub fn set_trader_dest(
+        ctx: Context<UpdateRoverDistPool>,
+        trader_dest: Pubkey,
+    ) -> Result<()> {
+        require!(trader_dest != Pubkey::default(), CoreError::InvalidDistPool);
+        let rover = &mut ctx.accounts.rover_authority;
+        rover.trader_dest = trader_dest;
+        msg!("Trader dest set: {}", trader_dest);
+        emit!(AdminConfigEvent {
+            field: "trader_dest".into(),
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
         Ok(())
     }
 
@@ -1435,8 +1454,8 @@ pub mod bin_farm {
         Ok(())
     }
 
-    /// Sweep SOL from rover_authority — 50% to bridge_vault (holders), 50% to bot (operations).
-    /// Hardcoded split. Permissionless — anyone can call.
+    /// Sweep SOL from rover_authority — 40% holders, 40% traders, 20% bot.
+    /// Permissionless — anyone can call.
     pub fn sweep_rover(ctx: Context<SweepRover>) -> Result<()> {
         let is_authorized_bot = ctx.accounts.caller.key() == ctx.accounts.config.bot;
         if is_authorized_bot {
@@ -1449,23 +1468,33 @@ pub mod bin_farm {
 
         require!(sweepable > 0, CoreError::NothingToSweep);
 
-        let holder_share = sweepable / 2;       // 50%
-        let operator_share = sweepable - holder_share; // 50%
+        let holder_share = sweepable.checked_mul(40).ok_or(CoreError::Overflow)?
+            .checked_div(100).ok_or(CoreError::Overflow)?;
+        let trader_share = sweepable.checked_mul(40).ok_or(CoreError::Overflow)?
+            .checked_div(100).ok_or(CoreError::Overflow)?;
+        let operator_share = sweepable.checked_sub(holder_share).ok_or(CoreError::Overflow)?
+            .checked_sub(trader_share).ok_or(CoreError::Overflow)?;
 
         **ctx.accounts.rover_authority.to_account_info().try_borrow_mut_lamports()? -= sweepable;
         **ctx.accounts.revenue_dest.try_borrow_mut_lamports()? += holder_share;
+        **ctx.accounts.trader_dest.try_borrow_mut_lamports()? += trader_share;
         **ctx.accounts.bot_dest.try_borrow_mut_lamports()? += operator_share;
 
         emit!(RoverSweptEvent {
             amount: sweepable,
-            monke_share: holder_share,
+            holder_share,
+            trader_share,
             operator_share,
-            dist_pool: ctx.accounts.revenue_dest.key(),
+            holder_dest: ctx.accounts.revenue_dest.key(),
+            trader_dest: ctx.accounts.trader_dest.key(),
             bot: ctx.accounts.bot_dest.key(),
             timestamp: Clock::get()?.unix_timestamp,
         });
 
-        msg!("Swept {} lamports — {} to dist_pool, {} to bot", sweepable, holder_share, operator_share);
+        msg!(
+            "Swept {} lamports — {} holders, {} traders, {} bot",
+            sweepable, holder_share, trader_share, operator_share
+        );
         Ok(())
     }
 
@@ -1978,20 +2007,24 @@ impl PositionCounter {
 }
 
 /// Rover authority PDA — owns rover (bribe) positions.
-/// Harvest proceeds accumulate here. sweep_rover splits SOL 50/50: 50% to revenue_dest (bridge_vault), 50% to Config.bot.
+/// Harvest proceeds accumulate here. sweep_rover splits SOL 40/40/20:
+///   40% to revenue_dest (bridge_vault, BANK holders)
+///   40% to trader_dest (trader reward pool)
+///   20% to bot (operations)
 #[account]
 pub struct RoverAuthority {
-    pub revenue_dest: Pubkey,              // Where holder share goes (bridge_vault PDA — 50% of swept SOL)
+    pub revenue_dest: Pubkey,              // Where holder share goes (bridge_vault PDA — 40%)
     pub total_rover_positions: u64,        // Lifetime count
     pub bump: u8,
     pub pending_revenue_dest: Pubkey,      // Timelocked: proposed new revenue_dest
     pub revenue_dest_change_at: i64,       // Timelocked: timestamp when pending can be applied (0 = none)
-    // Reserved space for future fields (avoids account reallocation post-deploy)
-    pub _reserved: [u8; 64],
+    // Carved from _reserved: trader reward destination (40%)
+    pub trader_dest: Pubkey,
+    pub _reserved: [u8; 32],
 }
 
 impl RoverAuthority {
-    pub const SIZE: usize = 8 + 32 + 8 + 1 + 32 + 8 + 64;
+    pub const SIZE: usize = 8 + 32 + 8 + 1 + 32 + 8 + 32 + 32;
 }
 
 // ============ CONTEXTS ============
@@ -2783,7 +2816,7 @@ pub struct SweepRover<'info> {
     )]
     pub rover_authority: Account<'info, RoverAuthority>,
 
-    /// CHECK: Revenue destination — bridge_vault PDA (50% to holders)
+    /// CHECK: Revenue destination — bridge_vault PDA (40% to BANK holders)
     #[account(
         mut,
         constraint = revenue_dest.key() == rover_authority.revenue_dest @ CoreError::InvalidPool,
@@ -2791,7 +2824,16 @@ pub struct SweepRover<'info> {
     )]
     pub revenue_dest: AccountInfo<'info>,
 
-    /// CHECK: Operator destination — bot keypair from Config (50% to operations)
+    /// CHECK: Trader reward destination (40% to traders)
+    #[account(
+        mut,
+        constraint = trader_dest.key() == rover_authority.trader_dest @ CoreError::InvalidTraderDest,
+        constraint = rover_authority.trader_dest != Pubkey::default() @ CoreError::TraderDestNotSet,
+        constraint = !trader_dest.executable @ CoreError::InvalidTraderDest
+    )]
+    pub trader_dest: AccountInfo<'info>,
+
+    /// CHECK: Operator destination — bot keypair from Config (20% to operations)
     #[account(
         mut,
         constraint = bot_dest.key() == config.bot @ CoreError::InvalidBot,
@@ -2928,9 +2970,11 @@ pub struct RoverOpenedEvent {
 #[event]
 pub struct RoverSweptEvent {
     pub amount: u64,
-    pub monke_share: u64,
+    pub holder_share: u64,
+    pub trader_share: u64,
     pub operator_share: u64,
-    pub dist_pool: Pubkey,
+    pub holder_dest: Pubkey,
+    pub trader_dest: Pubkey,
     pub bot: Pubkey,
     pub timestamp: i64,
 }
@@ -3003,5 +3047,8 @@ pub enum CoreError {
     InvalidMintData,
     #[msg("Invalid bot destination")]
     InvalidBot,
-
+    #[msg("Invalid trader destination")]
+    InvalidTraderDest,
+    #[msg("Trader destination not set — call set_trader_dest first")]
+    TraderDestNotSet,
 }

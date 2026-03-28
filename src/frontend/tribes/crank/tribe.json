@@ -1,0 +1,6 @@
+{
+  "id": "crank",
+  "plugins": ["rank-monke"],
+  "mobileLocked": true,
+  "reconPublic": false
+}
