@@ -1,15 +1,12 @@
 {
   "name": "crank-money",
   "version": "0.1.0",
-  "description": "Managed Meteora DLMM positions with automated bin harvesting and SMB Gen2 monke revenue sharing on Solana.",
+  "description": "Managed Meteora DLMM positions with automated bin harvesting and daily Merkle $PEGGED distribution on Solana.",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "build:frontend": "node scripts/build-frontend.mjs",
     "bot": "tsx bot/anchor-harvest-bot.ts",
-    "bot:dev": "tsx --watch bot/anchor-harvest-bot.ts"
+    "bot:dev": "tsx --watch bot/anchor-harvest-bot.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@codama/nodes-from-anchor": "^1.3.9",
@@ -17,17 +14,9 @@
     "@codama/visitors-core": "^1.5.1",
     "@coral-xyz/anchor": "^0.30.1",
     "@meteora-ag/dlmm": "^1.3.0",
-    "@phantom/browser-sdk": "^1.0.3",
-    "@solana/kit": "^6.1.0",
-    "@solana/spl-stake-pool": "^1.1.8",
     "@solana/spl-token": "^0.4.0",
-    "@solana/wallet-adapter-base": "^0.9.23",
-    "@solana/wallet-adapter-phantom": "^0.9.24",
-    "@solana/wallet-adapter-react": "^0.15.35",
-    "@solana/wallet-adapter-react-ui": "^0.9.35",
     "@solana/web3.js": "^1.95.0",
     "@triton-one/yellowstone-grpc": "^5.0.2",
-    "@types/pino": "^7.0.4",
     "bn.js": "^5.2.1",
     "dotenv": "^17.3.1",
     "pino": "^10.3.0",
@@ -35,12 +24,10 @@
   },
   "devDependencies": {
     "@types/node": "^25.2.2",
+    "@types/pino": "^7.0.4",
     "@types/ws": "^7.4.7",
-    "esbuild": "^0.24.0",
-    "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vite": "^5.0.0",
     "vitest": "^4.0.18"
   },
   "engines": {

@@ -1,7 +1,6 @@
 # Environment / secrets
 .env
 *.env
-!.env.example
 !bot/*.env.example
 
 # Dependencies
@@ -11,8 +10,6 @@ node_modules/
 .anchor/
 target/
 test-ledger/
-# Generated program keypairs (contain private keys for program authority)
-target/deploy/*.json
 
 # Bot runtime
 positions-cache.json
@@ -31,18 +28,7 @@ Thumbs.db
 dist/
 build/
 
-# Frontend config (contains RPC API keys)
-public/config.json
-
-# AI session context
-claude.md
-
-# Reference SDKs (cloned, not ours)
-ref/
-.vercel
+# Vercel
+.vercel/
 .env*.local
 
-# crank-lend (nested Anchor workspace)
-crank-lend/target/
-crank-lend/deploy-keys/
-crank-lend/crank-lend-keypair.json

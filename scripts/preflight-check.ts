@@ -1,3 +1,12 @@
+/**
+ * preflight-check.ts
+ *
+ * Verifies all programs, PDAs, and ATAs are properly initialized on-chain.
+ *
+ * Usage:
+ *   npx tsx scripts/preflight-check.ts
+ */
+
 import { Connection, PublicKey } from "@solana/web3.js";
 import dotenv from "dotenv";
 dotenv.config({ path: new URL("../bot/.env", import.meta.url).pathname });
@@ -6,11 +15,16 @@ const rpc = process.env.HELIUS_RPC_URL ?? process.env.RPC_URL;
 if (!rpc) throw new Error("Set HELIUS_RPC_URL or RPC_URL in bot/.env");
 const conn = new Connection(rpc, "confirmed");
 
+const CORE = new PublicKey("8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia");
+const BANK_MINT_PROG = new PublicKey("FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk");
+const GAUGE_VOTER = new PublicKey("DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA");
+const DISTRIBUTOR_PROG = new PublicKey("DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV");
 const BRIDGE = new PublicKey("7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN");
-const MONKE = new PublicKey("myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH");
 
 const [bridgeConfig] = PublicKey.findProgramAddressSync([Buffer.from("bridge_config")], BRIDGE);
-const [monkeState] = PublicKey.findProgramAddressSync([Buffer.from("monke_state")], MONKE);
+const [distributor] = PublicKey.findProgramAddressSync([Buffer.from("distributor")], DISTRIBUTOR_PROG);
+const [bankConfig] = PublicKey.findProgramAddressSync([Buffer.from("bank_config")], BANK_MINT_PROG);
+const [gaugeConfig] = PublicKey.findProgramAddressSync([Buffer.from("gauge_config")], GAUGE_VOTER);
 
 async function check(label: string, fn: () => Promise<string>) {
   const result = await fn();
@@ -20,24 +34,37 @@ async function check(label: string, fn: () => Promise<string>) {
 async function main() {
   console.log("=== PRE-FLIGHT CHECK ===\n");
 
-  await check("bin_farm program", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"));
-    return info ? "OK" : "MISSING";
-  });
+  // Programs
+  for (const [name, id] of [
+    ["bin_farm", CORE],
+    ["bank_mint", BANK_MINT_PROG],
+    ["gauge_voter", GAUGE_VOTER],
+    ["merkle_distributor", DISTRIBUTOR_PROG],
+    ["pegged_bridge", BRIDGE],
+  ] as const) {
+    await check(`${name} program`, async () => {
+      const info = await conn.getAccountInfo(id);
+      return info ? "OK" : "MISSING";
+    });
+  }
 
-  await check("monke_bananas program", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH"));
-    return info ? "OK" : "MISSING";
-  });
+  // PDAs
+  for (const [name, pda] of [
+    ["bridge_config", bridgeConfig],
+    ["distributor", distributor],
+    ["bank_config", bankConfig],
+    ["gauge_config", gaugeConfig],
+  ] as const) {
+    await check(`${name} PDA`, async () => {
+      const info = await conn.getAccountInfo(pda);
+      return info ? `OK (${info.data.length} bytes)` : "NOT INITIALIZED";
+    });
+  }
 
-  await check("pegged_bridge program", async () => {
-    const info = await conn.getAccountInfo(BRIDGE);
+  // Key ATAs
+  await check("distributor vault $PEGGED ATA", async () => {
+    const info = await conn.getAccountInfo(new PublicKey("52MUiETNoF6YmBGA6LNfrAdTdkJDmCR95arg7wntZzwB"));
     return info ? "OK" : "MISSING";
-  });
-
-  await check("bridge_config PDA", async () => {
-    const info = await conn.getAccountInfo(bridgeConfig);
-    return info ? `OK (${info.data.length} bytes)` : "NOT INITIALIZED";
   });
 
   await check("bridge_vault $PEGGED ATA", async () => {
@@ -45,16 +72,7 @@ async function main() {
     return info ? "OK" : "MISSING";
   });
 
-  await check("dist_pool $PEGGED ATA", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("3NBqb4nRadQqe3wwffmwCwP4SLWA19jhxdm85ZhAjTMB"));
-    return info ? "OK" : "MISSING";
-  });
-
-  await check("program_vault $PEGGED ATA", async () => {
-    const info = await conn.getAccountInfo(new PublicKey("9ZsSHkbzziVwRLuR4uT9KAR6CVu1WoL23xk8rNvpyiXM"));
-    return info ? "OK" : "MISSING";
-  });
-
+  // Infrastructure
   await check("SPL stake pool", async () => {
     const info = await conn.getAccountInfo(new PublicKey("9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg"));
     return info ? `OK (${info.data.length} bytes)` : "MISSING";
@@ -65,13 +83,9 @@ async function main() {
     return info ? "OK" : "MISSING";
   });
 
-  await check("monke_state pegged_mint field", async () => {
-    const info = await conn.getAccountInfo(monkeState);
-    if (!info) return "MONKE STATE MISSING";
-    const peggedMint = new PublicKey(info.data.subarray(244, 276));
-    return peggedMint.equals(PublicKey.default)
-      ? "NOT SET YET (ready for set_pegged_mint)"
-      : `SET: ${peggedMint.toBase58()}`;
+  await check("$BANK mint", async () => {
+    const info = await conn.getAccountInfo(new PublicKey("BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA"));
+    return info ? "OK" : "MISSING";
   });
 
   console.log("\n=== ALL CHECKS COMPLETE ===");

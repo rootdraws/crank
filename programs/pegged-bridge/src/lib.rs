@@ -2,7 +2,7 @@
 //
 // Receives SOL from sweep_rover (via revenue_dest redirect to bridge_vault PDA),
 // stakes it into the Sanctum SPL stake pool (multi-validator: MonkeDAO, LP Army,
-// Helius), and forwards the minted $PEGGED to the monke_bananas dist_pool ATA.
+// Helius), and forwards the minted $PEGGED to the Merkle distributor vault ATA.
 // Permissionless crank.
 //
 // bridge_vault PDA intentionally stays system-owned (never init'd as program account)
@@ -60,7 +60,7 @@ pub mod pegged_bridge {
 
     /// Permissionless crank. Stakes all available SOL in bridge_vault into the
     /// SPL stake pool, mints $PEGGED to a bridge-owned ATA, then forwards all
-    /// $PEGGED to the monke_bananas dist_pool ATA. Bot never touches funds.
+    /// $PEGGED to the Merkle distributor vault ATA. Bot never touches funds.
     pub fn stake_and_forward(ctx: Context<StakeAndForward>) -> Result<()> {
         let config = &ctx.accounts.config;
         let vault_bump = config.vault_bump;
@@ -247,7 +247,7 @@ pub struct StakeAndForward<'info> {
     )]
     pub bridge_pegged_ata: Account<'info, TokenAccount>,
 
-    /// Dist pool's $PEGGED ATA on monke_bananas — final destination
+    /// Merkle distributor vault's $PEGGED ATA — final destination
     #[account(
         mut,
         constraint = dist_pool_pegged_ata.key() == config.dist_pool_pegged_ata @ BridgeError::InvalidDistPool,

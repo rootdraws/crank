@@ -1,23 +1,23 @@
 /**
  * keeper.ts
  *
- * Saturday sequencer for crank.money.
- * 6-step weekly sequence — no phases, no state machine. 50/50 split (holders / bot operations).
+ * Daily fee sequencer for crank.money.
+ * 6-step daily sequence. 40/40/20 split (BANK holders / traders / bot operations).
  *
- * Saturday sequence:
+ * Daily sequence (runs once per UTC day):
  *   1. close_rover_wsol    — WSOL ATA → native SOL on rover_authority
- *   2. sweep_rover         — native SOL → bridge_vault (via revenue_dest)
- *   3. stake_and_forward   — bridge: SOL → stake pool → $PEGGED → dist_pool ATA
+ *   2. sweep_rover         — native SOL → 40% bridge_vault + 40% trader_dest + 20% Config.bot
+ *   3. stake_and_forward   — bridge: SOL → stake pool → $PEGGED → Merkle distributor vault
  *   4. open_fee_rovers     — token ATAs → DLMM positions
- *   5. deposit_pegged      — dist_pool $PEGGED → program_vault $PEGGED → accumulator
+ *   5. new_epoch           — upload Merkle root + fund distributor vault with $PEGGED
  *   6. close_exhausted_rovers — empty rovers → rent reclaimed
  *
  * Plus:
- *   - checkAndDepositPegged — auto-trigger deposit_pegged when dist_pool $PEGGED > threshold
- *     (called after every keeper tick, not just Saturdays)
+ *   - checkAndDepositPegged — auto-trigger new_epoch when funder ATA $PEGGED > threshold
+ *     (called after every keeper tick)
  *
- * The bot checks hourly (Active) or every 30s (during Saturday processing).
- * Returns 'Active' or 'Processing' to the orchestrator for adaptive interval.
+ * The bot checks hourly (Idle) or every 30s (during daily processing).
+ * Returns 'Idle' or 'Processing' to the orchestrator for adaptive interval.
  */
 
 import {
@@ -63,13 +63,13 @@ async function buildKeeperPriorityIxs(connection: Connection): Promise<any[]> {
 interface KeeperConfig {
   connection: Connection;
   coreProgram: Program;
-  monkeProgram: Program;
-  bridgeProgram?: Program;
+  distributorProgram: Program;
+  bridgeProgram: Program;
   botKeypair: Keypair;
   coreProgramId: PublicKey;
-  monkeProgramId: PublicKey;
-  bridgeProgramId?: PublicKey;
-  peggedMint?: PublicKey;
+  distributorProgramId: PublicKey;
+  bridgeProgramId: PublicKey;
+  peggedMint: PublicKey;
   // Optional pool registry from subscriber to avoid position.all() in fee rovers
   getWatchedPools?: () => string[];
 }
@@ -79,6 +79,7 @@ interface KeeperConfig {
 const MAX_RETRIES = 3;
 const BASE_DELAY = 2000;
 const DEPOSIT_SOL_THRESHOLD_LAMPORTS = parseInt(process.env.DEPOSIT_SOL_THRESHOLD_LAMPORTS || '500000000'); // 0.5 SOL
+const DEFAULT_EPOCH_AMOUNT = parseInt(process.env.DEFAULT_EPOCH_AMOUNT || '0');
 
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   let lastErr: Error | undefined;
@@ -96,16 +97,8 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   throw lastErr;
 }
 
-function monkeStatePDA(monkeProgramId: PublicKey): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync([Buffer.from('monke_state')], monkeProgramId);
-}
-
-function monkeDistPoolPDA(monkeProgramId: PublicKey): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync([Buffer.from('dist_pool')], monkeProgramId);
-}
-
-function monkeProgramVaultPDA(monkeProgramId: PublicKey): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync([Buffer.from('program_vault')], monkeProgramId);
+function distributorPDA(distributorProgramId: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([Buffer.from('distributor')], distributorProgramId);
 }
 
 function coreConfigPDA(coreProgramId: PublicKey): [PublicKey, number] {
@@ -121,30 +114,30 @@ function roverAuthorityPDA(coreProgramId: PublicKey): [PublicKey, number] {
 export class MonkeKeeper {
   private connection: Connection;
   private coreProgram: Program;
-  private monkeProgram: Program;
-  private bridgeProgram?: Program;
+  private distributorProgram: Program;
+  private bridgeProgram: Program;
   private botKeypair: Keypair;
   private coreProgramId: PublicKey;
-  private monkeProgramId: PublicKey;
-  private bridgeProgramId?: PublicKey;
-  private peggedMint?: PublicKey;
-  // Track last successful Saturday for catch-up logic
-  private lastSuccessfulSaturday: number = 0;
-  // Cached priority fee instructions (refreshed per Saturday sequence)
+  private distributorProgramId: PublicKey;
+  private bridgeProgramId: PublicKey;
+  private peggedMint: PublicKey;
+  // Track last successful run (UTC day number) for daily gating
+  private lastRunDay: number = 0;
+  // Cached priority fee instructions (refreshed per daily sequence)
   private priorityIxs: any[] = [];
   // Optional pool registry from subscriber
   private getWatchedPools?: () => string[];
-  // Relay callback: called with rover TVL data after Saturday cycle
+  // Relay callback: called with rover TVL data after daily cycle
   public onRoverTvlComputed?: (entries: Array<{ pool: string; tvl: number; positionCount: number; status: string }>) => void;
 
   constructor(config: KeeperConfig) {
     this.connection = config.connection;
     this.coreProgram = config.coreProgram;
-    this.monkeProgram = config.monkeProgram;
+    this.distributorProgram = config.distributorProgram;
     this.bridgeProgram = config.bridgeProgram;
     this.botKeypair = config.botKeypair;
     this.coreProgramId = config.coreProgramId;
-    this.monkeProgramId = config.monkeProgramId;
+    this.distributorProgramId = config.distributorProgramId;
     this.bridgeProgramId = config.bridgeProgramId;
     this.peggedMint = config.peggedMint;
     this.getWatchedPools = config.getWatchedPools;
@@ -152,33 +145,30 @@ export class MonkeKeeper {
 
   /**
    * Main entry point. Called by the orchestrator on each keeper tick.
-   * 50/50 split — 50% to holders, 50% to bot (Config.bot).
+   * 40/40/20 split — 40% to BANK holders, 40% to traders, 20% to bot (Config.bot).
    *
-   * On Saturday (or whenever fees have accumulated):
+   * Runs once per UTC day:
    *   1. close_rover_wsol    — WSOL ATA → native SOL on rover_authority
-   *   2. sweep_rover         — native SOL → bridge_vault (via revenue_dest)
-   *   3. stake_and_forward   — bridge: SOL → stake pool → $PEGGED → dist_pool ATA
+   *   2. sweep_rover         — native SOL → 40% bridge_vault + 40% trader_dest + 20% Config.bot
+   *   3. stake_and_forward   — bridge: SOL → stake pool → $PEGGED → Merkle distributor vault
    *   4. open_fee_rovers     — token ATAs → DLMM positions
-   *   5. deposit_pegged      — dist_pool $PEGGED → program_vault $PEGGED → accumulator
+   *   5. new_epoch           — upload Merkle root + fund distributor vault
    *   6. close_exhausted_rovers — empty rovers → rent reclaimed
    *
-   * Returns 'Active' or 'Processing' for adaptive interval.
+   * Returns 'Idle' or 'Processing' for adaptive interval.
    * The orchestrator uses this to set 1hr vs 30s cadence.
    */
-  async runSaturdaySequence(): Promise<string> {
+  async runDailySequence(): Promise<string> {
     const ts = new Date().toISOString().slice(0, 19);
-    const dayOfWeek = new Date().getUTCDay(); // 0=Sun, 6=Sat
+    const today = Math.floor(Date.now() / 86_400_000); // UTC day number
 
-    // Saturday processing + catch-up for missed Saturdays.
-    // If bot was down last Saturday, run the sequence on the next available tick.
-    const isSaturday = dayOfWeek === 6;
-    const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-    const missedSaturday = this.lastSuccessfulSaturday > 0
-      && (Date.now() - this.lastSuccessfulSaturday) > ONE_WEEK_MS;
+    if (today <= this.lastRunDay) {
+      logger.info(`[keeper] ${ts} Idle — already ran today`);
+      return 'Idle';
+    }
 
-    if (isSaturday || missedSaturday) {
-      const reason = isSaturday ? 'Saturday' : 'catch-up (missed last Saturday)';
-      logger.info(`[keeper] ${ts} ${reason} — running fee processing sequence`);
+    {
+      logger.info(`[keeper] ${ts} Running daily fee processing sequence`);
 
       // Refresh priority fees for this sequence
       this.priorityIxs = await buildKeeperPriorityIxs(this.connection);
@@ -195,25 +185,22 @@ export class MonkeKeeper {
       // Step 4: Open fee rover positions from accumulated token fees
       await this.crankOpenFeeRovers();
 
-      // Step 5: Deposit $PEGGED from dist_pool ATA into monke program vault ATA
-      await this.crankDepositPegged();
+      // Step 5: Upload new Merkle epoch to distributor
+      await this.crankNewEpoch();
 
       // Step 6: Close exhausted rover positions (reclaim rent)
       await this.crankCloseExhaustedRovers();
 
-      this.lastSuccessfulSaturday = Date.now();
-      logger.info(`[keeper] ${ts} ${reason} sequence complete`);
+      this.lastRunDay = today;
+      logger.info(`[keeper] ${ts} Daily sequence complete`);
       return 'Processing';
     }
-
-    logger.info(`[keeper] ${ts} Active — nothing to crank (not Saturday)`);
-    return 'Active';
   }
 
   // ─── CRANK: SWEEP ROVER (SOL) ───
 
   /**
-   * Sweep SOL from rover_authority — 50% to bridge_vault (holders), 50% to bot (operations).
+   * Sweep SOL from rover_authority — 40% bridge_vault (holders), 40% trader_dest (traders), 20% Config.bot (operations).
    */
   private async crankSweepRover(): Promise<void> {
     try {
@@ -237,7 +224,7 @@ export class MonkeKeeper {
         'sweep_rover'
       );
 
-      logger.info('  [keeper] ✓ sweep_rover — 50% to dist_pool, 50% to bot');
+      logger.info('  [keeper] ✓ sweep_rover — 40% bridge_vault, 40% trader_dest, 20% bot');
     } catch (e: any) {
       const isNothingToSweep = e.error?.errorCode?.code === 'NothingToSweep';
       if (isNothingToSweep) {
@@ -430,11 +417,6 @@ export class MonkeKeeper {
    * Permissionless — anyone can call. Requires bridge program to be configured.
    */
   private async crankStakeAndForward(): Promise<void> {
-    if (!this.bridgeProgram || !this.bridgeProgramId) {
-      logger.info('  [keeper] stake_and_forward skipped — bridge program not configured');
-      return;
-    }
-
     try {
       const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
 
@@ -486,7 +468,7 @@ export class MonkeKeeper {
       const managerFeeAccount = new PublicKey(data.subarray(194, 226));
 
       await withRetry(
-        () => this.bridgeProgram!.methods
+        () => this.bridgeProgram.methods
           .stakeAndForward()
           .accounts({
             crank:                       this.botKeypair.publicKey,
@@ -690,93 +672,79 @@ export class MonkeKeeper {
     }
   }
 
-  // ─── CRANK: DEPOSIT $PEGGED TO MONKE PROGRAM ───
+  // ─── CRANK: NEW EPOCH (Merkle distributor) ───
 
   /**
-   * Single-transaction deposit. Moves all $PEGGED from dist_pool ATA
-   * into the program vault ATA and updates the global accumulator.
-   * Holders claim their share whenever they want (pull model).
-   * O(1) — one tx, one instruction, regardless of holder count.
+   * Upload a new Merkle root to the distributor and fund the vault with this epoch's $PEGGED.
+   * Reads pre-computed epoch data from EPOCH_DATA_PATH (written by the epoch-computer service).
+   * The epoch-computer runs daily, computes BANK holder balances, builds the Merkle tree,
+   * uploads the snapshot to IPFS, and writes { merkle_root, epoch_amount, ipfs_cid } to disk.
    *
-   * Falls back to legacy deposit_sol if $PEGGED is not configured.
+   * Safe no-op if the file doesn't exist yet (epoch-computer not deployed).
    */
-  private async crankDepositPegged(): Promise<void> {
-    if (!this.peggedMint) {
-      // Legacy fallback: deposit_sol (pre-migration)
-      return this.crankDepositSolLegacy();
+  private async crankNewEpoch(): Promise<void> {
+    const fs = await import('fs');
+    const path = await import('path');
+    const { BN } = await import('@coral-xyz/anchor');
+    const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
+
+    const epochDataPath = process.env.EPOCH_DATA_PATH
+      || path.join(__dirname, 'data', 'epoch-data.json');
+
+    if (!fs.existsSync(epochDataPath)) {
+      logger.warn(`  [keeper] crankNewEpoch skipped — epoch-data.json not found at ${epochDataPath} (epoch-computer not running yet)`);
+      return;
     }
 
     try {
-      const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
-      const [statePDA] = monkeStatePDA(this.monkeProgramId);
-      const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
-      const [programVault] = monkeProgramVaultPDA(this.monkeProgramId);
+      const raw = JSON.parse(fs.readFileSync(epochDataPath, 'utf-8'));
+      // Expected shape: { merkle_root: number[], epoch_amount: string, ipfs_cid: string }
+      const merkleRoot: number[] = raw.merkle_root;
+      const epochAmount = new BN(raw.epoch_amount ?? DEFAULT_EPOCH_AMOUNT);
+      const ipfsCid: string = raw.ipfs_cid ?? '';
 
-      const distPoolPeggedAta = getAssociatedTokenAddressSync(this.peggedMint, distPool, true);
-      const programVaultPeggedAta = getAssociatedTokenAddressSync(this.peggedMint, programVault, true);
-
-      await withRetry(
-        () => this.monkeProgram.methods
-          .depositPegged()
-          .accounts({
-            caller:                 this.botKeypair.publicKey,
-            state:                  statePDA,
-            distPool:               distPool,
-            distPoolPeggedAta:      distPoolPeggedAta,
-            programVaultPeggedAta:  programVaultPeggedAta,
-            programVault:           programVault,
-            tokenProgram:           new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-          })
-          .preInstructions(this.priorityIxs)
-          .signers([this.botKeypair])
-          .rpc(),
-        'deposit_pegged'
-      );
-
-      logger.info('  [keeper] ✓ deposit_pegged cranked — accumulator updated');
-    } catch (e: any) {
-      const isExpected = e.error?.errorCode?.code === 'NoMonkes'
-        || e.error?.errorCode?.code === 'NothingToDeposit'
-        || e.error?.errorCode?.code === 'PeggedNotConfigured';
-      if (isExpected) {
-        logger.info('  [keeper] deposit_pegged skipped — no monkes, nothing to deposit, or not configured');
-      } else {
-        logger.error(`  [keeper] deposit_pegged error: ${e.message}`);
+      if (!merkleRoot || merkleRoot.length !== 32) {
+        logger.error('  [keeper] crankNewEpoch error — epoch-data.json has invalid merkle_root (expected 32-byte array)');
+        return;
       }
-    }
-  }
 
-  /** Legacy deposit_sol for pre-migration backward compatibility */
-  private async crankDepositSolLegacy(): Promise<void> {
-    try {
-      const [statePDA] = monkeStatePDA(this.monkeProgramId);
-      const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
-      const [programVault] = monkeProgramVaultPDA(this.monkeProgramId);
+      if (epochAmount.isZero()) {
+        logger.info('  [keeper] crankNewEpoch skipped — epoch_amount is 0');
+        return;
+      }
+
+      const [dist] = distributorPDA(this.distributorProgramId);
+      const distributorAccount = await (this.distributorProgram.account as any).distributor.fetch(dist);
+      const vaultPubkey = distributorAccount.vault as PublicKey;
+
+      // funder_ata: bot's $PEGGED ATA (must be pre-funded with epoch_amount before calling)
+      const funderAta = getAssociatedTokenAddressSync(this.peggedMint, this.botKeypair.publicKey, false);
 
       await withRetry(
-        () => this.monkeProgram.methods
-          .depositSol()
+        () => this.distributorProgram.methods
+          .newEpoch(merkleRoot, epochAmount, ipfsCid)
           .accounts({
-            caller:       this.botKeypair.publicKey,
-            state:        statePDA,
-            distPool:     distPool,
-            programVault: programVault,
-            systemProgram: SystemProgram.programId,
+            distributor:  dist,
+            authority:    this.botKeypair.publicKey,
+            mint:         this.peggedMint,
+            vault:        vaultPubkey,
+            funderAta:    funderAta,
+            tokenProgram: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
           })
           .preInstructions(this.priorityIxs)
           .signers([this.botKeypair])
           .rpc(),
-        'deposit_sol'
+        'new_epoch'
       );
 
-      logger.info('  [keeper] ✓ deposit_sol cranked — accumulator updated');
+      logger.info(`  [keeper] ✓ new_epoch — ${raw.epoch_amount} $PEGGED funded, root uploaded, CID: ${ipfsCid}`);
     } catch (e: any) {
-      const isExpected = e.error?.errorCode?.code === 'NoMonkes'
-        || e.error?.errorCode?.code === 'NothingToDeposit';
+      const isExpected = e.error?.errorCode?.code === 'ZeroAmount'
+        || e.error?.errorCode?.code === 'Paused';
       if (isExpected) {
-        logger.info('  [keeper] deposit_sol skipped — no monkes or nothing to deposit');
+        logger.info(`  [keeper] new_epoch skipped — ${e.error?.errorCode?.code}`);
       } else {
-        logger.error(`  [keeper] deposit_sol error: ${e.message}`);
+        logger.error(`  [keeper] new_epoch error: ${e.message}`);
       }
     }
   }
@@ -785,7 +753,7 @@ export class MonkeKeeper {
 
   /**
    * Close rover positions where all bins are empty (fully converted + harvested).
-   * Rent refund goes to rover_authority → swept via sweep_rover (50/50 split).
+   * Rent refund goes to rover_authority → swept via sweep_rover (40/40/20 split).
    */
   private async crankCloseExhaustedRovers(): Promise<void> {
     try {
@@ -932,36 +900,27 @@ export class MonkeKeeper {
   }
 
   /**
-   * Check dist_pool $PEGGED balance and auto-trigger deposit if above threshold.
-   * Falls back to SOL balance check if $PEGGED is not configured (pre-migration).
+   * Check the bot's funder ATA $PEGGED balance and auto-trigger new_epoch if
+   * an epoch-data.json is ready and the funder has been pre-funded above threshold.
    */
   async checkAndDepositPegged(): Promise<void> {
     try {
-      if (this.peggedMint) {
-        // $PEGGED flow: check dist_pool's $PEGGED ATA balance
-        const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
-        const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
-        const distPoolAta = getAssociatedTokenAddressSync(this.peggedMint, distPool, true);
+      const fs = await import('fs');
+      const path = await import('path');
+      const epochDataPath = process.env.EPOCH_DATA_PATH
+        || path.join(__dirname, 'data', 'epoch-data.json');
 
-        const info = await this.connection.getAccountInfo(distPoolAta);
-        if (!info || info.data.length < 72) return;
-        const available = Number(info.data.readBigUInt64LE(64));
+      if (!fs.existsSync(epochDataPath)) return;
 
-        if (available >= DEPOSIT_SOL_THRESHOLD_LAMPORTS) {
-          logger.info(`[keeper] dist_pool has ${available / 1e9} $PEGGED (threshold: ${DEPOSIT_SOL_THRESHOLD_LAMPORTS / 1e9}) — auto-triggering deposit_pegged`);
-          await this.crankDepositPegged();
-        }
-      } else {
-        // Legacy SOL flow (pre-migration)
-        const [distPool] = monkeDistPoolPDA(this.monkeProgramId);
-        const balance = await this.connection.getBalance(distPool);
-        const rent = 890880;
-        const available = balance - rent;
+      const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
+      const funderAta = getAssociatedTokenAddressSync(this.peggedMint, this.botKeypair.publicKey, false);
+      const funderInfo = await this.connection.getAccountInfo(funderAta);
+      if (!funderInfo || funderInfo.data.length < 72) return;
+      const funderBalance = Number(funderInfo.data.readBigUInt64LE(64));
 
-        if (available >= DEPOSIT_SOL_THRESHOLD_LAMPORTS) {
-          logger.info(`[keeper] dist_pool has ${available / 1e9} SOL (threshold: ${DEPOSIT_SOL_THRESHOLD_LAMPORTS / 1e9}) — auto-triggering deposit_sol`);
-          await this.crankDepositSolLegacy();
-        }
+      if (funderBalance >= DEPOSIT_SOL_THRESHOLD_LAMPORTS) {
+        logger.info(`[keeper] funder ATA has ${funderBalance / 1e9} $PEGGED (threshold: ${DEPOSIT_SOL_THRESHOLD_LAMPORTS / 1e9}) — auto-triggering new_epoch`);
+        await this.crankNewEpoch();
       }
     } catch (e: any) {
       logger.warn(`[keeper] checkAndDepositPegged error: ${e.message}`);

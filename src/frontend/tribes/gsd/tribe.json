@@ -1,8 +1,0 @@
-{
-  "id": "gsd",
-  "plugins": ["rank-generic"],
-  "mobileLocked": false,
-  "reconPublic": false,
-  "singleToken": true,
-  "pages": ["trade", "positions"]
-}

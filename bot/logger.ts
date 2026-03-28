@@ -22,5 +22,5 @@ export const logger = pino({
       return { level: label };
     },
   },
-  base: { service: 'monke-bot' },
+  base: { service: 'crank-bot' },
 });

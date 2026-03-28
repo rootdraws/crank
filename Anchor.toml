@@ -11,7 +11,6 @@ bank_mint = "FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk"
 bin_farm = "8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"
 gauge_voter = "DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA"
 merkle_distributor = "DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV"
-monke_bananas = "myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH"
 pegged_bridge = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
 
 [programs.mainnet]
@@ -19,7 +18,6 @@ bank_mint = "FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk"
 bin_farm = "8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"
 gauge_voter = "DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA"
 merkle_distributor = "DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV"
-monke_bananas = "myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH"
 pegged_bridge = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
 
 [registry]

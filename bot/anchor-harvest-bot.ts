@@ -4,14 +4,14 @@
  * crank.money orchestrator. Wires together:
  *   - GeyserSubscriber: gRPC stream for real-time price monitoring
  *   - HarvestExecutor: job queue for harvest/close transactions
- *   - MonkeKeeper: Saturday sequencer (unwrap → sweep → stake_and_forward → fee rovers → deposit_pegged → cleanup)
+ *   - MonkeKeeper: daily fee sequencer (unwrap → sweep → stake_and_forward → fee rovers → new_epoch → cleanup)
  *
  * The bot never holds user funds or revenue SOL.
- * Revenue SOL flows: rover_authority → bridge_vault → $PEGGED → dist_pool ATA → holders (on-chain).
- * 50/50 split: 50% to bridge_vault (→ $PEGGED for holders), 50% to bot (Config.bot). Hardcoded in sweep_rover.
+ * Revenue SOL flows: rover_authority → bridge_vault → $PEGGED → Merkle distributor vault → holders (on-chain).
+ * 40/40/20 split: 40% to bridge_vault (→ $PEGGED for BANK holders), 40% to trader_dest (→ $PEGGED for traders), 20% to Config.bot (operations). Hardcoded in sweep_rover.
  * The bot only cranks permissionless instructions.
  *
- * Weekly cadence: Saturday keeper sequence (unwrap WSOL → sweep → stake_and_forward → fee rovers → deposit_pegged → cleanup).
+ * Daily cadence: keeper sequence (unwrap WSOL → sweep → stake_and_forward → fee rovers → new_epoch → cleanup).
  */
 
 import {
@@ -27,7 +27,7 @@ import dotenv from 'dotenv';
 import * as http from 'http';
 import * as fs from 'fs';
 
-import { GeyserSubscriber, HarvestJob, PositionChangedEvent } from './geyser-subscriber';
+import { GeyserSubscriber, HarvestJob } from './geyser-subscriber';
 import { HarvestExecutor } from './harvest-executor';
 import { MonkeKeeper } from './keeper';
 import { RelayServer, FeePipelineState } from './relay-server';
@@ -36,107 +36,6 @@ import { getDLMMCacheSize, getDLMM } from './meteora-accounts';
 import * as path from 'path';
 
 dotenv.config({ path: path.join(__dirname, '.env') });
-
-// ═══ ADDRESS BOOK STORE ═══
-
-interface AddressBookEntry {
-  wallet: string;
-  pair: string;
-  firstSeen: number;
-  lastActive: number;
-  openPositions: number;
-  totalPositionsOpened: number;
-  closed: boolean;
-}
-
-export class AddressBookStore {
-  private entries: Map<string, AddressBookEntry> = new Map();
-  private filePath: string;
-  private dirty = false;
-  private saveTimer: NodeJS.Timeout | null = null;
-
-  constructor(dataDir: string) {
-    this.filePath = path.join(dataDir, 'addressbook.json');
-    this.load();
-    this.saveTimer = setInterval(() => this.save(), 30_000);
-  }
-
-  private key(wallet: string, pair: string): string {
-    return `${wallet}:${pair}`;
-  }
-
-  private load(): void {
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
-        for (const entry of raw) {
-          this.entries.set(this.key(entry.wallet, entry.pair), entry);
-        }
-        logger.info(`[addressbook] Loaded ${this.entries.size} entries`);
-      }
-    } catch (e: any) {
-      logger.warn(`[addressbook] Failed to load: ${e.message}`);
-    }
-  }
-
-  save(): void {
-    if (!this.dirty) return;
-    try {
-      const dir = path.dirname(this.filePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.filePath, JSON.stringify([...this.entries.values()], null, 2));
-      this.dirty = false;
-    } catch (e: any) {
-      logger.warn(`[addressbook] Failed to save: ${e.message}`);
-    }
-  }
-
-  upsert(wallet: string, pair: string): void {
-    const k = this.key(wallet, pair);
-    const existing = this.entries.get(k);
-    if (existing) {
-      existing.lastActive = Math.floor(Date.now() / 1000);
-      existing.openPositions++;
-      existing.totalPositionsOpened++;
-      existing.closed = false;
-    } else {
-      this.entries.set(k, {
-        wallet,
-        pair,
-        firstSeen: Math.floor(Date.now() / 1000),
-        lastActive: Math.floor(Date.now() / 1000),
-        openPositions: 1,
-        totalPositionsOpened: 1,
-        closed: false,
-      });
-    }
-    this.dirty = true;
-  }
-
-  markClosed(wallet: string, pair: string): void {
-    const k = this.key(wallet, pair);
-    const existing = this.entries.get(k);
-    if (existing) {
-      existing.openPositions = Math.max(0, existing.openPositions - 1);
-      existing.lastActive = Math.floor(Date.now() / 1000);
-      if (existing.openPositions === 0) existing.closed = true;
-      this.dirty = true;
-    }
-  }
-
-  getForWallet(wallet: string): AddressBookEntry[] {
-    const results: AddressBookEntry[] = [];
-    for (const entry of this.entries.values()) {
-      if (entry.wallet === wallet) results.push(entry);
-    }
-    return results;
-  }
-
-  shutdown(): void {
-    if (this.saveTimer) clearInterval(this.saveTimer);
-    this.save();
-  }
-}
 
 // ═══ CONFIG ═══
 
@@ -173,23 +72,15 @@ function requireEnvPubkey(name: string): PublicKey {
   catch { logger.error(`FATAL: ${name} is not a valid pubkey: ${val}`); process.exit(1); }
 }
 
-const CORE_PROGRAM_ID          = requireEnvPubkey('CORE_PROGRAM_ID');
-const MONKE_BANANAS_PROGRAM_ID = requireEnvPubkey('MONKE_BANANAS_PROGRAM_ID');
-const BANANAS_MINT             = requireEnvPubkey('BANANAS_MINT');
+const CORE_PROGRAM_ID       = requireEnvPubkey('CORE_PROGRAM_ID');
+const DISTRIBUTOR_PROGRAM_ID = requireEnvPubkey('DISTRIBUTOR_PROGRAM_ID');
 
-function optionalEnvPubkey(name: string): PublicKey | undefined {
-  const val = process.env[name];
-  if (!val) return undefined;
-  try { return new PublicKey(val); }
-  catch { logger.warn(`${name} is not a valid pubkey: ${val} — ignoring`); return undefined; }
-}
-
-const BRIDGE_PROGRAM_ID = optionalEnvPubkey('BRIDGE_PROGRAM_ID');
-const PEGGED_MINT       = optionalEnvPubkey('PEGGED_MINT');
+const BRIDGE_PROGRAM_ID = requireEnvPubkey('BRIDGE_PROGRAM_ID');
+const PEGGED_MINT       = requireEnvPubkey('PEGGED_MINT');
 
 const COMMITMENT: Commitment    = 'confirmed';
 const KEEPER_ACTIVE_INTERVAL_MS = parseInt(process.env.KEEPER_CHECK_INTERVAL_MS || '3600000'); // 1hr during Active
-const KEEPER_PROCESSING_INTERVAL_MS = 30_000; // 30s during Saturday processing
+const KEEPER_PROCESSING_INTERVAL_MS = 30_000; // 30s during daily processing
 const SAFETY_POLL_INTERVAL_MS   = 5 * 60 * 1000; // 5 minutes
 
 const HEALTH_PORT = parseInt(process.env.HEALTH_PORT || '8080');
@@ -236,15 +127,14 @@ class HarvestBot {
   private connection: Connection;
   private provider: AnchorProvider;
   private coreProgram!: Program;
-  private monkeProgram!: Program;
-  private bridgeProgram?: Program;
+  private distributorProgram!: Program;
+  private bridgeProgram!: Program;
 
   // Modules
   private subscriber!: GeyserSubscriber;
   private executor!: HarvestExecutor;
   private keeper!: MonkeKeeper;
   private relay!: RelayServer;
-  private addressBookStore!: AddressBookStore;
 
   // Timers
   private keeperTimer: NodeJS.Timeout | null = null;
@@ -277,7 +167,6 @@ class HarvestBot {
 
     if (this.subscriber) await this.subscriber.shutdown();
     if (this.executor) await this.executor.shutdown();
-    if (this.addressBookStore) this.addressBookStore.shutdown();
 
     logger.info('Shutdown complete.');
     process.exit(0);
@@ -339,22 +228,14 @@ class HarvestBot {
     const [roverPDA] = PublicKey.findProgramAddressSync(
       [Buffer.from('rover_authority')], CORE_PROGRAM_ID
     );
-    const [dPoolPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from('dist_pool')], MONKE_BANANAS_PROGRAM_ID
-    );
-    const [pVaultPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from('program_vault')], MONKE_BANANAS_PROGRAM_ID
-    );
-    const [mStatePDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from('monke_state')], MONKE_BANANAS_PROGRAM_ID
+    const [distPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from('distributor')], DISTRIBUTOR_PROGRAM_ID
     );
     const wsolMint = new PublicKey('So11111111111111111111111111111111111111112');
 
-    const [roverBal, distBal, vaultBal, monkeStateInfo] = await Promise.all([
+    const [roverBal, distAcctInfo] = await Promise.all([
       this.connection.getBalance(roverPDA),
-      this.connection.getBalance(dPoolPDA),
-      this.connection.getBalance(pVaultPDA),
-      (this.monkeProgram.account as any).monkeState.fetch(mStatePDA).catch(() => null),
+      (this.distributorProgram.account as any).distributor.fetch(distPDA).catch(() => null),
     ]);
 
     let wsolBal = 0;
@@ -365,39 +246,31 @@ class HarvestBot {
       if (info && info.data.length >= 72) wsolBal = Number(info.data.readBigUInt64LE(64));
     } catch { /* no WSOL ATA */ }
 
-    // Read $PEGGED token balances for dist_pool and program_vault ATAs
-    let distPeggedBal = 0;
+    // Read distributor vault $PEGGED balance
     let vaultPeggedBal = 0;
-    const peggedMintStr = process.env.PEGGED_MINT;
-    if (peggedMintStr) {
+    if (distAcctInfo) {
       try {
-        const { getAssociatedTokenAddressSync: getAta } = await import('@solana/spl-token');
-        const peggedMint = new PublicKey(peggedMintStr);
-        const distAta = getAta(peggedMint, dPoolPDA, true);
-        const vaultAta = getAta(peggedMint, pVaultPDA, true);
-        const [distInfo, vaultInfo] = await Promise.all([
-          this.connection.getAccountInfo(distAta).catch(() => null),
-          this.connection.getAccountInfo(vaultAta).catch(() => null),
-        ]);
-        if (distInfo && distInfo.data.length >= 72) distPeggedBal = Number(distInfo.data.readBigUInt64LE(64));
-        if (vaultInfo && vaultInfo.data.length >= 72) vaultPeggedBal = Number(vaultInfo.data.readBigUInt64LE(64));
-      } catch { /* $PEGGED ATAs not yet created */ }
+        const vaultPubkey = distAcctInfo.vault as PublicKey;
+        const vaultInfo = await this.connection.getAccountInfo(vaultPubkey);
+        if (vaultInfo && vaultInfo.data.length >= 72) {
+          vaultPeggedBal = Number(vaultInfo.data.readBigUInt64LE(64));
+        }
+      } catch { /* vault not yet created */ }
     }
 
-    const ms = monkeStateInfo ? {
-      totalShareWeight: (monkeStateInfo as any).totalShareWeight.toString(),
-      accumulatedSolPerShare: (monkeStateInfo as any).accumulatedSolPerShare.toString(),
-      totalSolDistributed: Number((monkeStateInfo as any).totalSolDistributed),
-      totalBananasBurned: (monkeStateInfo as any).totalBananasBurned.toString(),
-      peggedMint: (monkeStateInfo as any).peggedMint?.toBase58() ?? null,
+    const distributorState = distAcctInfo ? {
+      currentEpoch: distAcctInfo.currentEpoch?.toString() ?? '0',
+      totalAmountFunded: distAcctInfo.totalAmountFunded?.toString() ?? '0',
+      totalAmountClaimed: distAcctInfo.totalAmountClaimed?.toString() ?? '0',
+      paused: distAcctInfo.paused ?? false,
+      mint: distAcctInfo.mint?.toBase58() ?? null,
     } : null;
 
     return {
       roverAuthority: { address: roverPDA.toBase58(), solBalance: roverBal, wsolBalance: wsolBal },
-      distPool: { address: dPoolPDA.toBase58(), solBalance: distBal, peggedBalance: distPeggedBal },
-      programVault: { address: pVaultPDA.toBase58(), solBalance: vaultBal, peggedBalance: vaultPeggedBal },
-      monkeState: ms,
-      totalInPipeline: roverBal + wsolBal + distBal + vaultBal + distPeggedBal + vaultPeggedBal,
+      distributor: { address: distPDA.toBase58(), vaultPeggedBalance: vaultPeggedBal },
+      distributorState,
+      totalInPipeline: roverBal + wsolBal + vaultPeggedBal,
       timestamp: Date.now(),
     };
   }
@@ -467,18 +340,11 @@ class HarvestBot {
     const coreIdl = loadIdl('bin_farm');
     this.coreProgram = new Program(coreIdl, this.provider);
 
-    const monkeIdl = loadIdl('monke_bananas');
-    this.monkeProgram = new Program(monkeIdl, this.provider);
+    const distributorIdl = loadIdl('merkle_distributor');
+    this.distributorProgram = new Program(distributorIdl, this.provider);
 
-    if (BRIDGE_PROGRAM_ID) {
-      try {
-        const bridgeIdl = loadIdl('pegged_bridge');
-        this.bridgeProgram = new Program(bridgeIdl, this.provider);
-        logger.info(`Bridge program loaded: ${BRIDGE_PROGRAM_ID.toBase58()}`);
-      } catch (e: any) {
-        logger.warn(`Bridge IDL not found — stake_and_forward disabled: ${e.message}`);
-      }
-    }
+    const bridgeIdl = loadIdl('pegged_bridge');
+    this.bridgeProgram = new Program(bridgeIdl, this.provider);
 
     // Verify bot authorization
     const [configPDA] = coreConfigPDA();
@@ -519,11 +385,11 @@ class HarvestBot {
     this.keeper = new MonkeKeeper({
       connection: this.connection,
       coreProgram: this.coreProgram,
-      monkeProgram: this.monkeProgram,
+      distributorProgram: this.distributorProgram,
       bridgeProgram: this.bridgeProgram,
       botKeypair,
       coreProgramId: CORE_PROGRAM_ID,
-      monkeProgramId: MONKE_BANANAS_PROGRAM_ID,
+      distributorProgramId: DISTRIBUTOR_PROGRAM_ID,
       bridgeProgramId: BRIDGE_PROGRAM_ID,
       peggedMint: PEGGED_MINT,
       getWatchedPools: () => this.subscriber.getWatchedPools(),
@@ -643,11 +509,6 @@ class HarvestBot {
       logger.info(`[relay] WebSocket relay on :${HEALTH_PORT}/ws, REST on :${HEALTH_PORT}/api/*`);
     }
 
-    // Address book store (persistent user pool history)
-    const dataDir = path.join(__dirname, 'data');
-    this.addressBookStore = new AddressBookStore(dataDir);
-    this.relay.setAddressBookStore(this.addressBookStore);
-
     // Wire keeper rover TVL computation to relay
     this.keeper.onRoverTvlComputed = (entries) => {
       this.relay?.updateRoverTvl(entries.map(e => ({
@@ -660,7 +521,7 @@ class HarvestBot {
       })));
     };
 
-    logger.info(`keeper: ${KEEPER_ACTIVE_INTERVAL_MS / 1000}s (Active) / ${KEEPER_PROCESSING_INTERVAL_MS / 1000}s (processing)`);
+    logger.info(`keeper: ${KEEPER_ACTIVE_INTERVAL_MS / 1000}s (idle) / ${KEEPER_PROCESSING_INTERVAL_MS / 1000}s (processing)`);
     logger.info(`safety: ${SAFETY_POLL_INTERVAL_MS / 1000}s fallback poll`);
     logger.info('---');
 
@@ -681,22 +542,10 @@ class HarvestBot {
       this.relay?.broadcast('positionClosed', data);
     });
 
-    // Wire position changes to address book
-    this.subscriber.on('positionChanged', (evt: PositionChangedEvent) => {
-      if (!evt.position) return;
-      const wallet = evt.position.owner.toBase58();
-      const pair = evt.position.lbPair.toBase58();
-      if (evt.action === 'created') {
-        this.addressBookStore.upsert(wallet, pair);
-      } else if (evt.action === 'closed') {
-        this.addressBookStore.markClosed(wallet, pair);
-      }
-    });
-
     // Start safety-net polling (5 min fallback for harvests)
     this.subscriber.startSafetyPolling(() => this.safetyPoll());
 
-    // Keeper: adaptive interval — 30s during Saturday processing, 1hr during Active
+    // Keeper: adaptive interval — 30s during daily processing, 1hr during idle
     const scheduleKeeper = async () => {
       if (this.shuttingDown) return;
       try {
@@ -714,10 +563,10 @@ class HarvestBot {
         } catch (e: any) {
           logger.warn(`[bot] Failed to fetch SOL balance: ${e.message}`);
         }
-        const phase = await this.keeper.runSaturdaySequence();
+        const phase = await this.keeper.runDailySequence();
         // Auto-trigger deposit if dist_pool exceeds threshold ($PEGGED or legacy SOL)
         await this.keeper.checkAndDepositPegged();
-        const nextInterval = phase === 'Active'
+        const nextInterval = phase === 'Idle'
           ? KEEPER_ACTIVE_INTERVAL_MS
           : KEEPER_PROCESSING_INTERVAL_MS;
         this.keeperTimer = setTimeout(() => scheduleKeeper(), nextInterval);
@@ -731,7 +580,7 @@ class HarvestBot {
     // Run keeper once on startup to catch any pending phase
     await scheduleKeeper();
 
-    logger.info('Bot running — gRPC harvests + weekly Saturday sequence');
+    logger.info('Bot running — gRPC harvests + daily fee sequence');
   }
 }
 

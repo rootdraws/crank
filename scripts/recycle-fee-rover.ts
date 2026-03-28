@@ -200,7 +200,7 @@ async function main() {
     console.log('\n=== SUCCESS ===');
     console.log('Signature:', sig);
     console.log(`Fee rover opened: ${balance} Token X → ${width} bins [${minBinId},${maxBinId}]`);
-    console.log('As price rises through these bins, tokens convert to SOL → sweep_rover → dist_pool → monke holders.');
+    console.log('As price rises through these bins, tokens convert to SOL → sweep_rover → 40/40/20 split → $PEGGED → Merkle claims.');
   } catch (err: any) {
     console.error('\n=== FAILED ===');
     console.error('Error:', err.message);

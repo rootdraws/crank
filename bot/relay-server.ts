@@ -1,8 +1,8 @@
 /**
  * relay-server.ts
  *
- * WebSocket + REST relay for crank.money frontend.
- * Exposes the bot's LaserStream-powered in-memory state to the browser.
+ * WebSocket + REST relay for crank.money bot.
+ * Exposes the bot's LaserStream-powered in-memory state to API consumers.
  *
  * Plugs into the existing HTTP health server (anchor-harvest-bot.ts).
  * No new ports — extends the same :8080 server with:
@@ -22,9 +22,7 @@ import type { Server as HttpServer } from 'http';
 import type { GeyserSubscriber, ActiveBinChangedEvent, HarvestJob, PositionChangedEvent } from './geyser-subscriber';
 import type { HarvestExecutor } from './harvest-executor';
 import type { MonkeKeeper } from './keeper';
-import { getDLMM } from './meteora-accounts';
 import { logger } from './logger';
-import type { AddressBookStore } from './anchor-harvest-bot';
 
 // ═══ TYPES ═══
 
@@ -35,7 +33,7 @@ interface RelayEvent {
   timestamp: number;
 }
 
-/** Rover TVL entry for the Recon leaderboard */
+/** Rover TVL entry for analytics */
 export interface RoverTvlEntry {
   pool: string;
   tokenXSymbol: string;
@@ -43,13 +41,6 @@ export interface RoverTvlEntry {
   tvl: number;
   positionCount: number;
   status: 'active' | 'converting' | 'exhausted';
-  /** Top-5 only: enriched analytics */
-  analytics?: {
-    priceChangesPerHour: number;
-    conversionProgress: number;
-    estimatedTtcHours: number;
-    solGenerated: number;
-  };
 }
 
 // ═══ PROTOCOL PNL AGGREGATOR ═══
@@ -332,14 +323,13 @@ export class ProtocolPnlAggregator {
 /** Fee pipeline state returned by the /api/fees endpoint */
 export interface FeePipelineState {
   roverAuthority: { address: string; solBalance: number; wsolBalance: number };
-  distPool: { address: string; solBalance: number; peggedBalance?: number };
-  programVault: { address: string; solBalance: number; peggedBalance?: number };
-  monkeState: {
-    totalShareWeight: string;
-    accumulatedSolPerShare: string;
-    totalSolDistributed: number;
-    totalBananasBurned: string;
-    peggedMint?: string | null;
+  distributor: { address: string; vaultPeggedBalance: number };
+  distributorState: {
+    currentEpoch: string;
+    totalAmountFunded: string;
+    totalAmountClaimed: string;
+    paused: boolean;
+    mint: string | null;
   } | null;
   totalInPipeline: number;
   timestamp: number;
@@ -363,16 +353,10 @@ export class RelayServer {
   private feedEvents: RelayEvent[] = [];
   private static MAX_FEED_EVENTS = 200;
 
-  // Address book
-  private addressBookStore: AddressBookStore | null = null;
+  // Meteora DataPI cache (pool name lookups for PnL aggregator)
   private meteoraCache: Map<string, { data: any; ts: number }> = new Map();
   private static METEORA_CACHE_TTL = 5 * 60 * 1000;
   private static METEORA_API_BASE = 'https://dlmm.datapi.meteora.ag';
-
-  // UI-watched pools (bin array relay)
-  private uiWatchedPools: Set<string> = new Set();
-  private binArrayCache: Map<string, { bins: Map<number, { amountX: number; amountY: number }>; updatedAt: number }> = new Map();
-  private uiPollTimer: NodeJS.Timeout | null = null;
 
   // Protocol PnL aggregator
   private pnlAggregator: ProtocolPnlAggregator | null = null;
@@ -397,10 +381,6 @@ export class RelayServer {
     this.coreProgramId = coreProgramId;
     this.botWalletProvider = botWalletProvider ?? null;
     this.feeProvider = feeProvider ?? null;
-  }
-
-  setAddressBookStore(store: AddressBookStore): void {
-    this.addressBookStore = store;
   }
 
   /** Start the protocol PnL aggregator that scans all position histories periodically */
@@ -491,19 +471,8 @@ export class RelayServer {
       this.broadcast('positionChanged', event);
     });
 
-    // Trigger RPC bin array fetch on active bin changes (for UI-watched pools)
-    this.subscriber.on('activeBinChanged', async (event: ActiveBinChangedEvent) => {
-      const pool = (event as any).lbPair;
-      if (pool && this.uiWatchedPools.has(pool)) {
-        await this.refreshBinArraysRpc(pool);
-      }
-    });
-
     // Load persisted feed cache
     this.loadFeedCache();
-
-    // Start UI-only pool polling
-    this.startUiPollLoop();
 
     logger.info('[relay] WebSocket relay attached to HTTP server');
   }
@@ -547,49 +516,16 @@ export class RelayServer {
         case '/api/fees':
           this.handleFees(res);
           return true;
-        case '/api/user-bins':
-          this.handleUserBins(url, res);
-          return true;
-        case '/api/addressbook':
-          this.handleAddressBook(url, res);
-          return true;
-        case '/api/subscribe-pools':
-          this.handleSubscribePools(req, res);
-          return true;
         case '/api/feed':
           this.handleFeed(res);
-          return true;
-        case '/api/init-pool-tx':
-          this.handleInitPoolTx(req, res);
           return true;
         case '/api/protocol-pnl':
           this.handleProtocolPnl(res);
           return true;
         default:
-          // Check for /api/pools/{address} or /api/bin-arrays/{pool}
           if (path.startsWith('/api/pools/')) {
             const address = path.slice('/api/pools/'.length);
             return this.handlePoolByAddress(res, address);
-          }
-          if (path.startsWith('/api/bin-arrays/')) {
-            const pool = path.slice('/api/bin-arrays/'.length);
-            this.handleBinArrays(pool, res);
-            return true;
-          }
-          if (path.startsWith('/api/pool-ohlcv/')) {
-            const addr = path.slice('/api/pool-ohlcv/'.length);
-            this.handlePoolOhlcv(addr, url, res);
-            return true;
-          }
-          if (path.startsWith('/api/pool-volume/')) {
-            const addr = path.slice('/api/pool-volume/'.length);
-            this.handlePoolVolume(addr, url, res);
-            return true;
-          }
-          if (path.startsWith('/api/position-history/')) {
-            const metPos = path.slice('/api/position-history/'.length);
-            this.handlePositionHistory(metPos, res);
-            return true;
           }
           this.json(res, 404, { error: 'Not found' });
           return true;
@@ -654,7 +590,6 @@ export class RelayServer {
       for (const pos of poolPositions) {
         const info = this.subscriber.getPoolInfo(poolKey);
         const activeId = info?.activeId ?? 0;
-        // Compute fill: how many bins have been crossed
         let filledBins = 0;
         const totalBins = pos.maxBinId - pos.minBinId + 1;
         for (let b = pos.minBinId; b <= pos.maxBinId; b++) {
@@ -770,7 +705,23 @@ export class RelayServer {
     }
   }
 
-  // ─── ADDRESS BOOK ───
+  private handleFeed(res: ServerResponse): void {
+    this.json(res, 200, {
+      events: this.feedEvents.slice(-50),
+      timestamp: Date.now(),
+    });
+  }
+
+  private handleProtocolPnl(res: ServerResponse): void {
+    const snapshot = this.pnlAggregator?.getSnapshot();
+    if (!snapshot) {
+      this.json(res, 503, { error: 'PnL aggregator not ready — data is being computed' });
+      return;
+    }
+    this.json(res, 200, snapshot);
+  }
+
+  // ─── METEORA POOL DATA (for PnL aggregator pool name resolution) ───
 
   private async fetchMeteoraPoolData(poolAddress: string): Promise<any | null> {
     const cached = this.meteoraCache.get(poolAddress);
@@ -788,209 +739,11 @@ export class RelayServer {
     }
   }
 
-  private async handleAddressBook(url: URL, res: ServerResponse): Promise<void> {
-    const wallet = url.searchParams.get('wallet');
-    if (!wallet) {
-      this.json(res, 400, { error: 'Missing wallet query parameter' });
-      return;
-    }
-
-    try {
-      new PublicKey(wallet);
-    } catch {
-      this.json(res, 400, { error: 'Invalid wallet address' });
-      return;
-    }
-
-    try {
-      const livePositions = this.subscriber.getPositionsForWallet(wallet);
-      const activePoolMap = new Map<string, number>();
-      for (const pos of livePositions) {
-        const pool = pos.lbPair.toBase58();
-        activePoolMap.set(pool, (activePoolMap.get(pool) || 0) + 1);
-      }
-
-      const entries = this.addressBookStore?.getForWallet(wallet) || [];
-
-      const activePools: any[] = [];
-      const recentPools: any[] = [];
-
-      const enrichPromises = [...new Set(entries.map(e => e.pair).concat([...activePoolMap.keys()]))].map(
-        pair => this.fetchMeteoraPoolData(pair).then(data => [pair, data] as [string, any])
-      );
-      const enriched = new Map(await Promise.all(enrichPromises));
-
-      for (const entry of entries) {
-        const liveCount = activePoolMap.get(entry.pair) || 0;
-        const meteoraData = enriched.get(entry.pair);
-        const name = meteoraData?.name || entry.pair.slice(0, 8) + '...';
-        const vol24h = meteoraData?.volume?.['24h'] || 0;
-        const tvl = meteoraData?.tvl || 0;
-
-        const binStep = meteoraData?.pool_config?.bin_step || 0;
-        const alive = vol24h > 0 || tvl > 100;
-
-        const item = {
-          pair: entry.pair,
-          name,
-          binStep,
-          openPositions: liveCount,
-          lastActive: entry.lastActive,
-          totalPositions: entry.totalPositionsOpened,
-          volume24h: vol24h,
-          tvl,
-          alive,
-          apr: meteoraData?.apr || 0,
-          feeTvlRatio24h: meteoraData?.fee_tvl_ratio?.['24h'] || 0,
-          dynamicFeePct: meteoraData?.dynamic_fee_pct || 0,
-        };
-
-        if (liveCount > 0) {
-          activePools.push(item);
-        } else {
-          const fourteenDays = 14 * 24 * 60 * 60;
-          const isRecent = (Math.floor(Date.now() / 1000) - entry.lastActive) < fourteenDays;
-          if (isRecent && alive) {
-            recentPools.push(item);
-          }
-        }
-      }
-
-      for (const [pool, count] of activePoolMap) {
-        if (!entries.some(e => e.pair === pool)) {
-          const meteoraData = enriched.get(pool);
-          activePools.push({
-            pair: pool,
-            name: meteoraData?.name || pool.slice(0, 8) + '...',
-            binStep: meteoraData?.pool_config?.bin_step || 0,
-            openPositions: count,
-            lastActive: Math.floor(Date.now() / 1000),
-            totalPositions: count,
-            volume24h: meteoraData?.volume?.['24h'] || 0,
-            tvl: meteoraData?.tvl || 0,
-            alive: true,
-          });
-        }
-      }
-
-      activePools.sort((a, b) => b.lastActive - a.lastActive);
-      recentPools.sort((a, b) => b.lastActive - a.lastActive);
-
-      // Compute topPairs: group by interesting mint, sort by totalPositionsOpened
-      const SOL_MINT = 'So11111111111111111111111111111111111111112';
-      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-      const pairMap = new Map<string, { tokenMint: string; symbol: string; pairSymbol: string; totalPositionsOpened: number }>();
-      for (const entry of entries) {
-        const meteoraData = enriched.get(entry.pair);
-        if (!meteoraData) continue;
-        const tokenX = meteoraData.token_x;
-        const tokenY = meteoraData.token_y;
-        if (!tokenX || !tokenY) continue;
-        const interestingToken = [tokenX, tokenY].find(t => t.address !== SOL_MINT && t.address !== USDC_MINT);
-        if (!interestingToken) continue;
-        const tokenMint = interestingToken.address;
-        const existing = pairMap.get(tokenMint);
-        const pairSymbol = `${tokenX.symbol || '?'}/${tokenY.symbol || '?'}`;
-        if (existing) {
-          existing.totalPositionsOpened += entry.totalPositionsOpened;
-        } else {
-          pairMap.set(tokenMint, { tokenMint, symbol: interestingToken.symbol || tokenMint.slice(0, 6), pairSymbol, totalPositionsOpened: entry.totalPositionsOpened });
-        }
-      }
-      const topPairs = [...pairMap.values()]
-        .sort((a, b) => b.totalPositionsOpened - a.totalPositionsOpened)
-        .slice(0, 5);
-
-      this.json(res, 200, {
-        active: activePools,
-        recent: recentPools.slice(0, 10),
-        topPairs,
-        wallet,
-        timestamp: Date.now(),
-      });
-    } catch (e: any) {
-      logger.error(`[relay] /api/addressbook error: ${e.message}`);
-      this.json(res, 500, { error: 'Failed to fetch address book' });
-    }
-  }
-
-  /**
-   * GET /api/user-bins?pool=<lbPair>&owner=<pubkey>
-   * Returns real per-bin position amounts from the DLMM SDK.
-   */
-  private async handleUserBins(url: URL, res: ServerResponse): Promise<void> {
-    const poolParam = url.searchParams.get('pool');
-    const ownerParam = url.searchParams.get('owner');
-    if (!poolParam || !ownerParam) {
-      this.json(res, 400, { error: 'Missing pool or owner query parameter' });
-      return;
-    }
-
-    try {
-      const ownerPk = new PublicKey(ownerParam);
-      const poolPositions = this.subscriber.getPositionsForPool(poolParam);
-      const userPositions = poolPositions.filter(p => p.owner.equals(ownerPk));
-
-      if (userPositions.length === 0) {
-        this.json(res, 200, { bins: [], activeBin: null });
-        return;
-      }
-
-      const lbPairPk = new PublicKey(poolParam);
-      const dlmm = await getDLMM(this.connection, lbPairPk);
-      await dlmm.refetchStates();
-      const activeBin = dlmm.lbPair.activeId;
-
-      const bins: Map<number, { buy: number; sell: number }> = new Map();
-
-      for (const pos of userPositions) {
-        const [vaultPda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('vault'), pos.meteoraPosition.toBuffer()],
-          this.coreProgramId,
-        );
-
-        const { userPositions: meteoraPositions } =
-          await dlmm.getPositionsByUserAndLbPair(vaultPda);
-
-        const meteoraPos = meteoraPositions.find(
-          (p: any) => p.publicKey.equals(pos.meteoraPosition),
-        );
-        if (!meteoraPos) continue;
-
-        const binData = meteoraPos.positionData.positionBinData;
-        if (!binData || binData.length === 0) continue;
-
-        const side = pos.side.toLowerCase() as 'buy' | 'sell';
-        for (const bin of binData) {
-          const xAmount = Number(bin.positionXAmount) / 1e9;
-          const yAmount = Number(bin.positionYAmount) / 1e9;
-          const amount = side === 'sell' ? xAmount : yAmount;
-          if (amount <= 0) continue;
-
-          const entry = bins.get(bin.binId) || { buy: 0, sell: 0 };
-          entry[side] += amount;
-          bins.set(bin.binId, entry);
-        }
-      }
-
-      const binsArray = [...bins.entries()]
-        .map(([binId, amounts]) => ({ binId, ...amounts }))
-        .sort((a, b) => a.binId - b.binId);
-
-      this.json(res, 200, { bins: binsArray, activeBin });
-    } catch (e: any) {
-      logger.error(`[relay] /api/user-bins error: ${e.message}`);
-      this.json(res, 500, { error: 'Failed to fetch user bins' });
-    }
-  }
-
   // ─── BROADCAST ───
 
   /** Broadcast an event to all connected WebSocket clients + store in feed buffer */
   broadcast(type: string, data: any): void {
-    // Build human-readable text for feed display
-    const text = this.buildFeedText(type, data);
-    const event: RelayEvent & { text?: string } = { type, data, text, timestamp: Date.now() };
+    const event: RelayEvent = { type, data, timestamp: Date.now() };
 
     // Store in ring buffer
     this.feedEvents.push(event);
@@ -1011,72 +764,9 @@ export class RelayServer {
     }
   }
 
-  private static KNOWN_DECIMALS: Record<string, number> = {
-    'So11111111111111111111111111111111111111112': 9,
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6,
-    'Es9vMFrzaCERmKKR9So4z3YQfBJoL8n1RYfSBgdGGBXd': 6,
-    'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 5,
-    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 6,
-    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 9,
-    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': 9,
-    '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj': 9,
-  };
-
-  private binToPrice(binId: number, binStep: number, mintX: string, mintY: string): number | null {
-    const decX = RelayServer.KNOWN_DECIMALS[mintX];
-    const decY = RelayServer.KNOWN_DECIMALS[mintY];
-    if (decX === undefined || decY === undefined) return null;
-    return Math.pow(1 + binStep / 10000, binId) * Math.pow(10, decX - decY);
-  }
-
-  private formatPrice(p: number): string {
-    if (p >= 1000) return p.toFixed(0);
-    if (p >= 1) return p.toFixed(2);
-    if (p >= 0.01) return p.toFixed(4);
-    return p.toPrecision(4);
-  }
-
-  private buildFeedText(type: string, data: any): string {
-    const lbPair = data?.lbPair || '';
-    const info = lbPair ? this.subscriber.getPoolInfo(lbPair) : null;
-    const poolData = lbPair ? this.meteoraCache.get(lbPair)?.data : null;
-    const knownSymbol = (mint: string) => poolData?.mint_x === mint ? poolData?.token_x_symbol
-      : poolData?.mint_y === mint ? poolData?.token_y_symbol
-      : mint.slice(0, 6) + '...';
-    const symX = info ? knownSymbol(info.tokenXMint.toBase58()) : lbPair.slice(0, 6);
-    const symY = info ? knownSymbol(info.tokenYMint.toBase58()) : '...';
-    const pair = symX !== lbPair.slice(0, 6) ? `${symX}/${symY}` : lbPair.slice(0, 8) + '...';
-    const side = data?.side ? ` · ${(data.side as string).toLowerCase()}` : '';
-
-    switch (type) {
-      case 'harvestExecuted':
-        return `harvested ${data.binCount || '?'} bins · ${pair}${side} → ${(data.owner || '').slice(0, 6)}...`;
-      case 'positionClosed':
-        return `position closed · ${pair}${side} → ${(data.owner || '').slice(0, 6)}...`;
-      case 'harvestNeeded':
-        return `${data.safeBinCount || '?'} bins ready · ${pair}${side}`;
-      case 'positionChanged':
-        return `position ${data.action || '?'} · ${pair}${side}`;
-      case 'activeBinChanged': {
-        const dir = data.previousActiveId != null
-          ? (data.newActiveId > data.previousActiveId ? ' ▲' : data.newActiveId < data.previousActiveId ? ' ▼' : '')
-          : '';
-        if (info) {
-          const price = this.binToPrice(data.newActiveId, info.binStep, info.tokenXMint.toBase58(), info.tokenYMint.toBase58());
-          if (price !== null) return `${pair} $${this.formatPrice(price)}${dir}`;
-        }
-        return `${pair} bin ${data.newActiveId}${dir}`;
-      }
-      case 'roverTvlUpdated':
-        return `rover TVL: ${data.count || 0} pools · $${(data.totalTvl || 0).toFixed(0)}`;
-      default:
-        return `${type}: ${JSON.stringify(data).slice(0, 60)}`;
-    }
-  }
-
   // ─── ROVER TVL ───
 
-  /** Called by keeper after computing rover TVL during Saturday cycle */
+  /** Called by keeper after computing rover TVL during daily cycle */
   updateRoverTvl(entries: RoverTvlEntry[]): void {
     this.roverTvl.clear();
     for (const entry of entries) {
@@ -1086,252 +776,6 @@ export class RelayServer {
       count: entries.length,
       totalTvl: entries.reduce((sum, e) => sum + e.tvl, 0),
     });
-  }
-
-  // ─── NEW ROUTE HANDLERS ───
-
-  private handleSubscribePools(req: IncomingMessage, res: ServerResponse): void {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const { pools } = JSON.parse(body);
-        if (Array.isArray(pools)) {
-          const snapshot: Record<string, any> = {};
-          for (const pool of pools) {
-            this.uiWatchedPools.add(pool);
-            const cached = this.binArrayCache.get(pool);
-            if (cached) {
-              snapshot[pool] = Object.fromEntries(cached.bins);
-            }
-          }
-          this.json(res, 200, { subscribed: pools, snapshot });
-        } else {
-          this.json(res, 400, { error: 'Expected { pools: string[] }' });
-        }
-      } catch {
-        this.json(res, 400, { error: 'Invalid JSON' });
-      }
-    });
-  }
-
-  private handleBinArrays(pool: string, res: ServerResponse): void {
-    const cached = this.binArrayCache.get(pool);
-    if (!cached) {
-      this.json(res, 200, { pool, bins: {}, updatedAt: null });
-      return;
-    }
-    const bins: Record<number, { amountX: number; amountY: number }> = {};
-    for (const [binId, amounts] of cached.bins) {
-      bins[binId] = amounts;
-    }
-    this.json(res, 200, { pool, bins, updatedAt: cached.updatedAt });
-  }
-
-  private handleFeed(res: ServerResponse): void {
-    this.json(res, 200, {
-      events: this.feedEvents.slice(-50),
-      timestamp: Date.now(),
-    });
-  }
-
-  private handleInitPoolTx(req: IncomingMessage, res: ServerResponse): void {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
-      try {
-        const { tokenMint, quoteMint, binStep } = JSON.parse(body);
-        if (!tokenMint || !quoteMint || !binStep) {
-          this.json(res, 400, { error: 'Missing tokenMint, quoteMint, or binStep' });
-          return;
-        }
-
-        // Dynamically require DLMM SDK to build pool creation tx
-        let DLMM: any;
-        try {
-          const dlmmMod: any = await import('@meteora-ag/dlmm');
-          DLMM = dlmmMod.default?.DLMM || dlmmMod.default || dlmmMod.DLMM || dlmmMod;
-        } catch {
-          this.json(res, 500, { error: '@meteora-ag/dlmm SDK not available' });
-          return;
-        }
-
-        const tokenXMint = new PublicKey(tokenMint);
-        const tokenYMint = new PublicKey(quoteMint);
-
-        // Fetch current price via DAS getAsset to derive active bin ID
-        let activeId = 0;
-        try {
-          const dasResp = await fetch((this.connection as any).rpcEndpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAsset', params: { id: tokenMint } }),
-          });
-          const dasData = await dasResp.json();
-          const price = dasData?.result?.token_info?.price_info?.price_per_token;
-          if (price && price > 0) {
-            const binStepNum = parseInt(binStep, 10);
-            activeId = Math.round(Math.log(price) / Math.log(1 + binStepNum / 10000));
-          }
-        } catch {
-          // activeId stays 0; pool will be created at ~1.0 price ratio
-        }
-
-        const tx = await DLMM.createPermissionlessLbPair(
-          this.connection,
-          new PublicKey(binStep.toString()),
-          tokenXMint,
-          tokenYMint,
-          activeId,
-          { cluster: 'mainnet-beta' }
-        );
-
-        if (!tx) {
-          this.json(res, 500, { error: 'Failed to build pool creation transaction' });
-          return;
-        }
-
-        // Extract new pool address (first new account in the tx or derive it)
-        const newPoolKey = tx.instructions?.[0]?.keys?.[0]?.pubkey?.toBase58?.() || '';
-        const txBytes = tx.serialize({ requireAllSignatures: false });
-        const txBase64 = Buffer.from(txBytes).toString('base64');
-
-        this.json(res, 200, { transaction: txBase64, poolAddress: newPoolKey });
-      } catch (e: any) {
-        logger.error(`[relay] /api/init-pool-tx error: ${e.message}`);
-        this.json(res, 500, { error: e.message || 'Failed to build pool creation transaction' });
-      }
-    });
-  }
-
-  // ─── DATAPI PROXY HANDLERS ───
-
-  private handleProtocolPnl(res: ServerResponse): void {
-    const snapshot = this.pnlAggregator?.getSnapshot();
-    if (!snapshot) {
-      this.json(res, 503, { error: 'PnL aggregator not ready — data is being computed' });
-      return;
-    }
-    this.json(res, 200, snapshot);
-  }
-
-  private async handlePoolOhlcv(poolAddress: string, url: URL, res: ServerResponse): Promise<void> {
-    const timeframe = url.searchParams.get('timeframe') || '24h';
-    const cacheKey = `ohlcv:${poolAddress}:${timeframe}`;
-    const cached = this.meteoraCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < RelayServer.METEORA_CACHE_TTL) {
-      this.json(res, 200, cached.data);
-      return;
-    }
-    try {
-      const resp = await fetch(`${RelayServer.METEORA_API_BASE}/pools/${poolAddress}/ohlcv?timeframe=${timeframe}`);
-      if (!resp.ok) { this.json(res, resp.status, { error: 'DataPI error' }); return; }
-      const data = await resp.json();
-      this.meteoraCache.set(cacheKey, { data, ts: Date.now() });
-      this.json(res, 200, data);
-    } catch (e: any) {
-      this.json(res, 502, { error: e.message });
-    }
-  }
-
-  private async handlePoolVolume(poolAddress: string, url: URL, res: ServerResponse): Promise<void> {
-    const timeframe = url.searchParams.get('timeframe') || '24h';
-    const cacheKey = `volume:${poolAddress}:${timeframe}`;
-    const cached = this.meteoraCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < RelayServer.METEORA_CACHE_TTL) {
-      this.json(res, 200, cached.data);
-      return;
-    }
-    try {
-      const resp = await fetch(`${RelayServer.METEORA_API_BASE}/pools/${poolAddress}/volume/history?timeframe=${timeframe}`);
-      if (!resp.ok) { this.json(res, resp.status, { error: 'DataPI error' }); return; }
-      const data = await resp.json();
-      this.meteoraCache.set(cacheKey, { data, ts: Date.now() });
-      this.json(res, 200, data);
-    } catch (e: any) {
-      this.json(res, 502, { error: e.message });
-    }
-  }
-
-  private async handlePositionHistory(meteoraPosition: string, res: ServerResponse): Promise<void> {
-    const cacheKey = `poshistory:${meteoraPosition}`;
-    const cached = this.meteoraCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < RelayServer.METEORA_CACHE_TTL) {
-      this.json(res, 200, cached.data);
-      return;
-    }
-    try {
-      const resp = await fetch(`${RelayServer.METEORA_API_BASE}/positions/${meteoraPosition}/historical?order_direction=desc`);
-      if (!resp.ok) { this.json(res, resp.status, { error: 'DataPI error' }); return; }
-      const data = await resp.json();
-      this.meteoraCache.set(cacheKey, { data, ts: Date.now() });
-      this.json(res, 200, data);
-    } catch (e: any) {
-      this.json(res, 502, { error: e.message });
-    }
-  }
-
-  // ─── BIN ARRAY RELAY HELPERS ───
-
-  private async refreshBinArraysRpc(pool: string): Promise<void> {
-    try {
-      const poolInfo = this.subscriber.getPoolInfo(pool);
-      if (!poolInfo) return;
-      const activeId = poolInfo.activeId;
-      const visibleRange = 80;
-      const lowBin = activeId - visibleRange;
-      const highBin = activeId + visibleRange;
-
-      // Fetch bin arrays via RPC (reuse existing getDLMM helper)
-      const dlmm = await getDLMM(this.connection, new PublicKey(pool));
-      if (!dlmm) return;
-
-      const binArrays = await (dlmm as any).getBinArrays?.() || [];
-      const newBins = new Map<number, { amountX: number; amountY: number }>();
-      const changedBins: Record<number, { amountX: number; amountY: number }> = {};
-
-      for (const ba of binArrays) {
-        const bins = ba.account?.bins || ba.bins || [];
-        const lowerBinId: number = ba.account?.lowerBinId ?? ba.lowerBinId ?? 0;
-        for (let i = 0; i < bins.length; i++) {
-          const binId = lowerBinId + i;
-          if (binId < lowBin || binId > highBin) continue;
-          const amountX = Number(bins[i]?.amountX ?? bins[i]?.amount_x ?? 0);
-          const amountY = Number(bins[i]?.amountY ?? bins[i]?.amount_y ?? 0);
-          if (amountX === 0 && amountY === 0) continue;
-          newBins.set(binId, { amountX, amountY });
-        }
-      }
-
-      // Diff against cached
-      const cached = this.binArrayCache.get(pool);
-      for (const [binId, amounts] of newBins) {
-        const prev = cached?.bins.get(binId);
-        if (!prev || prev.amountX !== amounts.amountX || prev.amountY !== amounts.amountY) {
-          changedBins[binId] = amounts;
-        }
-      }
-
-      this.binArrayCache.set(pool, { bins: newBins, updatedAt: Date.now() });
-
-      if (Object.keys(changedBins).length > 0) {
-        this.broadcast('binArrayUpdated', { lbPair: pool, bins: changedBins });
-      }
-    } catch (e: any) {
-      if (logger) logger.warn(`[relay] refreshBinArraysRpc ${pool}: ${e.message}`);
-    }
-  }
-
-  private startUiPollLoop(): void {
-    if (this.uiPollTimer) clearInterval(this.uiPollTimer);
-    this.uiPollTimer = setInterval(async () => {
-      const watchedByGeyser = this.subscriber.getWatchedPools ? new Set(this.subscriber.getWatchedPools()) : new Set<string>();
-      for (const pool of this.uiWatchedPools) {
-        if (!watchedByGeyser.has(pool)) {
-          await this.refreshBinArraysRpc(pool).catch(() => {});
-        }
-      }
-    }, 10_000);
   }
 
   // ─── FEED PERSISTENCE ───

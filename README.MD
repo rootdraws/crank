@@ -1,19 +1,8 @@
 # crank.money
 
-**Limit orders that earn fees. Burn $CRANK, mint $BANK, earn $PEGGED.**
+**Limit orders that earn fees. Burn $CRANK, earn $PEGGED.**
 
 Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream. Revenue shared via $BANK token governance and daily Merkle distribution on Solana.
-
-## Programs
-
-| Program | Description |
-|---------|-------------|
-| `bin_farm` (core) | Position wrapper on Meteora DLMM. Manages positions, harvest, close, rovers. `sweep_rover` splits 40/40/20: 40% BANK holders, 40% traders, 20% operations. |
-| `bank_mint` | Burn $CRANK to mint $BANK 1:1. Supply cap: `bank_supply + crank_supply <= 2B`. |
-| `gauge_voter` | BANK holders vote on global pool weights. Votes stick permanently. Admin-curated pools. |
-| `merkle_distributor` | Cumulative $PEGGED distribution via Merkle proofs. Daily epoch at 4:20 PM CST. IPFS-pinned trees. |
-| `pegged_bridge` | Deposits SOL into SPL multi-stake pool (Helius + LP Army + MonkeDAO validators), receives $PEGGED, forwards to Merkle distributor vault. |
-| `monke_bananas` | **CLOSED** — program deleted from chain, rent reclaimed. Was: NFT-weighted MasterChef $PEGGED distribution. |
 
 ## The Problem
 
@@ -22,8 +11,6 @@ Your market buys and sells are clumsy. They slam the orderbook, and slippage eat
 Your LP positions get bled out by Impermanent Loss.
 
 You need Automations, but Jupiter charges you 0.12% as a platform fee, plus LP fees and slippage on execution.
-
----
 
 ## The Solution
 
@@ -46,186 +33,114 @@ Set your range as a single-sided LP. If price moves through your range, Crank's 
 7. Harvested tokens flow directly into the owner's wallet.
 8. Remaining bins stay open, waiting to be filled.
 
-### Crank's Harvester — Powered by Helius LaserStream
-
-A pipeline of information coming straight from the source, enables sub-second Crank Automations, to protect your trade.
-
-### Permissionless Harvesting - Decentralized Backup
-
-If our bot goes down, you can always harvest or close your position by yourself, or another Crank user can do so for you, and earn a small fee.
-
-Every step in the revenue pipeline is permissionless. Harvest, close, sweep, stake, deposit — all crankable by anyone. crank.money is built to be fast and convenient through running our own infrastructure, but the system is resilient without it. 
-
 ### Performance Fee
 
-Zero fee on deposit. 0.3% on converted output only.
+Zero fee on deposit. 0.3% on converted output only. LP fees can be claimed anytime at zero cost.
 
-The 0.3% only applies to the side that converted (SOL you received from a sell, or tokens you received from a buy).
+### Permissionless Harvesting
 
-LP fees can be claimed anytime at zero cost. Unclaimed LP fees at close are included in the 0.3% — effectively dust.
+Every step in the revenue pipeline is permissionless. Harvest, close, sweep, stake, deposit — all crankable by anyone. The system is resilient without our infrastructure.
 
----
+## Programs
 
-## Methodology: Gamma Scalping
+| Program | Address |
+|---------|---------|
+| bin-farm (core) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` |
+| bank-mint | `FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk` |
+| gauge-voter | `DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA` |
+| merkle-distributor | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` |
+| pegged-bridge | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` |
 
-crank.money is a form of active liquidity provision. Trade flow routes through your ranges, filling your orders. The Harvester withdraws that liquidity from the market once filled — widening the bandwidth on fill, then closing the aperture by withdrawing your LP.
+| Program | Description |
+|---------|-------------|
+| **bin-farm** (core) | Position wrapper on Meteora DLMM. Harvest, close, rovers. `sweep_rover` splits 40/40/20: 40% BANK holders, 40% traders, 20% operations. |
+| **bank-mint** | Burn $CRANK to mint $BANK 1:1. Supply cap: `bank_supply + crank_supply <= 2B`. |
+| **gauge-voter** | BANK holders vote on global pool weights. Admin-curated pool registry. |
+| **merkle-distributor** | Cumulative $PEGGED distribution via Merkle proofs. Daily epoch. IPFS-pinned trees. |
+| **pegged-bridge** | SOL → Sanctum SPL multi-stake pool (Helius + LP Army + MonkeDAO validators) → $PEGGED → Merkle distributor vault. |
 
-Meme tokens with low liquidity and fat orders have structural slippage — an acceleration of price toward the outer bands of available liquidity. This acceleration of price is a byproduct of AMM curves, and is called gamma.
+## Tokens
 
-crank.money scalps this gamma, turning it into better execution for your trades.
-
-Users are providing discretionary liquidity to the market and withdrawing on fill — imposing adverse selection on passive pools.
-
----
+| Token | Mint | Decimals |
+|-------|------|----------|
+| $CRANK | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` | 6 |
+| $BANK | `BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA` | 6 |
+| $PEGGED (crankSOL) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` | 9 |
+| SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` | — |
 
 ## $BANK Token — Burn $CRANK, Earn $PEGGED
 
-Burn $CRANK to mint $BANK at a 1:1 ratio. Supply cap enforced on-chain: `bank_supply + crank_supply <= 2 Billion`.
+Burn $CRANK to mint $BANK at a 1:1 ratio. Supply cap enforced on-chain.
 
-**How revenue flows:**
+**Revenue flow:**
 
-1. Protocol fees (0.3% on converted output) are collected by the rover system.
-2. `sweep_rover` splits fees 40/40/20:
+1. Protocol fees (0.3% on converted output) collected by the rover system.
+2. `sweep_rover` splits 40/40/20:
    - **40% BANK holders** — SOL → staked via SPL stake pool → $PEGGED → Merkle distributor vault
    - **40% Traders** — distributed proportional to fees paid, weighted by gauge votes
    - **20% Operations** — self-funding bot infrastructure
-3. Daily Merkle tree at 4:20 PM CST combines both holder and trader rewards.
-4. Bot auto-claims for custody wallets. Trees pinned to IPFS for transparency.
+3. Daily Merkle tree combines both holder and trader rewards.
+4. Trees pinned to IPFS for transparency.
 
-**Gauge voting:** BANK holders call `vote()` to influence how the 40% trader reward is allocated across curated trading pools. Votes stick permanently — the mutation persists even after selling BANK.
+**Gauge voting:** BANK holders call `vote()` to influence how the 40% trader reward is allocated across curated pools.
 
-## WTF is $PEGGED
+## $PEGGED (crankSOL)
 
-The 40% holder share and 40% trader share of Protocol Trade Fees are turned into a SOL Liquid Staking token, deposited into three validators: 
+The 40% holder share and 40% trader share are converted into a SOL Liquid Staking token, delegated to three validators:
 
 - Helius Validator
 - Meteora LP Army Validator
 - MonkeDAO Validator
 
-The $PEGGED token (on-chain name: crankSOL) is Liquid Staked SOL, launched on top of Sanctum. 
-
-APRs on $PEGGED will be around 7%, depending on Solana Staking Yield Rates.
-
-## Gud Fee Tek
-
-crank.money is built on top of Meteora DLMM. This debut harvest strategy is an automation layer which when applied to pump.fun tokens ought to provide users with an advantage over their counterparties. 
-
-DLMM also enables the crank.money to form protocol owned LP positions, which reduce sell pressure on the tokens that users trade on the platform. 
-
-For example, if you are buying $CRANK at lower ranges, the protocol charges a fee on those purchases. That means that the protocol now holds some $CRANK. 
-
-Instead of selling that $CRANK immediately for SOL, a protocol owned LP position opens, and crank.money uses its own tech to convert that $CRANK into SOL as more buy pressure occures. 
-
-Meteroa DLMM is Gud Fee Tek.
-
----
-
-## FAQ
-
-**Why Meteora DLMM?**
-Single-sided bid-ask orders in discrete price bins. crank.money watches those bins, and after they convert, pulls them back into your wallet.
-
-**Why not just use Meteora directly?**
-crank.money is an automation cooperative for yield-bearing limit orders. Our programs are a minimalist vault wrapper on DLMM positions. Our LaserStream gRPC subscription provides an economy of scale — one connection monitoring all positions in the wrapper.
-
-crank.money helps pump.fun traders get better buys and sells, and offers an edge to compete with other more sophisticated players in that ecosystem.
-
-**What happened to the NFT burn system?**
-The original monke-bananas NFT burn program has been retired. It was replaced by the $BANK token system — burn $CRANK to mint $BANK, then earn $PEGGED proportional to your BANK holdings via daily Merkle distribution. Simpler, more scalable, no NFT requirement.
-
-**Does it work with Token-2022 / pump.fun tokens?**
-Yes. All CPI uses V2 variants natively (Token-2022 compatible). Zero additional configuration. Exception: Token-2022 mints with active transfer hooks are not yet supported.
-
----
-
-*crank.money*
-
+$PEGGED is Liquid Staked SOL launched on Sanctum. APR ~7% depending on Solana staking yield.
 
 ## Project Structure
 
 ```
 crank-money/
-├── programs/           # Anchor workspace
-│   ├── bank-mint/      #   Burn $CRANK → mint $BANK 1:1
-│   ├── bin-farm/       #   Core: positions, harvest, rovers, 40/40/20 split
-│   ├── gauge-voter/    #   Global-state pool weight voting
-│   ├── merkle-distributor/ # Cumulative $PEGGED Merkle claims
-│   ├── monke-bananas/  #   CLOSED (source retained for reference)
-│   └── pegged-bridge/  #   SOL → stake → $PEGGED → Merkle vault
+├── programs/           # Anchor workspace (5 active programs)
+│   ├── bank-mint/
+│   ├── bin-farm/
+│   ├── gauge-voter/
+│   ├── merkle-distributor/
+│   └── pegged-bridge/
 ├── bot/                # Crank's Harvester (off-chain infrastructure)
-├── public/             # Static assets: HTML, CSS, config
-├── src/frontend/       # Modular frontend: pages, plugins, tribes
-├── src/generated/      # Codama-generated TypeScript clients
-├── scripts/            # Build, deploy, admin, tribe scaffolding
-├── docs/               # Bot integration spec
-└── ref/dlmm-sdk/       # Cloned Meteora DLMM SDK (CPI source of truth)
+├── public/             # On-chain referenced assets (token logos, metadata)
+├── scripts/            # Deploy, diagnostics, admin utilities
+└── deploy/nginx/       # Production nginx config
 ```
 
 ## Build & Deploy
 
 ```bash
 npm install
-anchor build                                # All programs
+anchor build
 solana program deploy target/deploy/bin_farm.so \
   --program-id 8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia
 ```
 
-IDL generation: `anchor idl build -p bin_farm` / `-p bank_mint` / `-p gauge_voter` / `-p merkle_distributor` / `-p pegged_bridge`. Codama clients: `node scripts/generate-clients.mjs`. Pin `blake3` and `borsh` to 1.5.5 after `cargo update`.
+IDL generation: `anchor idl build -p bin_farm` (repeat for each program). Codama clients: `node scripts/generate-clients.mjs`. Pin `blake3` and `borsh` to 1.5.5 after `cargo update`.
 
 ## Run Crank's Harvester
 
 ```bash
 cp bot/anchor-harvest-bot.env.example bot/.env
-# Edit bot/.env — set RPC_URL, GRPC_ENDPOINT, etc.
+# Edit bot/.env — set RPC_URL, GRPC_ENDPOINT, BOT_KEYPAIR_PATH, program IDs
 npm run bot
 ```
 
-## Run Frontend
+## Testing
 
 ```bash
-node scripts/build-frontend.mjs && npx serve dist              # crank.money (default)
-node scripts/build-frontend.mjs --tribe=gsd && npx serve dist  # gsd.crank.money
+npm test                               # Unit tests (bin detection, queue dedup, contiguity)
+npx tsx scripts/fee-dashboard.ts       # Fee pipeline snapshot
+npx tsx scripts/preflight-check.ts     # Verify all programs + PDAs on-chain
 ```
-
-## Tribe Frontends
-
-Tribes are branded community frontends sharing the same protocol. Each gets a subdomain (e.g., `gsd.crank.money`).
-
-**Create a new tribe:**
-```bash
-node scripts/create-tribe.mjs --id=newtribe --title="NewTribe" --mint=<token-address> --bg="#1a1a2e" --accent="#e94560" --text="#eaeaea"
-```
-
-**Deploy:** Each tribe is a separate Vercel project importing this repo, with build command `npm run build:frontend -- --tribe=<id>`.
-
-## Mainnet Addresses
-
-### Programs
-
-| Program | Address |
-|---------|---------|
-| core (bin_farm) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` |
-| bank_mint | `FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk` |
-| gauge_voter | `DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA` |
-| merkle_distributor | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` |
-| pegged_bridge | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` |
-| monke_bananas (closed) | `myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH` |
-
-### Tokens
-
-| Item | Address |
-|------|---------|
-| $CRANK Mint | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` |
-| $BANK Mint | `BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA` |
-| $PEGGED Mint (crankSOL LST) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` |
-| SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` |
 
 ## Deployment
 
 | Component | URL |
 |-----------|-----|
-| Frontend | [crank.money](https://www.crank.money/) |
-| GSD Frontend | gsd.crank.money |
 | Bot Relay | `wss://bot.crank.money` |
 
 ## Security
@@ -243,8 +158,7 @@ node scripts/create-tribe.mjs --id=newtribe --title="NewTribe" --mint=<token-add
 - Meteora DLMM SDK (`@meteora-ag/dlmm`)
 - Helius LaserStream gRPC (`@triton-one/yellowstone-grpc`)
 - tsx (TypeScript execution for bot)
-- `@solana/kit` (Codama-generated client runtime)
-- esbuild (build: bundle + minify)
+- esbuild (Codama client generation)
 
 ## License
 

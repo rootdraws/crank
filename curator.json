@@ -1,0 +1,60 @@
+{
+  "_note": "Mirror of curator.md — update both when adding/changing pools. This file is read by the bot. curator.md is for Root.",
+  "pools": [
+    {
+      "id": "sol-usdc-tight",
+      "label": "SOL/USDC",
+      "address": "REPLACE_WITH_REAL_ADDRESS",
+      "binStep": 1,
+      "tokenX": "SOL",
+      "tokenY": "USDC",
+      "mintX": "So11111111111111111111111111111111111111112",
+      "mintY": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "decimalsX": 9,
+      "decimalsY": 6,
+      "displayMode": "price",
+      "splitStrategy": "auto",
+      "maxRangePct": 0.7,
+      "buyToken": "SOL",
+      "quoteToken": "USDC",
+      "notes": "Tight 1-step pool. Auto-splits for wide ranges."
+    },
+    {
+      "id": "sol-usdc-wide",
+      "label": "SOL/USDC wide",
+      "address": "REPLACE_WITH_REAL_ADDRESS",
+      "binStep": 80,
+      "tokenX": "SOL",
+      "tokenY": "USDC",
+      "mintX": "So11111111111111111111111111111111111111112",
+      "mintY": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "decimalsX": 9,
+      "decimalsY": 6,
+      "displayMode": "price",
+      "splitStrategy": "reject",
+      "maxRangePct": 75.2,
+      "buyToken": "SOL",
+      "quoteToken": "USDC",
+      "notes": "Wide pool. Used when tight pool range requires >3 positions."
+    },
+    {
+      "id": "crank-sol",
+      "label": "CRANK/SOL",
+      "address": "REPLACE_WITH_REAL_ADDRESS",
+      "binStep": 100,
+      "tokenX": "CRANK",
+      "tokenY": "SOL",
+      "mintX": "Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump",
+      "mintY": "So11111111111111111111111111111111111111112",
+      "decimalsX": 6,
+      "decimalsY": 9,
+      "displayMode": "mc",
+      "supply": 1900000000,
+      "splitStrategy": "auto",
+      "maxRangePct": 100.5,
+      "buyToken": "CRANK",
+      "quoteToken": "SOL",
+      "notes": "1.9B supply — NOT standard 1B. MC display mode."
+    }
+  ]
+}
