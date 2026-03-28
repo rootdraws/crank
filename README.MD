@@ -1,17 +1,19 @@
 # crank.money
 
-**Limit orders that earn fees. Burn $CRANK, earn $PEGGED.**
+**Limit orders that earn fees. Burn $CRANK, mint $BANK, earn $PEGGED.**
 
-Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream and NFT revenue sharing (SMB Gen2/Gen3/gooseswtf) on Solana.
+Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream. Revenue shared via $BANK token governance and daily Merkle distribution on Solana.
 
 ## Programs
 
 | Program | Description |
 |---------|-------------|
-| `bin_farm` | Position wrapper on Meteora DLMM.|
-| `bin_farm` (sweep_rover) | 50% of protocol fees are swept to $PEGGED. 50% to development. Program also manages Protocol Owned DLMM positions to reduce sell pressure on TOKEN fees.|
-| `monke_bananas.rs` | Burn 1M $CRANK, Earn $PEGGED. MasterChef contract distributes $PEGGED amongst NFT holders who have burned $CRANK. |
-| `pegged_bridge.rs` | Deposits SOL into SPL multi-stake pool (Helius + LP Army + MonkeDAO validators), receives $PEGGED, forwards to dist_pool ATA on monke_bananas. |
+| `bin_farm` (core) | Position wrapper on Meteora DLMM. Manages positions, harvest, close, rovers. `sweep_rover` splits 40/40/20: 40% BANK holders, 40% traders, 20% operations. |
+| `bank_mint` | Burn $CRANK to mint $BANK 1:1. Supply cap: `bank_supply + crank_supply <= 2B`. |
+| `gauge_voter` | BANK holders vote on global pool weights. Votes stick permanently. Admin-curated pools. |
+| `merkle_distributor` | Cumulative $PEGGED distribution via Merkle proofs. Daily epoch at 4:20 PM CST. IPFS-pinned trees. |
+| `pegged_bridge` | Deposits SOL into SPL multi-stake pool (Helius + LP Army + MonkeDAO validators), receives $PEGGED, forwards to Merkle distributor vault. |
+| `monke_bananas` | **CLOSED** — program deleted from chain, rent reclaimed. Was: NFT-weighted MasterChef $PEGGED distribution. |
 
 ## The Problem
 
@@ -76,22 +78,25 @@ Users are providing discretionary liquidity to the market and withdrawing on fil
 
 ---
 
-## Burn $CRANK, Earn $PEGGED.
+## $BANK Token — Burn $CRANK, Earn $PEGGED
 
-To support existing NFT communities, MonkeDAO has been integrated into the tokenomics of crank.money.
+Burn $CRANK to mint $BANK at a 1:1 ratio. Supply cap enforced on-chain: `bank_supply + crank_supply <= 2 Billion`.
 
-1. Hold an eligible NFT — SMB Gen2, SMB Gen3, or gooseswtf pixel goose (GooseDAO membership required on first burn).
-2. Burn $CRANK to that NFT.
-3. Claim $PEGGED.
+**How revenue flows:**
 
-- 1M $CRANK minimum per burn.
-- 50% of protocol fees are converted to $PEGGED and distributed to burners.
-- 50% of protocol fees fund bot operations and builds.
-- NFTs are fully tradeable. Weight and unclaimed $PEGGED travel with the NFT.
+1. Protocol fees (0.3% on converted output) are collected by the rover system.
+2. `sweep_rover` splits fees 40/40/20:
+   - **40% BANK holders** — SOL → staked via SPL stake pool → $PEGGED → Merkle distributor vault
+   - **40% Traders** — distributed proportional to fees paid, weighted by gauge votes
+   - **20% Operations** — self-funding bot infrastructure
+3. Daily Merkle tree at 4:20 PM CST combines both holder and trader rewards.
+4. Bot auto-claims for custody wallets. Trees pinned to IPFS for transparency.
 
-## WTF is $PEGGED.
+**Gauge voting:** BANK holders call `vote()` to influence how the 40% trader reward is allocated across curated trading pools. Votes stick permanently — the mutation persists even after selling BANK.
 
-50% of Protocol Trade Fees are turned into a SOL Liquid Staking token, as those fees are deposited into three validators: 
+## WTF is $PEGGED
+
+The 40% holder share and 40% trader share of Protocol Trade Fees are turned into a SOL Liquid Staking token, deposited into three validators: 
 
 - Helius Validator
 - Meteora LP Army Validator
@@ -125,12 +130,8 @@ crank.money is an automation cooperative for yield-bearing limit orders. Our pro
 
 crank.money helps pump.fun traders get better buys and sells, and offers an edge to compete with other more sophisticated players in that ecosystem.
 
-**Did you say $CRANK gets burned?**
-Yep. The Dev doesn't sell $CRANK -- just burns it.
-50% of protocol fees go to burners, so you might consider doing that as well.
-
-**Why Solana Monke Business?**
-SMB Gen2 & Gen3 NFTs have great taste, and crank.money will be submitting as a project to the MonkeFoundry Incubator. 
+**What happened to the NFT burn system?**
+The original monke-bananas NFT burn program has been retired. It was replaced by the $BANK token system — burn $CRANK to mint $BANK, then earn $PEGGED proportional to your BANK holdings via daily Merkle distribution. Simpler, more scalable, no NFT requirement.
 
 **Does it work with Token-2022 / pump.fun tokens?**
 Yes. All CPI uses V2 variants natively (Token-2022 compatible). Zero additional configuration. Exception: Token-2022 mints with active transfer hooks are not yet supported.
@@ -144,12 +145,19 @@ Yes. All CPI uses V2 variants natively (Token-2022 compatible). Zero additional 
 
 ```
 crank-money/
-├── programs/           # Anchor workspace: bin-farm, monke-bananas, pegged-bridge
+├── programs/           # Anchor workspace
+│   ├── bank-mint/      #   Burn $CRANK → mint $BANK 1:1
+│   ├── bin-farm/       #   Core: positions, harvest, rovers, 40/40/20 split
+│   ├── gauge-voter/    #   Global-state pool weight voting
+│   ├── merkle-distributor/ # Cumulative $PEGGED Merkle claims
+│   ├── monke-bananas/  #   CLOSED (source retained for reference)
+│   └── pegged-bridge/  #   SOL → stake → $PEGGED → Merkle vault
 ├── bot/                # Crank's Harvester (off-chain infrastructure)
 ├── public/             # Static assets: HTML, CSS, config
 ├── src/frontend/       # Modular frontend: pages, plugins, tribes
 ├── src/generated/      # Codama-generated TypeScript clients
-├── scripts/            # Build, deploy, tribe scaffolding
+├── scripts/            # Build, deploy, admin, tribe scaffolding
+├── docs/               # Bot integration spec
 └── ref/dlmm-sdk/       # Cloned Meteora DLMM SDK (CPI source of truth)
 ```
 
@@ -157,13 +165,12 @@ crank-money/
 
 ```bash
 npm install
-PATH="$HOME/.cargo/bin:$PATH" cargo-build-sbf --manifest-path programs/bin-farm/Cargo.toml
+anchor build                                # All programs
 solana program deploy target/deploy/bin_farm.so \
-  --program-id 8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia \
-  --url mainnet-beta
+  --program-id 8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia
 ```
 
-IDL generation: `anchor idl build -p bin_farm` / `-p monke_bananas` / `-p pegged_bridge`. Codama clients: `node scripts/generate-clients.mjs`. Pin `blake3` and `borsh` to 1.5.5 after `cargo update`.
+IDL generation: `anchor idl build -p bin_farm` / `-p bank_mint` / `-p gauge_voter` / `-p merkle_distributor` / `-p pegged_bridge`. Codama clients: `node scripts/generate-clients.mjs`. Pin `blake3` and `borsh` to 1.5.5 after `cargo update`.
 
 ## Run Crank's Harvester
 
@@ -198,14 +205,18 @@ node scripts/create-tribe.mjs --id=newtribe --title="NewTribe" --mint=<token-add
 | Program | Address |
 |---------|---------|
 | core (bin_farm) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` |
-| monke_bananas | `myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH` |
+| bank_mint | `FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk` |
+| gauge_voter | `DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA` |
+| merkle_distributor | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` |
 | pegged_bridge | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` |
+| monke_bananas (closed) | `myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH` |
 
 ### Tokens
 
 | Item | Address |
 |------|---------|
 | $CRANK Mint | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` |
+| $BANK Mint | `BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA` |
 | $PEGGED Mint (crankSOL LST) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` |
 | SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` |
 
@@ -219,13 +230,13 @@ node scripts/create-tribe.mjs --id=newtribe --title="NewTribe" --mint=<token-add
 
 ## Security
 
-- Program can be upgraded.
+- Programs can be upgraded (upgrade authority held by deployer).
 - AI Audit using [Adversarial Spec](https://github.com/zscole/adversarial-spec) and several rounds of analysis with Opus 4.6.
 - All harvests and sweeps can be cranked by anyone when the bot is stale, preventing fund lock-up.
 
 ## Dependencies
 
-- Solana CLI 3.0+ (Agave) or 1.18+
+- Solana CLI 3.0+ (Agave)
 - Anchor 0.31.1
 - Rust (via rustup)
 - Node.js 18+

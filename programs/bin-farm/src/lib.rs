@@ -7,7 +7,7 @@
 // SECURITY FIXES applied:
 // - Vault PDA is per-position (not per-pool) — prevents cross-position drainage
 // - All token accounts validated for correct owner
-// - All fees route to rover_authority ATAs (sweep_rover splits 50/50: holders + bot)
+// - All fees route to rover_authority ATAs (sweep_rover splits 40/40/20: holders + traders + bot)
 // - Meteora accounts explicit in contexts (not remaining_accounts)
 // - claim_fees fully wired (was a stub)
 // - All 4 CPI TODOs replaced with verified Meteora CPI calls
@@ -486,7 +486,7 @@ pub mod bin_farm {
             }
         }
 
-        // Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50: holders + bot)
+        // Fee routing: all fees → rover_authority ATAs (sweep_rover splits 40/40/20: holders + traders + bot)
         //   TOKEN fees (Buy side) → rover_fee_token_x for DLMM recycling
         //   SOL fees (Sell side)  → rover_fee_token_y (WSOL, unwrapped later via close_rover_token_account)
         if x_to_protocol > 0 {
