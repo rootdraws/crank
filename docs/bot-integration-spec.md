@@ -35,7 +35,7 @@ Codama-generated TypeScript clients: run `node scripts/generate-clients.mjs` aft
 | Token | Mint | Decimals |
 |-------|------|----------|
 | $CRANK | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` | 6 |
-| $BANK | TBD (created at deployment) | 6 |
+| $BANK | `BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA` | 6 |
 | $PEGGED (crankSOL) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` | 9 |
 
 ## Revenue Split (bin-farm sweep_rover)

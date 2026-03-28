@@ -2029,10 +2029,85 @@
       ]
     },
     {
+      "name": "set_trader_dest",
+      "docs": [
+        "Set the trader reward destination. Admin only.",
+        "Must be called before sweep_rover will include trader share."
+      ],
+      "discriminator": [
+        236,
+        205,
+        125,
+        198,
+        131,
+        178,
+        44,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_authority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  118,
+                  101,
+                  114,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "trader_dest",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "sweep_rover",
       "docs": [
-        "Sweep SOL from rover_authority — 60% to bridge_vault (monke holders), 40% to bot (operations).",
-        "Hardcoded split. Permissionless — anyone can call."
+        "Sweep SOL from rover_authority — 40% holders, 40% traders, 20% bot.",
+        "Permissionless — anyone can call."
       ],
       "discriminator": [
         199,
@@ -2102,6 +2177,10 @@
         },
         {
           "name": "revenue_dest",
+          "writable": true
+        },
+        {
+          "name": "trader_dest",
           "writable": true
         },
         {
@@ -2894,6 +2973,16 @@
       "code": 6031,
       "name": "InvalidBot",
       "msg": "Invalid bot destination"
+    },
+    {
+      "code": 6032,
+      "name": "InvalidTraderDest",
+      "msg": "Invalid trader destination"
+    },
+    {
+      "code": 6033,
+      "name": "TraderDestNotSet",
+      "msg": "Trader destination not set — call set_trader_dest first"
     }
   ],
   "types": [
@@ -3320,7 +3409,10 @@
       "name": "RoverAuthority",
       "docs": [
         "Rover authority PDA — owns rover (bribe) positions.",
-        "Harvest proceeds accumulate here. sweep_rover splits SOL 50/50: 50% to revenue_dest (bridge_vault), 50% to Config.bot."
+        "Harvest proceeds accumulate here. sweep_rover splits SOL 40/40/20:",
+        "40% to revenue_dest (bridge_vault, BANK holders)",
+        "40% to trader_dest (trader reward pool)",
+        "20% to bot (operations)"
       ],
       "type": {
         "kind": "struct",
@@ -3346,11 +3438,15 @@
             "type": "i64"
           },
           {
+            "name": "trader_dest",
+            "type": "pubkey"
+          },
+          {
             "name": "_reserved",
             "type": {
               "array": [
                 "u8",
-                64
+                32
               ]
             }
           }
@@ -3415,7 +3511,11 @@
             "type": "u64"
           },
           {
-            "name": "monke_share",
+            "name": "holder_share",
+            "type": "u64"
+          },
+          {
+            "name": "trader_share",
             "type": "u64"
           },
           {
@@ -3423,7 +3523,11 @@
             "type": "u64"
           },
           {
-            "name": "dist_pool",
+            "name": "holder_dest",
+            "type": "pubkey"
+          },
+          {
+            "name": "trader_dest",
             "type": "pubkey"
           },
           {

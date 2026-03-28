@@ -26,7 +26,7 @@ pegged_bridge = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Devnet"
+cluster = "Mainnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
