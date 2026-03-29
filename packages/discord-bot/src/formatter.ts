@@ -27,6 +27,9 @@ export interface PositionDisplayData {
   quoteSymbol: string;
   quoteDecimals: number;
   createdAt: number;
+  displayMode?: 'price' | 'mc';
+  supply?: number;
+  quoteTokenUsdPrice?: number;
 }
 
 // ─── Position Opened (public reply in channel) ─────────────────────────────
@@ -40,18 +43,43 @@ export function formatPositionOpened(params: {
   amount: number;
   quoteSymbol: string;
   txSig: string;
+  displayMode?: 'price' | 'mc';
+  supply?: number;
+  token?: string;
+  walletAddress?: string;
 }): string {
-  const { side, poolName, priceLow, priceHigh, currentPrice, amount, quoteSymbol, txSig } = params;
+  const { side, poolName, priceLow, priceHigh, amount, quoteSymbol, txSig, displayMode, supply, token, walletAddress } = params;
   const isBuy = side === 'Buy';
-  const status = isBuy
-    ? (currentPrice > priceHigh ? `Current: $${formatPrice(currentPrice)} (above range)` : 'Current: in range')
-    : (currentPrice < priceLow ? `Current: $${formatPrice(currentPrice)} (below range)` : 'Current: in range');
+  const tokenName = token || poolName.split('/')[0];
+
+  let topLabel: string;
+  let bottomLabel: string;
+
+  if (displayMode === 'mc' && supply) {
+    topLabel = formatMcap(priceHigh * supply);
+    bottomLabel = formatMcap(priceLow * supply);
+  } else {
+    topLabel = `$${formatPrice(priceHigh)}`;
+    bottomLabel = `$${formatPrice(priceLow)}`;
+  }
+
+  const addr = walletAddress
+    ? `${walletAddress.slice(0, 4)}...${walletAddress.slice(-4)}`
+    : '';
 
   return (
-    `${isBuy ? 'BUY' : 'SELL'} ${poolName} — $${formatPrice(priceLow)} to $${formatPrice(priceHigh)}\n` +
-    `${status}\n` +
-    `[${amount.toLocaleString()} ${quoteSymbol}](${SOLSCAN_TX}${txSig}) deposited`
+    `${addr} is a ${isBuy ? 'buyer' : 'seller'} of ${tokenName} between:\n` +
+    `Top:    ${topLabel}\n` +
+    `Bottom: ${bottomLabel}\n` +
+    `[${amount} ${quoteSymbol} deposited](${SOLSCAN_TX}${txSig})`
   );
+}
+
+function formatMcap(mcap: number): string {
+  if (mcap >= 1_000_000_000) return `${(mcap / 1_000_000_000).toFixed(1)}b mc`;
+  if (mcap >= 1_000_000) return `${(mcap / 1_000_000).toFixed(1)}m mc`;
+  if (mcap >= 1_000) return `${(mcap / 1_000).toFixed(1)}k mc`;
+  return `$${mcap.toFixed(0)} mc`;
 }
 
 // ─── Position Opened (ephemeral follow-up) ─────────────────────────────────
@@ -60,7 +88,7 @@ export function formatPositionEphemeral(positionPda: string, txSig: string): str
   const shortId = positionPda.slice(0, 8);
   return (
     `ID: ${positionPda}\n` +
-    `TX: ${SOLSCAN_TX}${txSig}\n` +
+    `TX: <${SOLSCAN_TX}${txSig}>\n` +
     `/close ${shortId} to close · /positions to see all`
   );
 }
@@ -112,23 +140,51 @@ export function formatPositionsList(positions: PositionDisplayData[]): string {
     const age = formatAge(Math.floor(p.createdAt / 1000));
     const shortId = p.positionPda.slice(0, 8);
 
-    if (fillPct === 0) {
+    // Price display: mcap for mc-mode pools, USD otherwise
+    const qUsd = p.quoteTokenUsdPrice ?? 1;
+    let rangeLabel: string;
+    let currentLabel: string;
+    if (p.displayMode === 'mc' && p.supply) {
+      rangeLabel = `${formatMcap(minPrice * qUsd * p.supply)} to ${formatMcap(maxPrice * qUsd * p.supply)}`;
       const curPrice = binToPrice(p.activeBinId, p.binStep, p.decimalsX, p.decimalsY);
+      currentLabel = formatMcap(curPrice * qUsd * p.supply);
+    } else {
+      rangeLabel = `$${formatPrice(minPrice)} to $${formatPrice(maxPrice)}`;
+      const curPrice = binToPrice(p.activeBinId, p.binStep, p.decimalsX, p.decimalsY);
+      currentLabel = `$${formatPrice(curPrice)}`;
+    }
+
+    // Determine position status relative to current price
+    const isBuy = p.side === 'Buy';
+    const belowRange = isBuy ? p.activeBinId > p.maxBinId : p.activeBinId > p.maxBinId;
+    const aboveRange = isBuy ? p.activeBinId < p.minBinId : p.activeBinId < p.minBinId;
+    let statusLabel = '';
+    if (fillPct === 0) {
+      if (isBuy && aboveRange) statusLabel = 'Currently above range.';
+      else if (isBuy && belowRange) statusLabel = 'Currently below range.';
+      else if (!isBuy && aboveRange) statusLabel = 'Currently above range.';
+      else if (!isBuy && belowRange) statusLabel = 'Currently below range.';
+      else statusLabel = 'waiting';
+    }
+
+    const harvestedNum = Number(p.harvestedAmount) / Math.pow(10, p.quoteDecimals);
+
+    if (fillPct === 0) {
       return (
-        `(${i + 1}) ${p.side === 'Buy' ? 'BUY' : 'SELL'} ${p.poolName} — $${formatPrice(minPrice)} to $${formatPrice(maxPrice)}\n` +
-        `    [${bar}] waiting\n` +
-        `    Current: $${formatPrice(curPrice)} · ${age} ago · ${shortId}`
+        `(${i + 1}) ${isBuy ? 'BUY' : 'SELL'} ${p.poolName} — ${rangeLabel}\n` +
+        `    [${bar}] 0%\n` +
+        `    ${statusLabel}`
       );
     }
 
     return (
-      `(${i + 1}) ${p.side === 'Buy' ? 'BUY' : 'SELL'} ${p.poolName} — $${formatPrice(minPrice)} to $${formatPrice(maxPrice)}\n` +
+      `(${i + 1}) ${isBuy ? 'BUY' : 'SELL'} ${p.poolName} — ${rangeLabel}\n` +
       `    [${bar}] ${fillPct}%\n` +
-      `    Harvested: ${harvested} ${p.tokenSymbol} · ${age} ago · ${shortId}`
+      `    Harvested: [${harvestedNum.toFixed(harvestedNum >= 1 ? 2 : 4)}] ${p.tokenSymbol}`
     );
   });
 
-  return lines.join('\n\n');
+  return lines.join('\n\n✦. ──────────────────────────────────────── .✦\n\n');
 }
 
 // ─── Harvest DM ────────────────────────────────────────────────────────────
@@ -176,10 +232,18 @@ export function formatFeedOpened(params: {
   amount: number;
   quoteSymbol: string;
   txSig: string;
+  displayMode?: 'price' | 'mc';
+  supply?: number;
 }): string {
+  let range: string;
+  if (params.displayMode === 'mc' && params.supply) {
+    range = `${formatMcap(params.priceLow * params.supply)}–${formatMcap(params.priceHigh * params.supply)}`;
+  } else {
+    range = `$${formatPrice(params.priceLow)}–$${formatPrice(params.priceHigh)}`;
+  }
   return (
-    `opened · ${params.side} ${params.poolName} $${formatPrice(params.priceLow)}–$${formatPrice(params.priceHigh)} · ` +
-    `[${params.amount.toLocaleString()} ${params.quoteSymbol}](${SOLSCAN_TX}${params.txSig}) deposited`
+    `opened · ${params.side} ${params.poolName} ${range} · ` +
+    `[${params.amount} ${params.quoteSymbol}](${SOLSCAN_TX}${params.txSig}) deposited`
   );
 }
 
@@ -211,9 +275,15 @@ export function formatFeedClosed(params: {
 // ─── Error Messages (orangutan voice) ──────────────────────────────────────
 
 export function formatError(msg: string, example?: string): string {
-  let text = `🦧 ${msg}`;
-  if (example) text += `\n   ${example}`;
+  let text = `🦧\n${msg}`;
+  if (example) text += `\n${example}`;
   return text;
+}
+
+export function formatErrorBig(msg: string, example?: string): { monke: string; body: string } {
+  let body = msg;
+  if (example) body += `\n${example}`;
+  return { monke: '🦧', body };
 }
 
 // ─── Balance ───────────────────────────────────────────────────────────────

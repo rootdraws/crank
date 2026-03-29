@@ -6,7 +6,7 @@ The off-chain infrastructure that monitors and executes on Solana. Runs on a Dig
 
 Watches all crank.money DLMM positions via Helius LaserStream gRPC. When price moves through a user's bin range, the bot harvests those bins — pulling converted tokens back to the owner's wallet before the chart reverses. It also runs the daily fee pipeline: sweep fees, stake SOL into $PEGGED, and upload Merkle distributions.
 
-When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 14 slash commands for trading, wallet management, burn/claim, and governance. Harvest and close events are piped to the Discord notifier for DMs and feed channel posts.
+When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 15 slash commands for trading, wallet management, burn/claim, and governance. Harvest and close events are piped to the Discord notifier for DMs and feed channel posts. Gas offloading: harvests and closes are signed with the user's custody keypair (user pays gas), with bot keypair as permissionless fallback.
 
 ## Files
 
@@ -14,9 +14,10 @@ When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 14 sl
 |------|-------------|
 | `anchor-harvest-bot.ts` | Orchestrator / main entry point. Wires modules together, boots the process, runs health server on :8080, manages graceful shutdown. Conditionally starts Discord bot if `DISCORD_TOKEN` is set. |
 | `geyser-subscriber.ts` | Helius LaserStream gRPC subscriber. Parses raw 904-byte LbPair accounts for activeId changes. Maintains in-memory position registry grouped by pool. Emits `harvestNeeded` events. Auto-reconnect with exponential backoff. |
-| `harvest-executor.ts` | Job queue that submits harvest/close transactions. Deduplicates jobs, confirms bin balances via RPC before submitting, handles Token-2022. Max 5 concurrent. |
+| `harvest-executor.ts` | Job queue that submits harvest/close transactions. Deduplicates jobs, confirms bin balances via RPC before submitting, handles Token-2022. Max 5 concurrent. Gas offloading: signs with user's custody keypair when available. Enrichment: reads token deltas from confirmed tx via `getTransaction`. Auto-unwraps WSOL after harvest/close. |
 | `keeper.ts` | Daily fee sequencer (runs once per UTC day). 6 steps: close WSOL → sweep rover (40/40/20 split) → stake_and_forward ($PEGGED) → open fee rovers → new_epoch (Merkle) → close exhausted rovers. |
-| `relay-server.ts` | REST API + WebSocket relay. Exposes bot state: pools, positions, pending harvests, fee pipeline, rovers, protocol PnL, activity feed. |
+| `relay-server.ts` | REST API + WebSocket relay. Exposes bot state: pools, positions, pending harvests, fee pipeline, rovers, protocol PnL, activity feed. `/api/health` returns 503 when unhealthy. |
+| `alerter.ts` | Discord feed channel alerts with 5-min cooldown + dedup. Fires on: gRPC disconnect/reconnect, low bot balance, keeper failures. |
 | `meteora-accounts.ts` | Shared Meteora CPI account resolution + DLMM instance cache (10-min TTL, LRU eviction). Used by executor and keeper. |
 | `logger.ts` | pino logger. |
 | `retry.ts` | Shared `withRetry()` — 3 retries, exponential backoff. |
@@ -50,8 +51,8 @@ Keeper (daily timer)
   └─ close exhausted rovers
 
 DiscordBot (conditional — requires DISCORD_TOKEN)
-  ├─ 14 slash commands: start, balance, deposit, buy, sell,
-  │   positions, close, withdraw, pools, vote, burn, claim, unstake, help
+  ├─ 15 slash commands: start, balance, deposit, buy, sell,
+  │   positions, close, setwithdraw, withdraw, pools, vote, burn, claim, unstake, help
   ├─ Pool routing: multi-pool selection, auto-split, mcap/price/pct input
   ├─ Custodial wallets: AES-256-GCM encrypted keypairs
   └─ Notifier: DM on harvest/close, feed channel posts

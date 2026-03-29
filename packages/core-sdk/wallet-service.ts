@@ -266,6 +266,16 @@ export class WalletService {
 
   // ─── Harvest Tracking ────────────────────────────────────────────────────
 
+  getHarvestedTotal(positionPda: string): bigint {
+    let total = 0n;
+    for (const h of this.data.harvests) {
+      if (h.position_pda === positionPda) {
+        total += BigInt(h.amount_out);
+      }
+    }
+    return total;
+  }
+
   saveHarvest(params: {
     positionPda: string;
     walletPubkey: string;

@@ -186,7 +186,7 @@ export class DiscordNotifier {
   private async sendToFeed(text: string): Promise<void> {
     if (!this.feedChannel) return;
     try {
-      await this.feedChannel.send(text);
+      await this.feedChannel.send({ content: text, flags: 1 << 2 });
     } catch (e: any) {
       console.warn(`[notifier] Failed to post to feed: ${e.message}`);
     }

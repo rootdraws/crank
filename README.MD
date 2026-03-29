@@ -107,7 +107,7 @@ crank-money/
 ├── bot/                # Crank's Harvester (off-chain infrastructure)
 ├── packages/
 │   ├── core-sdk/       # Shared SDK (pool routing, range parsing, wallet service)
-│   └── discord-bot/    # 14 slash commands (buy, sell, vote, burn, claim, unstake, etc.)
+│   └── discord-bot/    # 15 slash commands (buy, sell, vote, burn, claim, setwithdraw, etc.)
 ├── public/             # On-chain referenced assets (token logos, metadata)
 ├── scripts/            # Deploy, diagnostics, admin utilities
 ├── curator.json        # Pool registry + gauge map (read by bot at runtime)

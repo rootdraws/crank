@@ -108,6 +108,8 @@ scripts/
   generate-clients.mjs           — Codama client generation from IDL
   recycle-fee-rover.ts           — Manual fee rover opener
   update-pegged-metadata.ts      — Set $PEGGED logo/URI on-chain
+  close-wsol.ts                  — Close WSOL ATA + return SOL for a custody wallet
+  reclaim-atas.ts                — Close empty token accounts + reclaim rent
 
 packages/
   core-sdk/                      — Shared SDK for chat bot
@@ -250,6 +252,20 @@ node scripts/generate-clients.mjs         # Codama TypeScript clients
 - **PDA seeds:** Validator stake = `[vote_account, stake_pool]` (no prefix if suffix == 0). Transient = `[b"transient", vote_account, stake_pool, seed_u64_le]`. Withdraw auth = `[stake_pool, b"withdraw"]`.
 - **StakePool offsets:** `validator_list`@98, `reserve_stake`@130, `pool_mint`@162, `manager_fee_account`@194, `token_program_id`@226.
 
+**`binIdToBinArrayIndex` uses `Math.trunc` not `Math.floor`.** For negative bin IDs, `Math.floor` rounds toward negative infinity but Meteora's SDK truncates toward zero then subtracts 1 if remainder is non-zero. The off-by-one caused bin array PDAs to mismatch what the on-chain program expected. Fixed in `pda.ts`.
+
+**Gas offloading.** Harvest executor resolves position owner → `walletService.getUserIdForOwner()` → `getOrCreate()` → signs harvest/close with user's custody keypair. User pays gas. Falls back to bot keypair if owner isn't a custody user (permissionless path).
+
+**Harvest enrichment via `getTransaction`.** After harvest/close, executor calls `getTransaction(txSig)` and reads `preTokenBalances`/`postTokenBalances` from the confirmed transaction metadata. Computes deltas per owner per mint. No timing issues (data comes from the validator, not stale RPC reads).
+
+**WSOL auto-unwrap.** `/balance` closes any WSOL ATA before displaying (user pays). Executor also unwraps WSOL after harvest/close using the user's keypair. `/buy` appends a close WSOL ATA instruction to the open_position tx and auto-unwraps on failure.
+
+**Safety poll interval: 30 seconds.** Fallback for pools with low gRPC activity (e.g. CRANK/SOL where arb bots fire in bursts). Primary detection is still gRPC sub-second for active pools.
+
+**Sell command auto-resolves quote token.** `/sell CRANK 25kmc to 30kmc 4000000 CRANK` detects token==quote and resolves actual quote from pool registry.
+
+**`/withdraw` one-liner.** Format: `/withdraw SOL 0.5` or `/withdraw CRANK all`. No address field — sends to locked `/setwithdraw` address. Blocks if no withdraw address set.
+
 **$PEGGED on-chain metadata.** name=`crankSOL`, symbol=`PEGGED`. Metadata PDA: `4jAz3CwfR9MPNsagtUDoah3AZ3v1Lr1SB7BZVx3LjySc`. Logo/URI not yet set. To add: host off-chain JSON, call `UpdateTokenMetadata` (variant 18) via Sanctum program, signed by pool manager. Script: `scripts/update-pegged-metadata.ts`.
 
 **$BANK metadata not yet registered.** Needs Metaplex token metadata: name, symbol, image, off-chain JSON.
@@ -346,11 +362,14 @@ Add `mint_address: 'SYMBOL'`. Used by `/balance` and `/withdraw` for display. Wi
 - **Alerting live** — gRPC disconnect/reconnect, low balance, keeper failures → `#crank-feed` channel
 - **`/setwithdraw`** — one-time withdrawal address lock per user (15th command)
 - **`/api/health`** — returns 503 when unhealthy, ready for external uptime monitor
+- **Gas offloading live** — harvests and closes signed with user's custody keypair (user pays gas)
+- **Harvest enrichment live** — token deltas read from confirmed tx via `getTransaction`
+- **WSOL auto-unwrap** — `/balance` unwraps, executor unwraps after harvest/close, `/buy` unwraps on failure
+- **Safety poll** — 30s interval (fallback for low-activity pools)
 
 ## Known issues
 
 - **Token-2022 transfer hooks unsupported** — V2 CPI but hook extra accounts not resolved. `RemainingAccountsInfo::empty_hooks()` everywhere.
 - **DataPI portfolio endpoints unusable for user positions** — keyed by wallet, but crank.money positions owned by per-position vault PDAs. Rover portfolio works (single `rover_authority` PDA).
 - **Epoch-computer not built yet** — keeper's `crankNewEpoch()` reads `epoch-data.json` but the service that computes the Merkle tree doesn't exist. Daily distributions no-op until built. See `todo.md`.
-- **Harvest DMs show zero amounts** — executor emits `txSig` but not token amounts. Need vault balance deltas. See todo.md Harvest Event Enrichment.
 - **Keypair separation pending** — single keypair controls everything. Needs fresh Ledger for cold admin. See todo.md Tier 4.

@@ -82,7 +82,7 @@ const PEGGED_MINT       = requireEnvPubkey('PEGGED_MINT');
 const COMMITMENT: Commitment    = 'confirmed';
 const KEEPER_ACTIVE_INTERVAL_MS = parseInt(process.env.KEEPER_CHECK_INTERVAL_MS || '3600000'); // 1hr during Active
 const KEEPER_PROCESSING_INTERVAL_MS = 30_000; // 30s during daily processing
-const SAFETY_POLL_INTERVAL_MS   = 5 * 60 * 1000; // 5 minutes
+const SAFETY_POLL_INTERVAL_MS   = 30 * 1000; // 30 seconds
 
 const HEALTH_PORT = parseInt(process.env.HEALTH_PORT || '8080');
 // Validate parsed lamport values are within safe integer range
@@ -477,9 +477,16 @@ class HarvestBot {
     const MIN_BINS = parseInt(process.env.MIN_POSITION_BINS || '2');
     if (maxBin - minBin + 1 < MIN_BINS) return;
 
-    if (side === 'Sell' && activeId <= minBin) return;
-    if (side === 'Buy' && activeId >= maxBin) return;
+    if (side === 'Sell' && activeId <= minBin) {
+      logger.info(`[safety] skip ${pos.publicKey.toBase58().slice(0,8)} Sell: activeId ${activeId} <= minBin ${minBin}`);
+      return;
+    }
+    if (side === 'Buy' && activeId >= maxBin) {
+      logger.info(`[safety] skip ${pos.publicKey.toBase58().slice(0,8)} Buy: activeId ${activeId} >= maxBin ${maxBin}`);
+      return;
+    }
 
+    logger.info(`[safety] ENQUEUE ${pos.publicKey.toBase58().slice(0,8)} ${side} activeId=${activeId} bins=${minBin}..${maxBin}`);
     this.executor.enqueue({
       positionPDA: pos.publicKey.toBase58(),
       lbPair,
@@ -571,6 +578,7 @@ class HarvestBot {
           discordBot.notifier.onPositionClosed(data);
         });
         await discordBot.start();
+        this.executor.setWalletService(discordBot.walletService);
         initAlerter((text) => discordBot.notifier.postToFeed(text));
         logger.info('[discord] Bot started');
       } catch (e: any) {

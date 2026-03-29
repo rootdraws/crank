@@ -7,39 +7,70 @@
 
 ## 🟣 NEXT SESSION — Priority Order
 
-Discord bot is code-complete (15 commands, routing, gauges, harvester integration).
-Everything below is ordered by dependency chain — later tiers are blocked by earlier ones.
+### 1. UI Command Review
+Go through each of the 15 Discord commands one at a time. Test, fix formatting,
+error messages, edge cases. Make it feel polished for real users.
+- [ ] `/start` — wallet creation + prompt to `/setwithdraw`
+- [ ] `/setwithdraw` — one-time lock
+- [ ] `/deposit` — address display
+- [ ] `/balance` — WSOL auto-unwrap, token display
+- [ ] `/buy` — mcap/price/pct input, error messages, position opened format
+- [ ] `/sell` — quote auto-resolve, deposit symbol display
+- [ ] `/positions` — mcap display, fill bars, harvest totals
+- [ ] `/close` — close + harvest, output amounts
+- [ ] `/withdraw` — one-liner format, locked address
+- [ ] `/pools` — price display, examples
+- [ ] `/vote` — gauge voting
+- [ ] `/burn` — CRANK → BANK
+- [ ] `/claim` — Merkle claim
+- [ ] `/unstake` — PEGGED → SOL
+- [ ] `/help` — big monke, command list
 
-### Tier 0 — Security [DONE]
+### 2. PumpSwap↔Meteora Sync Bot
+The harvester depends on arb bots to move the Meteora DLMM pool price in sync
+with PumpSwap. CRANK/SOL has one arb bot (zerona) that fires in bursts — but
+when it's idle, positions sit unfilled even when PumpSwap price moves.
 
-See `security.md` for full checklist.
+Build a lightweight sync bot that watches PumpSwap price and swaps on Meteora
+when the spread exceeds a threshold. Not for profit — for UX. Positions should
+fill when PumpSwap price moves, not 5 minutes later on a safety poll.
 
-- [x] Reset Discord bot token
-- [x] Replace WALLET_ENCRYPTION_KEY (fresh key, no migration needed — no funded wallets)
-- [x] Encryption key backed up: password manager + `/root/.keys/wallet.key`
-- [x] Wallet DB backed up: DO Spaces (per-minute cron) + local copy + daily DO snapshots
-- [x] deploy.sh hardened: pre-deploy backup of wallet DB before rsync
-- [x] setup-droplet.sh rebuilt: fail2ban, unattended-upgrades, SSH hardening, PM2 log rotation
-- [x] Nginx rate limiting: 10 req/s per IP (API), 2 concurrent WS connections per IP
-- [x] `/setwithdraw` — one-time withdrawal address lock per user
-- [ ] Keypair separation — needs a fresh Ledger (cold admin + hot bot-signer). See Tier 4.
+- [ ] Watch PumpSwap CRANK/SOL price (DexScreener or on-chain)
+- [ ] Compare to Meteora DLMM activeId price
+- [ ] If spread > threshold: swap on Meteora to close the gap
+- [ ] Evaluate: self-funding via arb profit, or pure infrastructure cost?
+- [ ] Could run as a module in the existing harvester or standalone
 
-### Tier 1 — Go Live
+### 3. Arbitrage Health Evaluation
+For each pool pair, assess the arb ecosystem:
+- [ ] Who is arbing this pool? How many bots? How fast?
+- [ ] Is the sync bot needed, or do arb bots handle it?
+- [ ] If we run sync ourselves, is it profitable or a cost center?
+- [ ] Can we ride zerona and save the gas, or is zerona unreliable?
+- [ ] Define metrics: time-to-sync (PumpSwap move → Meteora activeId update)
 
-Bot deployed and running as `crankbot#8555`. 15 slash commands registered (global).
-Env vars configured. Feed channel `#crank-feed` resolved.
+### Recommendations
+- Start with the UI review — it's the fastest way to find remaining bugs
+  before real users hit them. The `/buy` and `/sell` flow works but there
+  are likely edge cases in `/close`, `/claim`, `/vote` that haven't been
+  tested yet.
+- The sync bot is the highest-impact infrastructure item. Without it,
+  the harvester is blind to PumpSwap price movement on quiet pools.
+  Build it simple — a timer that checks spread and swaps if profitable.
+- Arb health evaluation can happen passively while testing — just log
+  how long it takes for Meteora to sync after PumpSwap moves.
 
-**Remaining:**
-1. **Test the full command flow** — /start → /setwithdraw → fund wallet → /buy → wait for
-   harvest → DM notification → /positions → /close → /withdraw → /burn → /claim → /unstake
+---
 
-### Tier 2 — Before Real Users
+### Previous tiers (for reference)
 
-- **Harvest Event Enrichment** — DMs currently show "0 SOL harvested" (no vault balance deltas). Embarrassing.
+**Tier 0 — Security [DONE]** — see `security.md`
 
-### Tier 3 — Before Scaling
+**Tier 1 — Go Live [IN PROGRESS]** — bot live, commands registered, testing underway
 
-- **Gas Offloading** — sign harvests/auto-close with user's custody keypair. Without this, 10 active users drain the bot wallet.
+**Tier 2 — Before Real Users [DONE]** — harvest enrichment + gas offloading
+
+**Tier 3 — Before Scaling**
 - **Epoch-Computer** — the entire revenue distribution (40% holders + 40% traders via Merkle tree) is a no-op until this exists. The flywheel doesn't turn.
 
 ### Tier 4 — Quality of Life
@@ -61,35 +92,13 @@ Env vars configured. Feed channel `#crank-feed` resolved.
 
 ## 🔴 HIGH PRIORITY
 
-### Gas Offloading — User-Paid Harvests + Auto-Close + Auto-Claim
-The bot holds every custody keypair. All per-user operations can be signed with
-the user's keypair, using the user's SOL for gas instead of the bot wallet.
-This is critical for scaling — without it, the 20% operations cut must cover
-gas for every harvest of every user, which doesn't scale.
+### Gas Offloading — User-Paid Harvests + Auto-Close [DONE]
+Harvest and close transactions signed with user's custody keypair. Bot keypair as
+permissionless fallback for non-custody positions. WSOL auto-unwrapped after harvest/close.
 
-**User pays gas for (their custody wallet SOL):**
-- `harvest_bins` — bot signs with user's custody keypair
-- `close_position` (auto-close on fully filled) — same
-- `claim` (auto-claim at epoch) — program supports payer != claimant, but
-  easier to just sign as the user since we hold the keypair
-- All Discord commands (already the case: /buy, /sell, /close, /burn, /vote, /withdraw)
-
-**Bot pays gas for (protocol-level only):**
-- `sweep_rover` — 40/40/20 fee split
-- `stake_and_forward` — SOL → $PEGGED pipeline
-- `open_fee_rover` — token fee conversion
-- `new_epoch` — Merkle root upload
-- `close_exhausted_rovers` — rent recovery
-- Sanctum pool updates
-
-**Implementation:**
-- [ ] In harvest-executor: look up position owner → `walletService.getOrCreate(userId)` → sign with user keypair
-- [ ] In auto-close path: same — use owner's custody keypair
-- [ ] Add auto-claim at epoch: for each user in the Merkle tree, claim using their custody keypair.
-  Stubbed as `notifier.onEpochComplete()` — wire from keeper after `crankNewEpoch()`.
-  If user has SOL: auto-claim + DM "Claimed X $PEGGED". If dry: DM "deposit SOL to auto-claim or /claim manually".
-- [ ] Add minimum SOL balance check before harvesting — if user is dry, queue a DM notification ("fund your wallet to keep harvesting")
-- [ ] Fallback: if user has no SOL, bot keypair can still harvest as permissionless fallback (existing path, uses keeper_tip_bps)
+**Remaining:**
+- [ ] Auto-claim at epoch: for each user in the Merkle tree, claim using their custody keypair
+- [ ] Minimum SOL balance check before harvesting — DM notification if user is dry
 
 ### Keypair Separation
 The single keypair on the droplet (`/root/.keys/bot-keypair.json`) is admin authority
@@ -187,16 +196,10 @@ Explains the product, links to add the bot to Discord/Telegram.
 - [ ] Call `UpdateTokenMetadata` via Sanctum program to set $PEGGED URI
 - [ ] Verify both render correctly in Phantom / Solflare / Jupiter
 
-### Harvest Event Enrichment
-Executor emits `harvestExecuted` and `positionClosed` with `txSig` (fixed) but without
-token amounts. Notifier falls back to '0' for `tokenXAmount`, `tokenYAmount`, `feeAmount`,
-`totalHarvested` — harvest DMs show zero amounts. Need vault balance deltas.
-
-- [ ] In harvest-executor: read vault token balances before and after harvest CPI
-- [ ] Compute `x_received`, `y_received` from deltas (same pattern as on-chain program)
-- [ ] Compute fee amount: `received * fee_bps / 10_000`
-- [ ] Track cumulative `totalHarvested` per position in walletService
-- [ ] Include all fields in emitted events
+### Harvest Event Enrichment [DONE]
+Token deltas read from confirmed tx via `getTransaction` pre/post balances.
+Cumulative totals tracked via `walletService.getHarvestedTotal()`.
+Displayed in `/positions` and feed channel.
 
 ---
 
@@ -293,3 +296,15 @@ token amounts. Notifier falls back to '0' for `tokenXAmount`, `tokenYAmount`, `f
 - [x] Fixed mcap-to-bin conversion for non-USD quote pools (CRANK/SOL) — USD prices divided by quoteTokenUsdPrice before priceToBin
 - [x] Fixed setup tx CU limit — 800K for bin array init (was 200K, exceeded on binStep 80 pools)
 - [x] Improved /buy error messages — extracts simulation log failure reason, logs full error server-side
+- [x] Fixed `binIdToBinArrayIndex` — Math.trunc not Math.floor for negative bins (off-by-one caused wrong bin array PDAs)
+- [x] Gas offloading — harvest/close signed with user's custody keypair, bot keypair as permissionless fallback
+- [x] Harvest enrichment — token deltas read from confirmed tx via `getTransaction` pre/post balances
+- [x] WSOL auto-unwrap — `/balance` unwraps before display, executor unwraps after harvest/close, `/buy` unwraps on failure
+- [x] Safety poll interval reduced from 5min to 30sec
+- [x] `/withdraw` one-liner — format: `/withdraw SOL 0.5`, sends to locked `/setwithdraw` address
+- [x] Sell command auto-resolves quote token when user types base token as quote
+- [x] Position display — mcap format for mc-mode pools, fill bars, separator styling
+- [x] Big monke emoji — separate message for pre-defer errors (Discord renders emoji at 3x size)
+- [x] Harvest totals in `/positions` via `walletService.getHarvestedTotal()`
+- [x] Added utility scripts: `close-wsol.ts`, `reclaim-atas.ts`
+- [x] Backfilled harvest amounts from on-chain tx data for existing records

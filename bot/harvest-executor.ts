@@ -21,7 +21,9 @@ import {
 import { Program } from '@coral-xyz/anchor';
 import {
   getAssociatedTokenAddressSync,
+  createCloseAccountInstruction,
   TOKEN_PROGRAM_ID,
+  NATIVE_MINT,
 } from '@solana/spl-token';
 import DLMM from '@meteora-ag/dlmm';
 import { EventEmitter } from 'events';
@@ -59,6 +61,7 @@ interface ExecutorConfig {
   botKeypair: Keypair;
   coreProgramId: PublicKey;
   maxConcurrent?: number;
+  walletService?: any;
 }
 
 // ═══ HELPERS ═══
@@ -88,6 +91,7 @@ export class HarvestExecutor extends EventEmitter {
   private botKeypair: Keypair;
   private coreProgramId: PublicKey;
   private maxConcurrent: number;
+  private walletService: any;
 
   private inflight: Set<string> = new Set();
   private jobQueue: HarvestJob[] = [];
@@ -107,6 +111,11 @@ export class HarvestExecutor extends EventEmitter {
     this.botKeypair = config.botKeypair;
     this.coreProgramId = config.coreProgramId;
     this.maxConcurrent = config.maxConcurrent ?? 5;
+    this.walletService = config.walletService ?? null;
+  }
+
+  setWalletService(ws: any): void {
+    this.walletService = ws;
   }
 
   // ─── JOB QUEUE ───
@@ -269,19 +278,25 @@ export class HarvestExecutor extends EventEmitter {
     const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
     const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
+    // Gas offloading: use owner's custody keypair if available, else bot pays
+    const userId = this.walletService?.getUserIdForOwner(job.owner.toBase58());
+    const userKeypair = userId ? this.walletService.getOrCreate(userId) : null;
+    const signer = userKeypair || this.botKeypair;
+    const payer = signer.publicKey;
+
     // Ensure owner + rover ATAs exist (idempotent — no-op if already created)
     const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
     const createOwnerAtaX = createAssociatedTokenAccountIdempotentInstruction(
-      this.botKeypair.publicKey, ownerTokenX, job.owner, meteora.tokenXMint, meteora.tokenXProgram,
+      payer, ownerTokenX, job.owner, meteora.tokenXMint, meteora.tokenXProgram,
     );
     const createOwnerAtaY = createAssociatedTokenAccountIdempotentInstruction(
-      this.botKeypair.publicKey, ownerTokenY, job.owner, meteora.tokenYMint, meteora.tokenYProgram,
+      payer, ownerTokenY, job.owner, meteora.tokenYMint, meteora.tokenYProgram,
     );
     const createRoverAtaX = createAssociatedTokenAccountIdempotentInstruction(
-      this.botKeypair.publicKey, roverFeeTokenX, roverAuthority, meteora.tokenXMint, meteora.tokenXProgram,
+      payer, roverFeeTokenX, roverAuthority, meteora.tokenXMint, meteora.tokenXProgram,
     );
     const createRoverAtaY = createAssociatedTokenAccountIdempotentInstruction(
-      this.botKeypair.publicKey, roverFeeTokenY, roverAuthority, meteora.tokenYMint, meteora.tokenYProgram,
+      payer, roverFeeTokenY, roverAuthority, meteora.tokenYMint, meteora.tokenYProgram,
     );
 
     // Priority fees to survive Solana congestion
@@ -291,7 +306,7 @@ export class HarvestExecutor extends EventEmitter {
       () => this.coreProgram.methods
         .harvestBins(binIds)
         .accounts({
-          bot:                this.botKeypair.publicKey,
+          bot:                payer,
           config:             configPDA,
           position:           new PublicKey(job.positionPDA),
           vault:              vaultPda,
@@ -319,10 +334,49 @@ export class HarvestExecutor extends EventEmitter {
           memoProgram:        meteora.memoProgram,
         })
         .preInstructions([...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY])
-        .signers([this.botKeypair])
+        .signers([signer])
         .rpc(),
       `harvest ${key.slice(0, 8)}`
     );
+
+    // Read token deltas from the confirmed transaction (no timing issues)
+    let deltaX = 0n, deltaY = 0n;
+    try {
+      const txData = await this.connection.getTransaction(txSig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+      if (txData?.meta) {
+        const ownerKey = job.owner.toBase58();
+        const pre = txData.meta.preTokenBalances ?? [];
+        const post = txData.meta.postTokenBalances ?? [];
+        for (const p of post) {
+          if (p.owner !== ownerKey) continue;
+          const preEntry = pre.find(e => e.accountIndex === p.accountIndex);
+          const preBal = BigInt(preEntry?.uiTokenAmount?.amount ?? '0');
+          const postBal = BigInt(p.uiTokenAmount.amount);
+          const delta = postBal - preBal;
+          if (delta <= 0n) continue;
+          if (p.mint === meteora.tokenXMint.toBase58()) deltaX = delta;
+          else if (p.mint === meteora.tokenYMint.toBase58()) deltaY = delta;
+        }
+      }
+    } catch { /* best-effort */ }
+
+    // Auto-unwrap WSOL after harvest so user sees native SOL
+    if (userKeypair && (meteora.tokenYMint.equals(NATIVE_MINT) || meteora.tokenXMint.equals(NATIVE_MINT))) {
+      try {
+          const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, job.owner, true, TOKEN_PROGRAM_ID);
+          const { Transaction } = await import('@solana/web3.js');
+          const tx = new Transaction().add(
+            createCloseAccountInstruction(wsolAta, job.owner, job.owner, [], TOKEN_PROGRAM_ID)
+          );
+          const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
+          tx.recentBlockhash = blockhash;
+          tx.lastValidBlockHeight = lastValidBlockHeight;
+          tx.feePayer = job.owner;
+          tx.sign(userKeypair);
+          await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+          logger.info(`  [executor] Auto-unwrapped WSOL for ${job.owner.toBase58().slice(0, 8)}`);
+      } catch { /* WSOL ATA may not exist */ }
+    }
 
     // Structured logging for forensic reconstruction
     logger.info({
@@ -333,6 +387,8 @@ export class HarvestExecutor extends EventEmitter {
       side: job.side,
       pool: job.lbPair.toBase58().slice(0, 8),
       txSig,
+      tokenXReceived: deltaX.toString(),
+      tokenYReceived: deltaY.toString(),
     }, `Harvest submitted: ${binIds.length} bins from ${key.slice(0, 8)}`);
     this.lastHarvestTime = Date.now();
     this.totalHarvests++;
@@ -343,6 +399,8 @@ export class HarvestExecutor extends EventEmitter {
       side: job.side,
       binCount: binIds.length,
       txSig,
+      tokenXAmount: deltaX.toString(),
+      tokenYAmount: deltaY.toString(),
     });
   }
 
@@ -371,29 +429,33 @@ export class HarvestExecutor extends EventEmitter {
     const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
     const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
+    // Gas offloading: use owner's custody keypair if available, else bot pays
+    const userId = this.walletService?.getUserIdForOwner(job.owner.toBase58());
+    const userKeypair = userId ? this.walletService.getOrCreate(userId) : null;
+    const signer = userKeypair || this.botKeypair;
+    const payer = signer.publicKey;
+
     const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
     const createOwnerAtaX = createAssociatedTokenAccountIdempotentInstruction(
-      this.botKeypair.publicKey, ownerTokenX, job.owner, meteora.tokenXMint, meteora.tokenXProgram,
+      payer, ownerTokenX, job.owner, meteora.tokenXMint, meteora.tokenXProgram,
     );
     const createOwnerAtaY = createAssociatedTokenAccountIdempotentInstruction(
-      this.botKeypair.publicKey, ownerTokenY, job.owner, meteora.tokenYMint, meteora.tokenYProgram,
+      payer, ownerTokenY, job.owner, meteora.tokenYMint, meteora.tokenYProgram,
     );
     const createRoverAtaX = createAssociatedTokenAccountIdempotentInstruction(
-      this.botKeypair.publicKey, roverFeeTokenX, roverAuthority, meteora.tokenXMint, meteora.tokenXProgram,
+      payer, roverFeeTokenX, roverAuthority, meteora.tokenXMint, meteora.tokenXProgram,
     );
     const createRoverAtaY = createAssociatedTokenAccountIdempotentInstruction(
-      this.botKeypair.publicKey, roverFeeTokenY, roverAuthority, meteora.tokenYMint, meteora.tokenYProgram,
+      payer, roverFeeTokenY, roverAuthority, meteora.tokenYMint, meteora.tokenYProgram,
     );
 
-    // priorityIxs must be built here too (not shared from harvestBins scope).
-    // Without this, every close attempt crashes with ReferenceError.
     const priorityIxs = await buildPriorityFeeIxs(this.connection);
 
     const closeSig = await withRetry(
       () => this.coreProgram.methods
         .closePosition()
         .accounts({
-          bot:                this.botKeypair.publicKey,
+          bot:                payer,
           config:             configPDA,
           position:           new PublicKey(job.positionPDA),
           vault:              vaultPda,
@@ -422,12 +484,57 @@ export class HarvestExecutor extends EventEmitter {
           systemProgram:      new PublicKey('11111111111111111111111111111111'),
         })
         .preInstructions([...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY])
-        .signers([this.botKeypair])
+        .signers([signer])
         .rpc(),
       `close ${key.slice(0, 8)}`
     );
 
-    logger.info(`  ✓ closed ${key.slice(0, 8)} → owner ${job.owner.toBase58().slice(0, 8)}`);
+    // Read token deltas from the confirmed transaction
+    let deltaX = 0n, deltaY = 0n;
+    try {
+      const txData = await this.connection.getTransaction(closeSig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+      if (txData?.meta) {
+        const ownerKey = job.owner.toBase58();
+        const pre = txData.meta.preTokenBalances ?? [];
+        const post = txData.meta.postTokenBalances ?? [];
+        for (const p of post) {
+          if (p.owner !== ownerKey) continue;
+          const preEntry = pre.find(e => e.accountIndex === p.accountIndex);
+          const preBal = BigInt(preEntry?.uiTokenAmount?.amount ?? '0');
+          const postBal = BigInt(p.uiTokenAmount.amount);
+          const delta = postBal - preBal;
+          if (delta <= 0n) continue;
+          if (p.mint === meteora.tokenXMint.toBase58()) deltaX = delta;
+          else if (p.mint === meteora.tokenYMint.toBase58()) deltaY = delta;
+        }
+      }
+    } catch { /* best-effort */ }
+
+    // Auto-unwrap WSOL after close
+    if (userKeypair && (meteora.tokenYMint.equals(NATIVE_MINT) || meteora.tokenXMint.equals(NATIVE_MINT))) {
+      try {
+          const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, job.owner, true, TOKEN_PROGRAM_ID);
+          const { Transaction } = await import('@solana/web3.js');
+          const tx = new Transaction().add(
+            createCloseAccountInstruction(wsolAta, job.owner, job.owner, [], TOKEN_PROGRAM_ID)
+          );
+          const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
+          tx.recentBlockhash = blockhash;
+          tx.lastValidBlockHeight = lastValidBlockHeight;
+          tx.feePayer = job.owner;
+          tx.sign(userKeypair);
+          await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+          logger.info(`  [executor] Auto-unwrapped WSOL for ${job.owner.toBase58().slice(0, 8)}`);
+      } catch { /* WSOL ATA may not exist */ }
+    }
+
+    logger.info({
+      positionPDA: key,
+      owner: job.owner.toBase58().slice(0, 8),
+      tokenXReceived: deltaX.toString(),
+      tokenYReceived: deltaY.toString(),
+      txSig: closeSig,
+    }, `Closed ${key.slice(0, 8)}`);
     this.lastHarvestTime = Date.now();
     this.totalCloses++;
     this.emit('positionClosed', {
@@ -436,6 +543,8 @@ export class HarvestExecutor extends EventEmitter {
       owner: job.owner.toBase58(),
       side: job.side,
       txSig: closeSig,
+      tokenXAmount: deltaX.toString(),
+      tokenYAmount: deltaY.toString(),
     });
   }
 

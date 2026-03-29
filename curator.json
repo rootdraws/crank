@@ -116,7 +116,7 @@
       "maxRangePct": 74.5,
       "buyToken": "CRANK",
       "quoteToken": "SOL",
-      "example": "/buy CRANK 45mmc to 22mmc 2 SOL"
+      "example": "/buy CRANK 20kmc to 10kmc 2 SOL"
     }
   ]
 }

@@ -59,7 +59,7 @@ interface DiscordBotConfig {
 export class DiscordBot {
   private client: Client;
   public notifier: DiscordNotifier;
-  private walletService: WalletService;
+  public walletService: WalletService;
   private ctx: BotContext;
 
   constructor(config: DiscordBotConfig) {

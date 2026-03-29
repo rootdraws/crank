@@ -72,13 +72,9 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('withdraw')
-    .setDescription('Withdraw tokens — funds can only go to your wallet')
+    .setDescription('Withdraw tokens — funds go to your locked address')
     .addStringOption(opt =>
-      opt.setName('token').setDescription('Token symbol (SOL, USDC, etc.)').setRequired(true))
-    .addStringOption(opt =>
-      opt.setName('amount').setDescription('Amount to withdraw').setRequired(true))
-    .addStringOption(opt =>
-      opt.setName('address').setDescription('Destination wallet address').setRequired(true)),
+      opt.setName('range').setDescription('TOKEN AMOUNT — e.g. SOL 0.5 or CRANK all').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('pools')

@@ -1,5 +1,5 @@
 import { ChatInputCommandInteraction, TextChannel } from 'discord.js';
-import { PublicKey, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
+import { PublicKey, VersionedTransaction, TransactionMessage, Transaction } from '@solana/web3.js';
 import { address } from '@solana/kit';
 import {
   getOpenPositionV2InstructionAsync,
@@ -13,11 +13,11 @@ import {
   buildPriorityFeeIxs, kitIxToWeb3, asSigner,
   binToPrice, formatPrice,
   signAndSend, signAndSendLegacy, withUserLock,
-  NATIVE_MINT,
+  NATIVE_MINT, TOKEN_PROGRAM_ID,
   loadPoolRegistry, routeCommand, isRouteError,
   parseCommand, fetchDexScreenerPrice,
 } from '@crankbot/core-sdk';
-import { formatPositionOpened, formatPositionEphemeral, formatFeedOpened, formatError } from '../formatter';
+import { formatPositionOpened, formatPositionEphemeral, formatFeedOpened, formatError, formatErrorBig } from '../formatter';
 import type { BotContext } from '../index';
 
 export async function handleBuy(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
@@ -37,38 +37,48 @@ export async function handleOpenPosition(
     const example = side === 'Buy'
       ? '/buy SOL 84 to 74 1000 USDC'
       : '/sell SOL 98 to 115 10 SOL';
-    await interaction.reply({ content: formatError('could not parse that.', `e.g. ${example}`), ephemeral: true });
+    const err = formatErrorBig('could not parse that.', `e.g. ${example}`);
+    await interaction.reply({ content: err.monke, ephemeral: true });
+    await interaction.followUp({ content: err.body, ephemeral: true });
     return;
   }
 
-  const { token, rangeA, rangeB, amount, quote } = parsed;
+  let { token, rangeA, rangeB, amount, quote } = parsed;
+
+  // For sells, if the user typed the base token as the quote (e.g. "4000000 CRANK"),
+  // resolve the actual quote token from the pool registry
+  const pools = loadPoolRegistry();
+  if (side === 'Sell' && token.toUpperCase() === quote.toUpperCase()) {
+    const match = pools.find(p => p.buyToken.toUpperCase() === token.toUpperCase());
+    if (match) {
+      quote = match.quoteToken;
+    }
+  }
 
   // Check minimum SOL balance for rent + gas
   const MIN_SOL_LAMPORTS = 250_000_000; // 0.25 SOL
   const keypair = ctx.walletService.getOrCreate(userId);
   const solBalance = await ctx.connection.getBalance(keypair.publicKey);
   if (solBalance < MIN_SOL_LAMPORTS) {
-    const addr = keypair.publicKey.toBase58();
-    await interaction.reply({
-      content: formatError(
-        `need at least 0.25 SOL for rent + gas (you have ${(solBalance / 1e9).toFixed(3)} SOL).`,
-        `/deposit to see your address. We recommend adding 0.5 SOL for transactions.`
-      ),
-      ephemeral: true,
-    });
+    const err = formatErrorBig(
+      `need at least 0.25 SOL for rent + gas (you have ${(solBalance / 1e9).toFixed(3)} SOL).`,
+      `/deposit to see your address. We recommend adding 0.5 SOL for transactions.`
+    );
+    await interaction.reply({ content: err.monke, ephemeral: true });
+    await interaction.followUp({ content: err.body, ephemeral: true });
     return;
   }
 
   // Load pool registry and fetch current price for routing
-  const pools = loadPoolRegistry();
   const candidates = pools.filter(
     p => p.buyToken.toUpperCase() === token.toUpperCase() &&
          p.quoteToken.toUpperCase() === quote.toUpperCase()
   );
 
   if (candidates.length === 0) {
-    await interaction.reply({
-      content: formatError(`no pool found for ${token}/${quote}.`, '/pools to see covered pairs'),
+    const err = formatErrorBig(`no pool found for ${token}/${quote}.`, '/pools to see covered pairs');
+    await interaction.reply({ content: err.monke, ephemeral: true });
+    await interaction.followUp({ content: err.body,
       ephemeral: true,
     });
     return;
@@ -140,6 +150,8 @@ export async function handleOpenPosition(
     const positionPDAs: PublicKey[] = [];
 
     const lockKey = `${userId}:${selectedPool.address}`;
+
+    const walletPubkey = ctx.walletService.getOrCreate(userId).publicKey;
 
     for (const pos of positions) {
       const result = await withUserLock(lockKey, async () => {
@@ -230,16 +242,39 @@ export async function handleOpenPosition(
           if (bmIdx >= 0) openWeb3Ix.keys[bmIdx].isWritable = true;
         }
 
+        // Build close WSOL ATA instruction (appended after open — cleans up whether or not position uses all SOL)
+        const closeWsolIxs: any[] = [];
+        if (isNative) {
+          const { createCloseAccountInstruction } = await import('@solana/spl-token');
+          closeWsolIxs.push(createCloseAccountInstruction(userTokenAccount, user, user, [], TOKEN_PROGRAM_ID));
+        }
+
         const priorityIxs = await buildPriorityFeeIxs(ctx.connection);
         const { blockhash, lastValidBlockHeight } = await ctx.connection.getLatestBlockhash();
         const msg = new TransactionMessage({
           payerKey: user,
           recentBlockhash: blockhash,
-          instructions: [...priorityIxs, openWeb3Ix],
+          instructions: [...priorityIxs, openWeb3Ix, ...closeWsolIxs],
         }).compileToV0Message();
         const vtx = new VersionedTransaction(msg);
 
-        const sig = await signAndSend(vtx, keypair, ctx.connection, blockhash, lastValidBlockHeight);
+        let sig: string;
+        try {
+          sig = await signAndSend(vtx, keypair, ctx.connection, blockhash, lastValidBlockHeight);
+        } catch (openErr: any) {
+          // Position failed — unwrap WSOL so user isn't stuck
+          if (isNative) {
+            try {
+              const { createCloseAccountInstruction } = await import('@solana/spl-token');
+              const cleanupTx = new Transaction().add(
+                createCloseAccountInstruction(userTokenAccount, user, user, [], TOKEN_PROGRAM_ID)
+              );
+              await signAndSendLegacy(cleanupTx, keypair, ctx.connection);
+              console.log(`[buy] Auto-unwrapped WSOL for ${user.toBase58()}`);
+            } catch { /* cleanup is best-effort */ }
+          }
+          throw openErr;
+        }
 
         ctx.walletService.savePosition({
           positionPda: positionPDA.toBase58(),
@@ -261,6 +296,7 @@ export async function handleOpenPosition(
     }
 
     // Public reply
+    const depositSymbol = side === 'Sell' ? token : quote;
     const publicText = formatPositionOpened({
       side,
       poolName: `${token}/${quote}`,
@@ -268,8 +304,12 @@ export async function handleOpenPosition(
       priceHigh,
       currentPrice,
       amount,
-      quoteSymbol: quote,
+      quoteSymbol: depositSymbol,
       txSig: sigs[0],
+      displayMode: selectedPool.displayMode as 'price' | 'mc',
+      supply: selectedPool.supply,
+      token,
+      walletAddress: walletPubkey.toBase58(),
     });
     await interaction.editReply(
       positions.length > 1
@@ -294,8 +334,10 @@ export async function handleOpenPosition(
             priceLow,
             priceHigh,
             amount,
-            quoteSymbol: quote,
+            quoteSymbol: depositSymbol,
             txSig: sigs[0],
+            displayMode: selectedPool.displayMode as 'price' | 'mc',
+            supply: selectedPool.supply,
           }));
         }
       } catch { /* feed channel post is best-effort */ }

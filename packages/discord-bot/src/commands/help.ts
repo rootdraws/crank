@@ -2,9 +2,10 @@ import { ChatInputCommandInteraction } from 'discord.js';
 import type { BotContext } from '../index';
 
 export async function handleHelp(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
-  await interaction.reply({
+  await interaction.reply({ content: '🦧', ephemeral: true });
+  await interaction.followUp({
     content:
-      '**CrankBot** — Smarter limit orders on Solana. 🦧\n\n' +
+      '**CrankBot** — Smarter limit orders on Solana.\n\n' +
       '`/start` — create your wallet\n' +
       '`/balance` — show token balances\n' +
       '`/deposit` — show deposit address\n' +

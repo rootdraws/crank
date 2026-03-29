@@ -12,9 +12,10 @@ Platform-agnostic TypeScript SDK consumed by the Discord bot (and future Telegra
 | `meteora.ts` | `parseLbPairData` (raw 904-byte parsing), `parseLbPairFull` (RPC fetch + parse), `resolveMeteoraCPIAccounts` (builds all 18 accounts for open_position_v2), `deriveATA`. |
 | `pool-config.ts` | `PoolConfig` type, `loadPoolRegistry()` (pools for routing), `loadGauges()` (one gauge per pair for voting). Reads `curator.json` at runtime. Cached. |
 | `range-parser.ts` | `parseRangeInput` (price/mcap/pct endpoint parsing), `rangeInputToPrice` (converts to dollar price), `parseCommand` (full command string parsing). |
-| `pool-router.ts` | `routeCommand` — multi-pool routing. Tries all candidate pools for a token pair, picks fewest positions with lowest binStep tiebreaker. Auto-splits up to 5 positions. |
-| `transactions.ts` | `buildPriorityFeeIxs`, `ensureBinArraysExist`, `buildSetupTx` (ATA creation), `buildWrapSolIxs`, `confirmAndCheck`, `kitIxToWeb3` / `asSigner` (Codama adapter shims). |
-| `wallet-service.ts` | `WalletService` class — custodial keypair management with AES-256-GCM encryption, JSON file store, position/vote/harvest tracking, bidirectional pubkey-userId index. `withUserLock` per-user mutex. |
+| `pool-router.ts` | `routeCommand` — multi-pool routing with `quoteTokenUsdPrice` param for non-USD quote pools (CRANK/SOL). Tries all candidate pools, picks fewest positions with lowest binStep tiebreaker. Auto-splits up to 5 positions. |
+| `price-source.ts` | `fetchDexScreenerPrice` — external price fetching with 10s per-mint cache. Used for CRANK/SOL mcap display and quote token USD price. |
+| `transactions.ts` | `buildPriorityFeeIxs`, `ensureBinArraysExist`, `buildSetupTx` (ATA creation, 800K CU for bin array init), `buildWrapSolIxs`, `confirmAndCheck`, `kitIxToWeb3` / `asSigner` (Codama adapter shims). |
+| `wallet-service.ts` | `WalletService` class — custodial keypair management with AES-256-GCM encryption, JSON file store, position/vote/harvest tracking, bidirectional pubkey-userId index, withdraw address lock (`setWithdrawAddress`/`getWithdrawAddress`), harvest totals (`getHarvestedTotal`). `withUserLock` per-user mutex. |
 | `signer.ts` | `signAndSend` (versioned tx) and `signAndSendLegacy` (legacy tx) — keypair-based signing with confirmation. |
 | `index.ts` | Re-exports everything. |
 

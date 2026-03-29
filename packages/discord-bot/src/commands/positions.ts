@@ -1,7 +1,7 @@
 import { ChatInputCommandInteraction } from 'discord.js';
 import { PublicKey } from '@solana/web3.js';
 import {
-  parseLbPairFull, loadPoolRegistry,
+  parseLbPairFull, loadPoolRegistry, fetchDexScreenerPrice,
 } from '@crankbot/core-sdk';
 import { formatPositionsList, PositionDisplayData } from '../formatter';
 import type { BotContext } from '../index';
@@ -22,6 +22,7 @@ export async function handlePositions(interaction: ChatInputCommandInteraction, 
   const pools = loadPoolRegistry();
   const positions: PositionDisplayData[] = [];
   const poolCache = new Map<string, any>();
+  const quoteUsdCache = new Map<string, number>();
 
   for (const p of dbPositions) {
     let poolData = poolCache.get(p.lb_pair);
@@ -38,6 +39,21 @@ export async function handlePositions(interaction: ChatInputCommandInteraction, 
     const decimalsX = poolConfig?.decimalsX ?? 9;
     const decimalsY = poolConfig?.decimalsY ?? 6;
 
+    // Fetch quote token USD price for mcap display (cached per mint)
+    let quoteTokenUsdPrice = 1.0;
+    if (poolConfig?.displayMode === 'mc' && poolConfig.mintY) {
+      const isStable = ['USDC', 'USDT'].includes((poolConfig.quoteToken ?? '').toUpperCase());
+      if (!isStable) {
+        if (quoteUsdCache.has(poolConfig.mintY)) {
+          quoteTokenUsdPrice = quoteUsdCache.get(poolConfig.mintY)!;
+        } else {
+          const qData = await fetchDexScreenerPrice(poolConfig.mintY).catch(() => null);
+          quoteTokenUsdPrice = qData?.priceUsd ?? 1.0;
+          quoteUsdCache.set(poolConfig.mintY, quoteTokenUsdPrice);
+        }
+      }
+    }
+
     positions.push({
       positionPda: p.position_pda,
       lbPair: p.lb_pair,
@@ -50,15 +66,18 @@ export async function handlePositions(interaction: ChatInputCommandInteraction, 
       decimalsX,
       decimalsY,
       initialAmount: BigInt(p.initial_amount),
-      harvestedAmount: 0n,
+      harvestedAmount: ctx.walletService.getHarvestedTotal(p.position_pda),
       tokenSymbol: p.side === 'Buy'
         ? (poolConfig?.buyToken ?? 'TOKEN')
         : (poolConfig?.quoteToken ?? 'SOL'),
       quoteSymbol: p.side === 'Buy'
         ? (poolConfig?.quoteToken ?? 'SOL')
         : (poolConfig?.buyToken ?? 'TOKEN'),
-      quoteDecimals: p.side === 'Buy' ? decimalsY : decimalsX,
+      quoteDecimals: p.side === 'Buy' ? decimalsX : decimalsY,
       createdAt: p.created_at,
+      displayMode: poolConfig?.displayMode as 'price' | 'mc' | undefined,
+      supply: poolConfig?.supply,
+      quoteTokenUsdPrice,
     });
   }
 

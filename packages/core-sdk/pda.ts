@@ -164,12 +164,13 @@ export function deriveBitmapExtPDA(lbPair: PublicKey): PublicKey {
 
 /**
  * Convert bin ID to bin array index.
- * Matches Meteora SDK binIdToBinArrayIndex exactly.
+ * Matches Meteora SDK: truncate toward zero, subtract 1 if negative with remainder.
  */
 export function binIdToBinArrayIndex(binId: number): number {
   const BINS = 70;
   if (binId >= 0) return Math.floor(binId / BINS);
-  return Math.floor((binId - (BINS - 1)) / BINS);
+  const div = Math.trunc(binId / BINS);
+  return binId % BINS === 0 ? div : div - 1;
 }
 
 // ─── Metaplex PDAs ─────────────────────────────────────────────────────────

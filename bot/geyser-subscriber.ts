@@ -165,7 +165,7 @@ export function parseActiveId(data: Buffer): number {
 
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 60_000;
-const SAFETY_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const SAFETY_POLL_INTERVAL_MS = 30 * 1000; // 30 seconds
 const PING_INTERVAL_MS = 10_000;       // Send ping every 10s
 const PING_TIMEOUT_MS  = 30_000;       // Reconnect if no pong for 30s
 
@@ -625,8 +625,11 @@ export class GeyserSubscriber extends EventEmitter {
           if (this.positionsByPool.has(pubkey)) {
             // This is an lb_pair account update
             this.handleLbPairUpdate(pubkey, data);
+          } else if (data.length >= 200) {
+            // Log unrouted large account updates for debugging
+            logger.info(`[geyser] unrouted account update: ${pubkey.slice(0,8)} size=${data.length} watched=${this.positionsByPool.has(pubkey)}`);
+            this.handlePositionUpdate(pubkey, data);
           } else {
-            // Could be a Position PDA
             this.handlePositionUpdate(pubkey, data);
           }
         }
