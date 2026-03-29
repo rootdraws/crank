@@ -12,7 +12,9 @@ target/
 test-ledger/
 
 # Bot runtime
+data/
 positions-cache.json
+feed-cache.json
 *.log
 
 # OS

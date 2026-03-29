@@ -2,7 +2,6 @@
  * core-sdk/math.ts
  *
  * Bin/price math and fee calculations.
- * Extracted from frontend app.js and typed.
  */
 
 import { DEFAULT_FEE_BPS } from './constants';

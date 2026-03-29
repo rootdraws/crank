@@ -18,6 +18,26 @@ apt-get install -y nginx
 echo "==> Installing certbot"
 apt-get install -y certbot python3-certbot-nginx
 
+echo "==> Installing fail2ban"
+apt-get install -y fail2ban
+systemctl enable fail2ban
+systemctl start fail2ban
+
+echo "==> Installing unattended-upgrades"
+apt-get install -y unattended-upgrades
+# Enable automatic security updates
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'APTCONF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+APTCONF
+
+echo "==> Hardening SSH"
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+systemctl reload sshd
+
 echo "==> Configuring UFW firewall"
 ufw allow OpenSSH
 ufw allow 'Nginx Full'
@@ -25,6 +45,8 @@ ufw --force enable
 
 echo "==> Creating application directories"
 mkdir -p "$APP_DIR"
+mkdir -p "$APP_DIR/data"
+chmod 700 "$APP_DIR/data"
 mkdir -p "$KEYS_DIR"
 chmod 700 "$KEYS_DIR"
 
@@ -37,6 +59,12 @@ systemctl reload nginx
 
 echo "==> Obtaining SSL certificate via Let's Encrypt"
 certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
+
+echo "==> Configuring PM2 log rotation"
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 50M
+pm2 set pm2-logrotate:retain 7
+pm2 set pm2-logrotate:compress true
 
 echo "==> Starting bot with PM2"
 cd "$APP_DIR"
@@ -52,7 +80,8 @@ echo "    Keys dir: $KEYS_DIR"
 echo "    Domain:   https://$DOMAIN"
 echo ""
 echo "Next steps:"
-echo "  1. Copy bot keypair to $KEYS_DIR/bot-keypair.json"
+echo "  1. Copy bot keypair to $KEYS_DIR/bot-keypair.json (chmod 600)"
 echo "  2. Copy bot/.env to the server and set BOT_KEYPAIR_PATH=$KEYS_DIR/bot-keypair.json"
-echo "  3. Run: pm2 restart monke-harvester"
+echo "  3. Run: pm2 restart crank-harvester"
 echo "  4. Verify: curl https://$DOMAIN/api/stats"
+echo "  5. Back up WALLET_ENCRYPTION_KEY offline (password manager / safe deposit box)"

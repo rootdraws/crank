@@ -2,7 +2,6 @@
  * core-sdk/constants.ts
  *
  * All program IDs, token mints, and constants for crank.money.
- * Extracted from the frontend app.js.
  * SOURCE OF TRUTH — do not hardcode these anywhere else.
  */
 
@@ -10,10 +9,12 @@ import { PublicKey } from '@solana/web3.js';
 
 // ─── Program IDs ───────────────────────────────────────────────────────────
 
-export const BIN_FARM_PROGRAM_ID     = new PublicKey('8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia');
-export const MONKE_BANANAS_PROGRAM_ID = new PublicKey('myA2F4S7trnQUiksrrB1prR3k95d8znEXZXwHkZw5ZH');
-export const PEGGED_BRIDGE_PROGRAM_ID = new PublicKey('7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN');
-export const METEORA_DLMM_PROGRAM_ID  = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+export const BIN_FARM_PROGRAM_ID          = new PublicKey('8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia');
+export const BANK_MINT_PROGRAM_ID         = new PublicKey('FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk');
+export const GAUGE_VOTER_PROGRAM_ID       = new PublicKey('DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA');
+export const MERKLE_DISTRIBUTOR_PROGRAM_ID = new PublicKey('DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV');
+export const PEGGED_BRIDGE_PROGRAM_ID     = new PublicKey('7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN');
+export const METEORA_DLMM_PROGRAM_ID      = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 
 // ─── Token Programs ────────────────────────────────────────────────────────
 
@@ -25,15 +26,10 @@ export const NATIVE_MINT             = new PublicKey('So111111111111111111111111
 
 // ─── Token Mints ───────────────────────────────────────────────────────────
 
-export const CRANK_MINT = new PublicKey('Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump');
-export const USDC_MINT  = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
-
-// ─── NFT Collections ───────────────────────────────────────────────────────
-
-export const SMB_GEN2_COLLECTION    = new PublicKey('SMBtHCCC6RYRutFEPb4gZqeBLUZbMNhRKaMKZZLHi7W');
-export const SMB_GEN3_COLLECTION    = new PublicKey('8Rt3Ayqth4DAiPnW9MDFi63TiQJHmohfTWLMQFHi4KZH');
-export const GOOSE_PIXEL_COLLECTION = new PublicKey('6ubyyuUz3EVFwZrBh3C2ezSXXfyjxP4jhemLPyGgdL6Y');
-export const GOOSE_DAO_COLLECTION   = new PublicKey('XkH2QVN9AKNi1AGnaEYdEHCHxFjTjs8BdbTJfcRW2rY');
+export const CRANK_MINT  = new PublicKey('Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump');
+export const BANK_MINT   = new PublicKey('BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA');
+export const PEGGED_MINT = new PublicKey('GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1');
+export const USDC_MINT   = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 
 // ─── LbPair Account Layout ─────────────────────────────────────────────────
 // Verified against Meteora DLMM IDL + live mainnet accounts. 904 bytes total.
@@ -72,19 +68,8 @@ export const DEFAULT_PRIORITY_ULAMPORTS = 100_000; // microlamports per CU
 export const KNOWN_TOKENS: Record<string, string> = {
   'So11111111111111111111111111111111111111112': 'SOL',
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
-  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': 'mSOL',
-  'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 'jitoSOL',
-  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 'BONK',
-  'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 'JUP',
   'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump': 'CRANK',
+  'BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA': 'BANK',
+  'GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1': 'PEGGED',
 };
 
-// ─── Tier 1 Pools (always covered, hardcoded) ─────────────────────────────
-// Populated with real pool addresses at deploy time. Placeholders here.
-
-export const TIER1_POOLS: string[] = [
-  // CRANK/SOL — add real address
-  // SOL/USDC  — add real address
-  // BTC/SOL   — add real address
-];

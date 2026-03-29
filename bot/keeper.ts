@@ -207,6 +207,7 @@ export class MonkeKeeper {
       const [roverAuthority] = roverAuthorityPDA(this.coreProgramId);
       const roverAccount = await this.coreProgram.account.roverAuthority.fetch(roverAuthority);
       const revenueDest = roverAccount.revenueDest as PublicKey;
+      const traderDest = roverAccount.traderDest as PublicKey;
 
       await withRetry(
         () => this.coreProgram.methods
@@ -216,6 +217,7 @@ export class MonkeKeeper {
             config: coreConfigPDA(this.coreProgramId)[0],
             roverAuthority,
             revenueDest,
+            traderDest,
             botDest: this.botKeypair.publicKey,
           })
           .preInstructions(this.priorityIxs)

@@ -33,6 +33,7 @@ import { MonkeKeeper } from './keeper';
 import { RelayServer, FeePipelineState } from './relay-server';
 import { logger } from './logger';
 import { getDLMMCacheSize, getDLMM } from './meteora-accounts';
+import { initAlerter, alertLowBalance, alertGrpcDisconnect, alertGrpcReconnect, alertKeeperFailure } from './alerter';
 import * as path from 'path';
 
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -506,6 +507,12 @@ class HarvestBot {
     );
     if (this.healthServer) {
       this.relay.attach(this.healthServer);
+      this.relay.setHealthProvider(() => ({
+        lastHarvestAt: this.lastHarvestAt,
+        lastKeeperRunAt: this.lastKeeperRunAt,
+        startTime: this.startTime,
+        botSolBalance: this.lastKnownBalance,
+      }));
       logger.info(`[relay] WebSocket relay on :${HEALTH_PORT}/ws, REST on :${HEALTH_PORT}/api/*`);
     }
 
@@ -528,6 +535,10 @@ class HarvestBot {
     // Start gRPC subscriber for real-time harvest monitoring
     await this.subscriber.start();
 
+    // Wire subscriber health alerts
+    this.subscriber.on('disconnected', () => alertGrpcDisconnect());
+    this.subscriber.on('reconnected', () => alertGrpcReconnect());
+
     // Wire subscriber events to executor
     this.subscriber.on('harvestNeeded', (job: HarvestJob) => {
       this.lastHarvestAt = Date.now();
@@ -541,6 +552,31 @@ class HarvestBot {
     this.executor.on('positionClosed', (data: any) => {
       this.relay?.broadcast('positionClosed', data);
     });
+
+    // Discord bot — starts if DISCORD_TOKEN is set
+    if (process.env.DISCORD_TOKEN) {
+      try {
+        const { DiscordBot } = await import('../packages/discord-bot/src/index');
+        const discordBot = new DiscordBot({
+          executor: this.executor,
+          subscriber: this.subscriber,
+          connection: this.connection,
+          coreProgram: this.coreProgram,
+          coreProgramId: CORE_PROGRAM_ID,
+        });
+        this.executor.on('harvestExecuted', (data: any) => {
+          discordBot.notifier.onHarvestExecuted(data);
+        });
+        this.executor.on('positionClosed', (data: any) => {
+          discordBot.notifier.onPositionClosed(data);
+        });
+        await discordBot.start();
+        initAlerter((text) => discordBot.notifier.postToFeed(text));
+        logger.info('[discord] Bot started');
+      } catch (e: any) {
+        logger.warn(`[discord] Failed to start: ${e.message}`);
+      }
+    }
 
     // Start safety-net polling (5 min fallback for harvests)
     this.subscriber.startSafetyPolling(() => this.safetyPoll());
@@ -557,8 +593,10 @@ class HarvestBot {
           this.recordBalance(bal);
           if (bal < SOL_BALANCE_CRITICAL) {
             logger.error(`[bot] CRITICAL: Bot SOL balance ${bal / 1e9} SOL — below ${SOL_BALANCE_CRITICAL / 1e9} threshold`);
+            alertLowBalance(bal / 1e9);
           } else if (bal < SOL_BALANCE_WARN) {
             logger.warn(`[bot] WARNING: Bot SOL balance ${bal / 1e9} SOL — below ${SOL_BALANCE_WARN / 1e9} threshold`);
+            alertLowBalance(bal / 1e9);
           }
         } catch (e: any) {
           logger.warn(`[bot] Failed to fetch SOL balance: ${e.message}`);
@@ -572,6 +610,7 @@ class HarvestBot {
         this.keeperTimer = setTimeout(() => scheduleKeeper(), nextInterval);
       } catch (e: any) {
         logger.error(`[keeper] Error: ${e.message}`);
+        alertKeeperFailure('daily_sequence', e.message);
         // On error, retry at processing speed
         this.keeperTimer = setTimeout(() => scheduleKeeper(), KEEPER_PROCESSING_INTERVAL_MS);
       }

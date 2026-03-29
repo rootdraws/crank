@@ -2,16 +2,16 @@
  * core-sdk/pda.ts
  *
  * All PDA derivation functions for crank.money programs.
- * Extracted verbatim from frontend app.js and typed.
- *
- * IMPORTANT: getMeteoraPosiitonPDA has a typo (double 'i') — kept for
- * consistency with the frontend. Do not rename it.
+ * SOURCE OF TRUTH — all PDA seeds match on-chain program seeds exactly.
  */
 
 import { PublicKey } from '@solana/web3.js';
 import {
   BIN_FARM_PROGRAM_ID,
-  MONKE_BANANAS_PROGRAM_ID,
+  BANK_MINT_PROGRAM_ID,
+  GAUGE_VOTER_PROGRAM_ID,
+  MERKLE_DISTRIBUTOR_PROGRAM_ID,
+  PEGGED_BRIDGE_PROGRAM_ID,
   METEORA_DLMM_PROGRAM_ID,
 } from './constants';
 
@@ -46,11 +46,10 @@ export function getPositionCounterPDA(user: PublicKey, lbPair: PublicKey): [Publ
 }
 
 /**
- * NOTE: Typo is intentional — matches frontend app.js spelling.
- * The meteora_position PDA is derived from the CURRENT counter value
+ * Derive the Meteora position PDA from the CURRENT counter value
  * (before increment). Read position_counter.count first, then call this.
  */
-export function getMeteoraPosiitonPDA(
+export function getMeteoraPositionPDA(
   user: PublicKey,
   lbPair: PublicKey,
   count: number
@@ -70,33 +69,60 @@ export function getRoverAuthorityPDA(): [PublicKey, number] {
   );
 }
 
-// ─── monke_bananas PDAs ────────────────────────────────────────────────────
+// ─── bank_mint PDAs ───────────────────────────────────────────────────────
 
-export function getMonkeStatePDA(): [PublicKey, number] {
+export function getBankConfigPDA(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('monke_state')],
-    MONKE_BANANAS_PROGRAM_ID
+    [Buffer.from('bank_config')],
+    BANK_MINT_PROGRAM_ID
   );
 }
 
-export function getMonkeBurnPDA(nftMint: PublicKey): [PublicKey, number] {
+// ─── gauge_voter PDAs ─────────────────────────────────────────────────────
+
+export function getGaugeConfigPDA(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('monke_burn'), nftMint.toBuffer()],
-    MONKE_BANANAS_PROGRAM_ID
+    [Buffer.from('gauge_config')],
+    GAUGE_VOTER_PROGRAM_ID
   );
 }
 
-export function getDistPoolPDA(): [PublicKey, number] {
+export function getPoolGaugePDA(lbPair: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('dist_pool')],
-    MONKE_BANANAS_PROGRAM_ID
+    [Buffer.from('pool_gauge'), lbPair.toBuffer()],
+    GAUGE_VOTER_PROGRAM_ID
   );
 }
 
-export function getProgramVaultPDA(): [PublicKey, number] {
+// ─── merkle_distributor PDAs ──────────────────────────────────────────────
+
+export function getDistributorPDA(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('program_vault')],
-    MONKE_BANANAS_PROGRAM_ID
+    [Buffer.from('distributor')],
+    MERKLE_DISTRIBUTOR_PROGRAM_ID
+  );
+}
+
+export function getClaimStatusPDA(distributor: PublicKey, claimant: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('claim_status'), distributor.toBuffer(), claimant.toBuffer()],
+    MERKLE_DISTRIBUTOR_PROGRAM_ID
+  );
+}
+
+// ─── pegged_bridge PDAs ───────────────────────────────────────────────────
+
+export function getBridgeConfigPDA(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('bridge_config')],
+    PEGGED_BRIDGE_PROGRAM_ID
+  );
+}
+
+export function getBridgeVaultPDA(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('bridge_vault')],
+    PEGGED_BRIDGE_PROGRAM_ID
   );
 }
 

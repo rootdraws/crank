@@ -60,7 +60,7 @@ function decrypt(ciphertext: string): Buffer {
 // ─── JSON File Store ───────────────────────────────────────────────────────
 
 interface StoreData {
-  users: Record<string, { user_id: string; wallet_pubkey: string; encrypted_keypair: string; created_at: number }>;
+  users: Record<string, { user_id: string; wallet_pubkey: string; encrypted_keypair: string; created_at: number; withdraw_address?: string }>;
   pubkeyIndex: Record<string, string>;
   positions: Record<string, {
     position_pda: string; user_id: string; wallet_pubkey: string;
@@ -154,6 +154,21 @@ export class WalletService {
   getUserPublicKey(userId: string): PublicKey | undefined {
     const user = this.data.users[userId];
     return user ? new PublicKey(user.wallet_pubkey) : undefined;
+  }
+
+  // ─── Withdraw Address Lock ──────────────────────────────────────────────
+
+  setWithdrawAddress(userId: string, address: string): { ok: boolean; error?: string } {
+    const user = this.data.users[userId];
+    if (!user) return { ok: false, error: 'no wallet found — run /start first' };
+    if (user.withdraw_address) return { ok: false, error: 'withdraw address already set — cannot be changed' };
+    user.withdraw_address = address;
+    this.markDirty();
+    return { ok: true };
+  }
+
+  getWithdrawAddress(userId: string): string | undefined {
+    return this.data.users[userId]?.withdraw_address;
   }
 
   // ─── Position Tracking ───────────────────────────────────────────────────

@@ -7,7 +7,20 @@
 //
 // Admin curates which pools may receive votes via add_pool / remove_pool.
 // The bot reads PoolGauge.weight_bps at each epoch boundary to determine
-// how the trader 40 % reward pot is split across pools.
+// how the trader 40% reward pot is split across trading pairs.
+//
+// IMPORTANT — one gauge per PAIR, not per pool:
+//   Each PoolGauge represents a trading pair (e.g. SOL/USDC), not a specific
+//   DLMM pool or bin step. A single representative LbPair address is registered
+//   via add_pool to serve as the gauge for the entire pair. Multiple DLMM pools
+//   with different bin steps may exist for the same pair (e.g. 5 SOL/USDC pools
+//   at binStep 1/4/10/20/80) — the bin step is a routing detail, not a governance
+//   concept. Users vote on pairs: `/vote SOL 50 CRANK 50`.
+//
+//   The epoch-computer aggregates all fees earned across all bin step pools for a
+//   pair, then distributes the trader 40% share proportional to the pair's gauge
+//   weight. Within a pair, individual traders receive pro-rata based on fees they
+//   generated, regardless of which bin step pool they traded on.
 //
 // Governance dynamics:
 //   - Holding BANK = defending your vote (others can't overwrite your share

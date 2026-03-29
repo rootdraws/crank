@@ -3,7 +3,6 @@
  *
  * Transaction building utilities: bin array init, ATA setup,
  * SOL wrapping, confirmation, compute budget.
- * Extracted from frontend app.js and typed.
  */
 
 import {
@@ -31,8 +30,7 @@ import { deriveBinArrayPDA, binIdToBinArrayIndex } from './pda';
 // ─── Compute Budget ────────────────────────────────────────────────────────
 
 /**
- * Build SetComputeUnitPrice instruction without Buffer dependency.
- * (Browser-compatible implementation from app.js)
+ * Build SetComputeUnitPrice instruction.
  */
 export function makeComputeUnitPriceIx(microLamports: number): TransactionInstruction {
   const data = new Uint8Array(9);
@@ -172,8 +170,13 @@ export async function buildSetupTx(
 
   if (setupIxs.length === 0) return null;
 
+  // Bin array init on Meteora DLMM needs more CU than simple ATA creates
+  const DLMM_PROGRAM = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+  const hasBinArrayInit = extraIxs.some(ix => ix.programId.toBase58() === DLMM_PROGRAM);
+  const cuLimit = hasBinArrayInit ? 800_000 : 200_000;
+
   const tx = new Transaction();
-  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }));
   tx.add(makeComputeUnitPriceIx(DEFAULT_PRIORITY_ULAMPORTS));
   for (const ix of setupIxs) tx.add(ix);
 
@@ -226,7 +229,6 @@ export function buildWrapSolIxs(
  * Confirm transaction AND check for on-chain program errors.
  * confirmTransaction alone does NOT throw on program failures.
  *
- * Extracted verbatim from frontend app.js.
  */
 export async function confirmAndCheck(
   connection: Connection,

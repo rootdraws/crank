@@ -3,13 +3,13 @@ import { PublicKey, VersionedTransaction, TransactionMessage } from '@solana/web
 import { address } from '@solana/kit';
 import {
   getUserCloseInstructionAsync,
-} from '../../../../src/generated/bin-farm/index.js';
+} from '@crankbot/core-sdk/generated/bin-farm/index.js';
 import {
   getConfigPDA, getPositionPDA, getVaultPDA, getRoverAuthorityPDA,
   resolveMeteoraCPIAccounts, parseLbPairFull, deriveATA,
   buildSetupTx, buildPriorityFeeIxs, kitIxToWeb3, asSigner,
-  signAndSend, signAndSendLegacy, binToPrice, formatPrice,
-  SPL_MEMO_PROGRAM_ID,
+  signAndSend, signAndSendLegacy, binToPrice,
+  SPL_MEMO_PROGRAM_ID, loadPoolRegistry,
 } from '@crankbot/core-sdk';
 import { formatPositionClosed, formatFeedClosed, formatError } from '../formatter';
 import type { BotContext } from '../index';
@@ -112,19 +112,28 @@ export async function handleClose(interaction: ChatInputCommandInteraction, ctx:
 
     ctx.walletService.closePosition(position.position_pda);
 
+    // Resolve pool config for display
+    const pools = loadPoolRegistry();
+    const poolConfig = pools.find(p => p.address === position.lb_pair);
     const poolData = await parseLbPairFull(ctx.connection, position.lb_pair).catch(() => null);
-    const binStep = poolData?.binStep ?? 10;
-    const priceLow = binToPrice(position.min_bin_id, binStep, 9, 6);
-    const priceHigh = binToPrice(position.max_bin_id, binStep, 9, 6);
+    const binStep = poolConfig?.binStep ?? poolData?.binStep ?? 10;
+    const decimalsX = poolConfig?.decimalsX ?? 9;
+    const decimalsY = poolConfig?.decimalsY ?? 6;
+    const priceLow = binToPrice(position.min_bin_id, binStep, decimalsX, decimalsY);
+    const priceHigh = binToPrice(position.max_bin_id, binStep, decimalsX, decimalsY);
+    const poolName = poolConfig?.label ?? position.lb_pair.slice(0, 8) + '...';
+    const tokenSymbol = position.side === 'Buy'
+      ? (poolConfig?.buyToken ?? 'TOKEN')
+      : (poolConfig?.quoteToken ?? 'SOL');
 
     // Public reply
     const publicText = formatPositionClosed({
       side: position.side,
-      poolName: position.lb_pair.slice(0, 8) + '...',
+      poolName,
       priceLow,
       priceHigh,
       amountOut: '—',
-      tokenSymbol: position.side === 'Buy' ? 'TOKEN' : 'SOL',
+      tokenSymbol,
       txSig: sig,
     });
     await interaction.editReply(publicText);
@@ -142,11 +151,11 @@ export async function handleClose(interaction: ChatInputCommandInteraction, ctx:
         if (feedChannel) {
           await feedChannel.send(formatFeedClosed({
             side: position.side,
-            poolName: position.lb_pair.slice(0, 8) + '...',
+            poolName,
             priceLow,
             priceHigh,
             amountOut: '—',
-            tokenSymbol: position.side === 'Buy' ? 'TOKEN' : 'SOL',
+            tokenSymbol,
             txSig: sig,
           }));
         }

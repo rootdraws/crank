@@ -2,9 +2,6 @@
  * core-sdk/meteora.ts
  *
  * Meteora DLMM account resolution and pool data parsing.
- * Extracted from frontend app.js and typed.
- *
- * This is the most important file in core-sdk.
  * resolveMeteoraCPIAccounts() builds all 18 accounts needed for open_position_v2.
  */
 

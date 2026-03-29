@@ -228,8 +228,44 @@ export function formatBalance(address: string, solBalance: number, tokens: { sym
 
 // ─── Pools List ────────────────────────────────────────────────────────────
 
-export function formatPoolsList(pools: { label: string; id: string; displayMode: string; binStep: number }[]): string {
+export function formatPoolsList(pools: {
+  label: string; id: string; displayMode: string; binStep: number;
+  example?: string; buyToken?: string; currentPrice?: number; currentMc?: number;
+}[]): string {
   if (pools.length === 0) return 'No pools configured.';
-  const lines = pools.map(p => `${p.label} · ${p.binStep}bps · ${p.displayMode}`);
-  return 'Covered pools:\n\n' + lines.join('\n');
+
+  // Group by pair
+  const pairs = new Map<string, typeof pools>();
+  for (const p of pools) {
+    const pair = p.label.replace(/\s*\(.*\)/, '');
+    if (!pairs.has(pair)) pairs.set(pair, []);
+    pairs.get(pair)!.push(p);
+  }
+
+  const sections: string[] = [];
+  for (const [pair, group] of pairs) {
+    const ref = group[0];
+    const example = group.find(p => p.example)?.example;
+
+    let priceLine = '';
+    if (ref.displayMode === 'mc' && ref.currentMc) {
+      priceLine = `   ${formatMcShort(ref.currentMc)}`;
+    } else if (ref.currentPrice) {
+      priceLine = `   $${formatPrice(ref.currentPrice)}`;
+    }
+
+    let line = `**${pair}**`;
+    if (priceLine) line += `\n${priceLine}`;
+    if (example) line += `\n   \`${example}\``;
+    sections.push(line);
+  }
+
+  return 'Covered pairs:\n\n' + sections.join('\n\n');
+}
+
+function formatMcShort(mc: number): string {
+  if (mc >= 1_000_000_000) return `$${(mc / 1_000_000_000).toFixed(2)}B mc`;
+  if (mc >= 1_000_000)     return `$${(mc / 1_000_000).toFixed(1)}M mc`;
+  if (mc >= 1_000)         return `$${(mc / 1_000).toFixed(0)}K mc`;
+  return `$${mc.toFixed(0)} mc`;
 }

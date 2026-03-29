@@ -287,7 +287,7 @@ export class HarvestExecutor extends EventEmitter {
     // Priority fees to survive Solana congestion
     const priorityIxs = await buildPriorityFeeIxs(this.connection);
 
-    await withRetry(
+    const txSig = await withRetry(
       () => this.coreProgram.methods
         .harvestBins(binIds)
         .accounts({
@@ -332,6 +332,7 @@ export class HarvestExecutor extends EventEmitter {
       owner: job.owner.toBase58(),
       side: job.side,
       pool: job.lbPair.toBase58().slice(0, 8),
+      txSig,
     }, `Harvest submitted: ${binIds.length} bins from ${key.slice(0, 8)}`);
     this.lastHarvestTime = Date.now();
     this.totalHarvests++;
@@ -341,6 +342,7 @@ export class HarvestExecutor extends EventEmitter {
       owner: job.owner.toBase58(),
       side: job.side,
       binCount: binIds.length,
+      txSig,
     });
   }
 
@@ -387,7 +389,7 @@ export class HarvestExecutor extends EventEmitter {
     // Without this, every close attempt crashes with ReferenceError.
     const priorityIxs = await buildPriorityFeeIxs(this.connection);
 
-    await withRetry(
+    const closeSig = await withRetry(
       () => this.coreProgram.methods
         .closePosition()
         .accounts({
@@ -433,6 +435,7 @@ export class HarvestExecutor extends EventEmitter {
       lbPair: job.lbPair.toBase58(),
       owner: job.owner.toBase58(),
       side: job.side,
+      txSig: closeSig,
     });
   }
 

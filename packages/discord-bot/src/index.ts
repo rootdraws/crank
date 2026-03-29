@@ -10,13 +10,13 @@
  *   await bot.start();
  */
 
-import { Client, GatewayIntentBits, Collection, Interaction } from 'discord.js';
+import { Client, GatewayIntentBits, Interaction } from 'discord.js';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { Program } from '@coral-xyz/anchor';
 import dotenv from 'dotenv';
 import path from 'path';
 
-import { WalletService, TIER1_POOLS } from '@crankbot/core-sdk';
+import { WalletService, loadPoolRegistry } from '@crankbot/core-sdk';
 import { DiscordNotifier } from './notifier';
 
 import { handleStart } from './commands/start';
@@ -31,6 +31,8 @@ import { handlePools } from './commands/pools';
 import { handleVote } from './commands/vote';
 import { handleBurn } from './commands/burn';
 import { handleClaim } from './commands/claim';
+import { handleUnstake } from './commands/unstake';
+import { handleSetWithdraw } from './commands/setwithdraw';
 import { handleHelp } from './commands/help';
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '..', '.env') });
@@ -41,7 +43,7 @@ export interface BotContext {
   coreProgramId: PublicKey;
   walletService: WalletService;
   approvedPools: Set<string>;
-  poolALT?: any;
+  subscriber?: any; // GeyserSubscriber — has getPoolInfo(lbPair) for real-time activeId
   feedChannelId?: string;
   client: Client;
 }
@@ -71,9 +73,8 @@ export class DiscordBot {
     this.walletService = new WalletService(process.env.DB_PATH);
     this.notifier = new DiscordNotifier(this.client, this.walletService);
 
-    const approvedPools = new Set<string>(TIER1_POOLS);
-    const extraPools = (process.env.APPROVED_POOLS || '').split(',').filter(Boolean);
-    for (const p of extraPools) approvedPools.add(p.trim());
+    const pools = loadPoolRegistry();
+    const approvedPools = new Set<string>(pools.map(p => p.address));
 
     this.ctx = {
       connection: config.connection,
@@ -81,6 +82,7 @@ export class DiscordBot {
       coreProgramId: config.coreProgramId,
       walletService: this.walletService,
       approvedPools,
+      subscriber: config.subscriber,
       feedChannelId: process.env.DISCORD_FEED_CHANNEL_ID,
       client: this.client,
     };
@@ -110,10 +112,12 @@ export class DiscordBot {
           case 'positions': return await handlePositions(interaction, ctx);
           case 'close':     return await handleClose(interaction, ctx);
           case 'withdraw':  return await handleWithdraw(interaction, ctx);
+          case 'setwithdraw': return await handleSetWithdraw(interaction, ctx);
           case 'pools':     return await handlePools(interaction, ctx);
           case 'vote':      return await handleVote(interaction, ctx);
           case 'burn':      return await handleBurn(interaction, ctx);
           case 'claim':     return await handleClaim(interaction, ctx);
+          case 'unstake':   return await handleUnstake(interaction, ctx);
           case 'help':      return await handleHelp(interaction, ctx);
           default:
             await interaction.reply({ content: 'Unknown command.', ephemeral: true });

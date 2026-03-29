@@ -6,7 +6,7 @@ export async function handleDeposit(interaction: ChatInputCommandInteraction, ct
   const address = ctx.walletService.getDepositAddress(userId);
 
   await interaction.reply({
-    content: `Your deposit address:\n\`${address}\``,
+    content: `Your deposit address:\n\`${address}\`\n\nWe recommend 0.5 SOL for rent + gas.`,
     ephemeral: true,
   });
 }

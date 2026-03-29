@@ -7,7 +7,7 @@
  */
 
 import { Client, TextChannel } from 'discord.js';
-import { WalletService, KNOWN_TOKENS } from '@crankbot/core-sdk';
+import { WalletService, loadPoolRegistry } from '@crankbot/core-sdk';
 import { formatHarvestDM, formatClosedDM, formatFeedHarvested, formatFeedClosed } from './formatter';
 
 export class DiscordNotifier {
@@ -61,12 +61,17 @@ export class DiscordNotifier {
       slot: 0,
     });
 
+    const pools = loadPoolRegistry();
+    const poolConfig = pools.find(p => p.address === data.lbPair);
+    const decimals = data.side === 'Buy' ? (poolConfig?.decimalsX ?? 9) : (poolConfig?.decimalsY ?? 9);
     const amountOut = data.side === 'Buy'
-      ? formatLamports(data.tokenXAmount ?? '0', 9)
-      : formatLamports(data.tokenYAmount ?? '0', 9);
-    const totalHarvested = formatLamports(data.totalHarvested ?? '0', 9);
-    const poolName = data.lbPair.slice(0, 8) + '...';
-    const tokenSymbol = data.side === 'Buy' ? 'TOKEN' : 'SOL';
+      ? formatLamports(data.tokenXAmount ?? '0', decimals)
+      : formatLamports(data.tokenYAmount ?? '0', decimals);
+    const totalHarvested = formatLamports(data.totalHarvested ?? '0', decimals);
+    const poolName = poolConfig?.label ?? data.lbPair.slice(0, 8) + '...';
+    const tokenSymbol = data.side === 'Buy'
+      ? (poolConfig?.buyToken ?? 'TOKEN')
+      : (poolConfig?.quoteToken ?? 'SOL');
 
     // DM the position owner
     if (userId) {
@@ -107,8 +112,12 @@ export class DiscordNotifier {
 
     this.walletService.closePosition(data.positionPDA);
 
-    const poolName = data.lbPair.slice(0, 8) + '...';
-    const tokenSymbol = data.side === 'Buy' ? 'TOKEN' : 'SOL';
+    const pools = loadPoolRegistry();
+    const poolConfig = pools.find(p => p.address === data.lbPair);
+    const poolName = poolConfig?.label ?? data.lbPair.slice(0, 8) + '...';
+    const tokenSymbol = data.side === 'Buy'
+      ? (poolConfig?.buyToken ?? 'TOKEN')
+      : (poolConfig?.quoteToken ?? 'SOL');
 
     if (userId) {
       const discordUserId = userId.replace('discord:', '');
@@ -134,6 +143,31 @@ export class DiscordNotifier {
       });
       await this.sendToFeed(feedText);
     }
+  }
+
+  /**
+   * Called after new_epoch completes. For each user in the Merkle tree:
+   * - If they have SOL for gas: auto-claim using their custody keypair, DM confirmation
+   * - If they're dry: DM them to deposit SOL or /claim manually
+   *
+   * Wired from keeper after crankNewEpoch() succeeds.
+   * Requires: IPFS tree data (leaves with wallet, cumulative_amount, proof)
+   *           + Connection for submitting claim txs
+   *
+   * TODO: implement when epoch-computer lands
+   */
+  async onEpochComplete(data: {
+    epoch: number;
+    ipfsCid: string;
+    leaves: Array<{ wallet: string; cumulative_amount: string; index: number; proof: number[][] }>;
+  }): Promise<void> {
+    // For each leaf:
+    //   1. walletService.getUserIdForOwner(leaf.wallet) — skip if not a custody user
+    //   2. Check SOL balance of custody wallet
+    //   3. If enough: build + sign claim tx with user's keypair, DM "Claimed X $PEGGED"
+    //   4. If dry: DM "You earned X $PEGGED — deposit SOL to auto-claim or /claim manually"
+    //   5. Post epoch summary to feed channel
+    console.log(`[notifier] onEpochComplete stub — epoch ${data.epoch}, ${data.leaves.length} leaves, CID: ${data.ipfsCid}`);
   }
 
   async postToFeed(text: string): Promise<void> {

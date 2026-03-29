@@ -105,8 +105,12 @@ crank-money/
 │   ├── merkle-distributor/
 │   └── pegged-bridge/
 ├── bot/                # Crank's Harvester (off-chain infrastructure)
+├── packages/
+│   ├── core-sdk/       # Shared SDK (pool routing, range parsing, wallet service)
+│   └── discord-bot/    # 14 slash commands (buy, sell, vote, burn, claim, unstake, etc.)
 ├── public/             # On-chain referenced assets (token logos, metadata)
 ├── scripts/            # Deploy, diagnostics, admin utilities
+├── curator.json        # Pool registry + gauge map (read by bot at runtime)
 └── deploy/nginx/       # Production nginx config
 ```
 
@@ -126,6 +130,7 @@ IDL generation: `anchor idl build -p bin_farm` (repeat for each program). Codama
 ```bash
 cp bot/anchor-harvest-bot.env.example bot/.env
 # Edit bot/.env — set RPC_URL, GRPC_ENDPOINT, BOT_KEYPAIR_PATH, program IDs
+# Optional: add DISCORD_TOKEN + DISCORD_CLIENT_ID to enable Discord bot
 npm run bot
 ```
 
@@ -145,9 +150,21 @@ npx tsx scripts/preflight-check.ts     # Verify all programs + PDAs on-chain
 
 ## Security
 
-- Programs can be upgraded (upgrade authority held by deployer).
+**On-chain:**
+- All harvests, sweeps, and distributions are permissionless. Anyone can crank them if the bot goes stale — no fund lock-up.
+- Fee split (40/40/20) is hardcoded in the program. Cannot be changed without a program upgrade.
+- Programs can be upgraded (upgrade authority held by deployer). Keypair separation to cold wallet (Ledger) planned.
 - AI Audit using [Adversarial Spec](https://github.com/zscole/adversarial-spec) and several rounds of analysis with Opus 4.6.
-- All harvests and sweeps can be cranked by anyone when the bot is stale, preventing fund lock-up.
+
+**Custody:**
+- User wallets are AES-256-GCM encrypted at rest. Encryption key stored separately from the wallet database.
+- Withdrawals are locked to a one-time `/setwithdraw` address per user. Once set, funds can only go to that wallet.
+- Wallet database backed up every minute to off-server object storage. Daily full-server snapshots.
+
+**Infrastructure:**
+- SSH key-only authentication, fail2ban, UFW firewall, automatic security updates.
+- API rate-limited (10 req/s per IP). WebSocket connections capped (2 per IP).
+- Health endpoint (`/api/health`) with automated alerting on gRPC disconnect, low balance, and keeper failures.
 
 ## Dependencies
 

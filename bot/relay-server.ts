@@ -345,6 +345,7 @@ export class RelayServer {
   private coreProgramId: PublicKey;
   private botWalletProvider: (() => any) | null;
   private feeProvider: (() => Promise<FeePipelineState>) | null;
+  private healthProvider: (() => { lastHarvestAt: number | null; lastKeeperRunAt: number | null; startTime: number; botSolBalance: number | null }) | null;
 
   // Rover TVL cache (computed by keeper, exposed via REST)
   private roverTvl: Map<string, RoverTvlEntry> = new Map();
@@ -381,6 +382,11 @@ export class RelayServer {
     this.coreProgramId = coreProgramId;
     this.botWalletProvider = botWalletProvider ?? null;
     this.feeProvider = feeProvider ?? null;
+    this.healthProvider = null;
+  }
+
+  setHealthProvider(provider: () => { lastHarvestAt: number | null; lastKeeperRunAt: number | null; startTime: number; botSolBalance: number | null }): void {
+    this.healthProvider = provider;
   }
 
   /** Start the protocol PnL aggregator that scans all position histories periodically */
@@ -511,6 +517,8 @@ export class RelayServer {
           return this.handleRoversTop5(res);
         case '/api/stats':
           return this.handleStats(res);
+        case '/api/health':
+          return this.handleHealth(res);
         case '/api/bot-wallet':
           return this.handleBotWallet(res);
         case '/api/fees':
@@ -678,6 +686,30 @@ export class RelayServer {
       roverPoolCount: this.roverTvl.size,
       roverTotalTvl: [...this.roverTvl.values()].reduce((sum, r) => sum + r.tvl, 0),
       wsClients: this.clients.size,
+    });
+    return true;
+  }
+
+  private handleHealth(res: ServerResponse): boolean {
+    const grpcConnected = this.subscriber.isConnected();
+    const health = this.healthProvider?.() ?? null;
+    const now = Date.now();
+
+    // Stale thresholds
+    const GRPC_STALE = !grpcConnected;
+    const LOW_BALANCE = health?.botSolBalance !== null && health!.botSolBalance < 0.05 * 1e9; // < 0.05 SOL
+
+    const ok = !GRPC_STALE && !LOW_BALANCE;
+    const status = ok ? 200 : 503;
+
+    this.json(res, status, {
+      healthy: ok,
+      grpcConnected,
+      lowBalance: !!LOW_BALANCE,
+      botSolBalance: health?.botSolBalance ? health.botSolBalance / 1e9 : null,
+      lastHarvestAt: health?.lastHarvestAt ? new Date(health.lastHarvestAt).toISOString() : null,
+      lastKeeperRunAt: health?.lastKeeperRunAt ? new Date(health.lastKeeperRunAt).toISOString() : null,
+      uptimeSeconds: health?.startTime ? Math.floor((now - health.startTime) / 1000) : null,
     });
     return true;
   }

@@ -1,10 +1,17 @@
 {
-  "_note": "Mirror of curator.md — update both when adding/changing pools. This file is read by the bot. curator.md is for Root.",
+  "_note": "Pool registry — read by the bot at runtime. Update when adding/changing pools.",
+
+  "_gauge_note": "One gauge per trading pair, not per bin step. The address is the LbPair registered on-chain via add_pool on gauge-voter. Users vote on pairs (/vote SOL 50 CRANK 50), not individual DLMM pools. The epoch-computer aggregates fees across all bin step pools for a pair, then distributes the trader 40% share by gauge weight.",
+  "gauges": {
+    "SOL": "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR",
+    "CRANK": "9R9gcCqPazHZt217aqh3fYDNBGnqENcupWYd97LYiUDp"
+  },
+
   "pools": [
     {
-      "id": "sol-usdc-tight",
-      "label": "SOL/USDC",
-      "address": "REPLACE_WITH_REAL_ADDRESS",
+      "id": "sol-usdc-1",
+      "label": "SOL/USDC (1bps)",
+      "address": "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR",
       "binStep": 1,
       "tokenX": "SOL",
       "tokenY": "USDC",
@@ -17,12 +24,66 @@
       "maxRangePct": 0.7,
       "buyToken": "SOL",
       "quoteToken": "USDC",
-      "notes": "Tight 1-step pool. Auto-splits for wide ranges."
+      "example": "/buy SOL 84 to 82 100 USDC"
     },
     {
-      "id": "sol-usdc-wide",
-      "label": "SOL/USDC wide",
-      "address": "REPLACE_WITH_REAL_ADDRESS",
+      "id": "sol-usdc-4",
+      "label": "SOL/USDC (4bps)",
+      "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+      "binStep": 4,
+      "tokenX": "SOL",
+      "tokenY": "USDC",
+      "mintX": "So11111111111111111111111111111111111111112",
+      "mintY": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "decimalsX": 9,
+      "decimalsY": 6,
+      "displayMode": "price",
+      "splitStrategy": "auto",
+      "maxRangePct": 2.8,
+      "buyToken": "SOL",
+      "quoteToken": "USDC",
+      "example": "/buy SOL 84 to 80 500 USDC"
+    },
+    {
+      "id": "sol-usdc-10",
+      "label": "SOL/USDC (10bps)",
+      "address": "BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y",
+      "binStep": 10,
+      "tokenX": "SOL",
+      "tokenY": "USDC",
+      "mintX": "So11111111111111111111111111111111111111112",
+      "mintY": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "decimalsX": 9,
+      "decimalsY": 6,
+      "displayMode": "price",
+      "splitStrategy": "auto",
+      "maxRangePct": 7.2,
+      "buyToken": "SOL",
+      "quoteToken": "USDC",
+      "example": "/buy SOL 84 to 78 1000 USDC"
+    },
+    {
+      "id": "sol-usdc-20",
+      "label": "SOL/USDC (20bps)",
+      "address": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh",
+      "binStep": 20,
+      "tokenX": "SOL",
+      "tokenY": "USDC",
+      "mintX": "So11111111111111111111111111111111111111112",
+      "mintY": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "decimalsX": 9,
+      "decimalsY": 6,
+      "displayMode": "price",
+      "splitStrategy": "auto",
+      "maxRangePct": 15.0,
+      "buyToken": "SOL",
+      "quoteToken": "USDC",
+      "example": "/buy SOL 84 to 72 2000 USDC"
+    },
+    {
+      "id": "sol-usdc-80",
+      "label": "SOL/USDC (80bps)",
+      "address": "CgqwPLSFfht89pF5RSKGUUMFj5zRxoUt4861w2SkXaqY",
       "binStep": 80,
       "tokenX": "SOL",
       "tokenY": "USDC",
@@ -32,16 +93,16 @@
       "decimalsY": 6,
       "displayMode": "price",
       "splitStrategy": "reject",
-      "maxRangePct": 75.2,
+      "maxRangePct": 74.5,
       "buyToken": "SOL",
       "quoteToken": "USDC",
-      "notes": "Wide pool. Used when tight pool range requires >3 positions."
+      "example": "/buy SOL 80 to 50 5000 USDC"
     },
     {
       "id": "crank-sol",
       "label": "CRANK/SOL",
-      "address": "REPLACE_WITH_REAL_ADDRESS",
-      "binStep": 100,
+      "address": "9R9gcCqPazHZt217aqh3fYDNBGnqENcupWYd97LYiUDp",
+      "binStep": 80,
       "tokenX": "CRANK",
       "tokenY": "SOL",
       "mintX": "Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump",
@@ -49,12 +110,13 @@
       "decimalsX": 6,
       "decimalsY": 9,
       "displayMode": "mc",
-      "supply": 1900000000,
+      "supply": 1935388608,
+      "priceSource": "dexscreener",
       "splitStrategy": "auto",
-      "maxRangePct": 100.5,
+      "maxRangePct": 74.5,
       "buyToken": "CRANK",
       "quoteToken": "SOL",
-      "notes": "1.9B supply — NOT standard 1B. MC display mode."
+      "example": "/buy CRANK 45mmc to 22mmc 2 SOL"
     }
   ]
 }

@@ -9,7 +9,7 @@ export async function handleStart(interaction: ChatInputCommandInteraction, ctx:
   await interaction.reply({
     content:
       `Your deposit address:\n\`${address}\`\n\n` +
-      `Send SOL or tokens here to start trading.\n` +
+      `Send at least 0.5 SOL to cover rent + gas for trading.\n` +
       `/balance to check funds · /deposit to see this again`,
     ephemeral: true,
   });

@@ -643,6 +643,7 @@ export class GeyserSubscriber extends EventEmitter {
       });
 
       this.connected = true;
+      if (this.reconnectAttempts > 0) this.emit('reconnected');
       this.reconnectAttempts = 0;
       this.lastPongTime = Date.now();
       this.startPingLoop();
@@ -659,6 +660,7 @@ export class GeyserSubscriber extends EventEmitter {
 
     this.connected = false;
     this.stopPingLoop();
+    this.emit('disconnected');
 
     const delay = Math.min(
       RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),

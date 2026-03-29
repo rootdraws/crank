@@ -1,8 +1,7 @@
 /**
  * core-sdk/signer.ts
  *
- * Custodial transaction signing. Replaces browser wallet signing
- * (phantomSDK.solana.signAndSendTransaction) with keypair-based signing.
+ * Custodial transaction signing (keypair-based).
  */
 
 import {
