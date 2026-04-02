@@ -3,6 +3,7 @@ import { Transaction } from '@solana/web3.js';
 import { createCloseAccountInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, KNOWN_TOKENS, NATIVE_MINT, signAndSendLegacy } from '@crankbot/core-sdk';
 import { formatBalance } from '../formatter';
+import { tryLockDepositor } from '../deposit-detect';
 import type { BotContext } from '../index';
 
 export async function handleBalance(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
@@ -11,6 +12,9 @@ export async function handleBalance(interaction: ChatInputCommandInteraction, ct
   const pubkey = keypair.publicKey;
 
   await interaction.deferReply({ ephemeral: true });
+
+  // Auto-detect depositor and lock as withdraw address
+  const withdrawAddr = await tryLockDepositor(ctx.connection, ctx.walletService, userId);
 
   // Auto-unwrap any WSOL before showing balance
   try {
@@ -41,6 +45,6 @@ export async function handleBalance(interaction: ChatInputCommandInteraction, ct
     tokens.push({ symbol, amount });
   }
 
-  const text = formatBalance(pubkey.toBase58(), solBalance / 1e9, tokens);
+  const text = formatBalance(pubkey.toBase58(), solBalance / 1e9, tokens, withdrawAddr);
   await interaction.editReply(text);
 }

@@ -1,10 +1,10 @@
 # claude.md — crank.money codebase context
 
-**Limit orders that earn fees. Burn $CRANK, earn $PEGGED.**
+**Limit orders that earn fees. Burn $CRANK, earn SOL.**
 
 crank.money wraps Meteora DLMM positions on Solana. Set your range as a single-sided LP — **sell the rips** or **buy the dips**. If price moves through your range, Crank's Harvester pulls each bin the moment it converts.
 
-Performance fee on converted output only (0.3%). `sweep_rover` splits **40/40/20**: 40% to bridge_vault (→ staked via SPL stake pool → $PEGGED for BANK holders), 40% to trader_dest (→ $PEGGED for traders via gauge-weighted distribution), 20% to `Config.bot` (operations). Hardcoded on-chain. Revenue distribution via daily Merkle tree at 4:20 PM CST — unified tree combining both holder and trader shares. BANK holders vote on pool weights via gauge-voter (global-state mutation, votes stick permanently).
+Performance fee on converted output only (0.3%). `sweep_rover` splits **40/40/20**: 80% to bridge_vault (SOL holding tank for daily distribution), 20% to `Config.bot` (operations). Hardcoded on-chain. Revenue distribution via daily Merkle tree — epoch-computer drains vault, wraps WSOL, funds distributor, auto-claims to user custody wallets. BANK holders vote on pool weights via gauge-voter.
 
 **Interface:** Discord bot (Telegram adapter planned). Users type `/buy GSD 900kmc to 1.1mmc SOL 10` — bot maps tickers to curated pools, converts mcap/price to bin ranges, routes to best DLMM pool by bin step, opens positions. Community doc pages per subdomain (e.g. `gsd.crank.money`).
 
@@ -15,8 +15,8 @@ Five active on-chain programs:
 - **bin-farm** (core) — Position management (open, harvest, close, claim fees) + rover system. All CPI via V2 variants (Token-2022 native). 40/40/20 fee split in `sweep_rover`. Permissionless fallback on all operations (heartbeat + staleness pattern, `keeper_tip_bps`). Side derived on-chain from `active_id`.
 - **bank-mint** — Burn $CRANK → mint $BANK 1:1. Supply cap: `bank_supply + crank_supply <= 2B`. BankConfig PDA is sole mint authority.
 - **gauge-voter** — Global-state pair weight voting. One gauge per trading pair (not per bin step). BANK holders blend weights via `vote()`. Admin registers pairs via `add_pool` using a representative LbPair address. Max 32 pairs. Votes stick permanently. Epoch-computer aggregates fees across all bin step pools for a pair, distributes trader 40% by gauge weight.
-- **merkle-distributor** — Cumulative $PEGGED distribution via Merkle proofs. Daily epoch. IPFS-pinned trees. `claim()` is permissionless (payer != claimant). Supports ~1M leaves.
-- **pegged-bridge** — SOL → Sanctum SPL stake pool (Helius + LP Army + MonkeDAO validators) → $PEGGED → Merkle distributor vault. Single permissionless `stake_and_forward` crank.
+- **merkle-distributor** — Cumulative SOL (WSOL) distribution via Merkle proofs. Daily epoch. IPFS-pinned trees. `claim()` is permissionless (payer != claimant). Auto-claimed by keeper. Supports ~1M leaves.
+- **epoch-vault** (was pegged-bridge) — SOL fee accumulator. Receives 80% from sweep_rover via `bridge_vault` PDA. `drain_vault` lets authority withdraw for distribution. Same program ID `7oHSUP...`.
 
 ## Key instructions
 
@@ -32,10 +32,8 @@ close_position() / user_close()
   → Same fee mechanic. Meteora position closed, rent refunded.
 
 sweep_rover()
-  → Permissionless. SOL → 40% bridge_vault + 40% trader_dest + 20% Config.bot.
-
-stake_and_forward()  [pegged_bridge]
-  → Permissionless. bridge_vault SOL → SPL stake pool → $PEGGED → Merkle vault.
+  → Permissionless. SOL → 80% bridge_vault + 20% Config.bot.
+  → (trader_dest now also points to bridge_vault)
 
 burn_and_mint(amount)  [bank_mint]
   → Burn $CRANK, mint $BANK 1:1. Supply cap enforced.
@@ -50,7 +48,10 @@ new_epoch(root, ipfs_cid, amount)  [merkle_distributor]
   → Bot uploads Merkle root + funds vault. Daily.
 
 claim(index, cumulative_amount, proof)  [merkle_distributor]
-  → Claim accumulated $PEGGED. Cumulative accounting.
+  → Claim accumulated SOL (WSOL). Auto-claimed by keeper daily.
+
+drain_vault(amount)  [epoch_vault]
+  → Authority drains SOL from bridge_vault for distribution.
 ```
 
 ## Bin detection logic
@@ -72,25 +73,27 @@ programs/
     lib.rs                       — Core: positions, harvest, close, rovers, 40/40/20 split
     meteora_dlmm_cpi.rs          — CPI module (V2 only)
   gauge-voter/src/lib.rs         — Pool weight voting + pool curation
-  merkle-distributor/src/lib.rs  — Cumulative $PEGGED Merkle claims + IPFS CID
-  pegged-bridge/src/lib.rs       — SOL → SPL stake pool → $PEGGED → Merkle vault
+  merkle-distributor/src/lib.rs  — Cumulative SOL (WSOL) Merkle claims + IPFS CID
+  epoch-vault/src/lib.rs         — SOL fee accumulator + drain_vault instruction
 
 bot/
   anchor-harvest-bot.ts          — Orchestrator, health server :8080, graceful shutdown
   geyser-subscriber.ts           — Helius LaserStream gRPC, raw LbPair byte parsing,
                                    position registry, persistent cache, auto-reconnect
   harvest-executor.ts            — Job queue, Token-2022 aware, dedup, max 5 concurrent
-  keeper.ts                      — Daily fee sequencer (6 steps: close WSOL → sweep →
-                                   stake_and_forward → fee rovers → new_epoch → close exhausted)
+  keeper.ts                      — Daily fee sequencer (5 steps: close WSOL → sweep →
+                                   epoch distribution → fee rovers → close exhausted)
+  epoch-computer.ts              — Daily SOL distribution: drain vault → WSOL → Merkle → auto-claim
   relay-server.ts                — REST API + WebSocket relay (stats, pools, positions,
                                    fees, rovers, PnL, feed)
   meteora-accounts.ts            — Shared Meteora CPI account resolution + DLMM cache
   logger.ts                      — pino logger
   retry.ts                       — Shared withRetry (exponential backoff)
-  alerter.ts                     — Discord feed channel alerts (gRPC, low balance, keeper failures)
+  alerter.ts                     — Discord feed channel alerts (gRPC, low balance, keeper failures, sync)
+  price-syncer.ts                — Price divergence detection + arb bot (disabled, pending direct Meteora swap)
   bot.test.ts                    — Unit tests (vitest): bin detection, byte parsing, dedup
   ecosystem.config.cjs           — PM2 config (512MB, auto-restart)
-  idl/                           — Anchor IDL JSON files (5 programs)
+  idl/                           — Anchor IDL JSON files (bin_farm, merkle_distributor, epoch_vault, etc.)
   claude-bot.md                  — Bot folder context doc
 
 public/                          — On-chain referenced assets only
@@ -131,8 +134,9 @@ packages/
     src/notifier.ts              — DM + feed channel notifications on harvest/close events
     src/formatter.ts             — Message formatting (pools grouped by pair, ASCII fill bars)
     src/deploy-commands.ts       — Register slash commands with Discord API
-    src/commands/                 — 15 handlers: start, balance, deposit, buy, sell,
-                                   positions, close, setwithdraw, withdraw, pools, vote, burn, claim, unstake, help
+    src/commands/                 — 12 handlers: start, balance, deposit, buy, sell,
+                                   positions, close, withdraw, pools, vote, burn, help
+    src/deposit-detect.ts        — Auto-lock first SOL depositor as withdraw address
 
 deploy/nginx/
   bot.crank.money.conf           — Production nginx (SSL + WebSocket + CORS + rate limiting)
@@ -158,8 +162,8 @@ todo.md                          — Living task list
 | PoolGauge | `[b"pool_gauge", lb_pair.key()]` | gauge-voter |
 | Distributor | `[b"distributor"]` | merkle-distributor |
 | ClaimStatus | `[b"claim_status", distributor.key(), claimant.key()]` | merkle-distributor |
-| BridgeConfig | `[b"bridge_config"]` | pegged-bridge |
-| BridgeVault | `[b"bridge_vault"]` | pegged-bridge |
+| BridgeConfig | `[b"bridge_config"]` | epoch-vault |
+| BridgeVault | `[b"bridge_vault"]` | epoch-vault |
 
 ## Program IDs
 
@@ -169,7 +173,7 @@ todo.md                          — Living task list
 | bank-mint | `FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk` |
 | gauge-voter | `DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA` |
 | merkle-distributor | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` |
-| pegged-bridge | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` |
+| epoch-vault | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` |
 
 ## Token addresses
 
@@ -177,7 +181,6 @@ todo.md                          — Living task list
 |-------|------|----------|
 | $CRANK | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` | 6 |
 | $BANK | `BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA` | 6 |
-| $PEGGED (crankSOL) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` | 9 |
 
 ## Key PDAs (live)
 
@@ -185,14 +188,12 @@ todo.md                          — Living task list
 |-----|---------|---------|
 | Core Config | `MeTGCG86PTWhnN52yV9ie8oJkgfSLGyuRCFxhDd97i2` | bin-farm |
 | RoverAuthority | `56UrucGXHYPfsXS8BMZG82UA632fHDB1o6aXWwt9i6PR` | bin-farm |
-| Trader Dest | `FFwqCuYTw7DFWWRQD3tYcPBPpmaAQjT1JV5kqG15QPsL` | (on RoverAuthority) |
+| Trader Dest | `B9gTfeCbN1oSXKCKgog5gGTH3VGNr3U5SYH4mL3gtqxK` | (= bridge_vault, on RoverAuthority) |
 | BankConfig | `HxvvyJtscUTmUhkvz6D5gidGEfmatuSmFgcxxRzexwKF` | bank-mint |
 | GaugeConfig | `AqdJmiDvUj6DWKt48QCMEqWSnh2a2qjExidhbrMw9z17` | gauge-voter |
 | Distributor | `Hwra7Rz8ZfBVuJYqyGz5PL9Bj21jSvw2qbxkg2uoE7xQ` | merkle-distributor |
-| Distributor Vault | `52MUiETNoF6YmBGA6LNfrAdTdkJDmCR95arg7wntZzwB` | ATA ($PEGGED) |
-| BridgeVault | `B9gTfeCbN1oSXKCKgog5gGTH3VGNr3U5SYH4mL3gtqxK` | pegged-bridge |
-| SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` | Sanctum |
-| Stake Pool Withdraw Auth | `AnmuhSsKondKVDAWTLc57joeMA7K6vHNNxrnLkjyTJLJ` | (mint auth for $PEGGED) |
+| Distributor Vault | `Fr3ntupQJRsYzTAVzNerd7zQ7QHkwKtaE5fjPVx21ZSw` | ATA (WSOL) |
+| BridgeVault | `B9gTfeCbN1oSXKCKgog5gGTH3VGNr3U5SYH4mL3gtqxK` | epoch-vault |
 
 ## Fee flow
 
@@ -202,11 +203,11 @@ harvest/close → 0.3% fee → rover_authority ATAs
   Token fees: rover ATA → open_fee_rover (BidAskImBalanced DLMM) → natural conversion → SOL
 
 sweep_rover splits 40/40/20:
-  40% → bridge_vault → stake_and_forward → $PEGGED → Merkle distributor vault (BANK holders)
-  40% → trader_dest → stake → $PEGGED → Merkle distributor vault (traders, gauge-weighted)
+  80% → bridge_vault (both revenue_dest + trader_dest point here)
   20% → Config.bot (self-funding operations)
 
-Daily epoch at 4:20 PM CST: unified Merkle tree, IPFS pinned.
+Daily epoch-computer:
+  drain_vault → wrap SOL to WSOL → fund Merkle distributor → auto-claim for all users
 ```
 
 ## Build
@@ -243,36 +244,33 @@ node scripts/generate-clients.mjs         # Codama TypeScript clients
 
 **Yellowstone gRPC v5:** Requires explicit `await client.connect()` before `client.subscribe()`.
 
-**Sanctum SPL Stake Pool epoch updates.** Required before every `stake_and_forward` (error `0x11 = StakeListAndPoolOutOfDate` otherwise). Both instructions fully permissionless. Keeper calls `updateSanctumPool()` automatically.
-
-- **UpdateValidatorListBalance (variant 6):** Data = `[6, start_index: u32 LE, no_merge: bool]` (6 bytes).
-- **UpdateStakePoolBalance (variant 7):** Data = `[7]` (1 byte). Must run after variant 6.
-- **ValidatorStakeInfo:** 73 bytes per entry. Status 2 = ReadyForRemoval (skip).
-- **ValidatorList:** Header 5 bytes, entries start at offset 9.
-- **PDA seeds:** Validator stake = `[vote_account, stake_pool]` (no prefix if suffix == 0). Transient = `[b"transient", vote_account, stake_pool, seed_u64_le]`. Withdraw auth = `[stake_pool, b"withdraw"]`.
-- **StakePool offsets:** `validator_list`@98, `reserve_stake`@130, `pool_mint`@162, `manager_fee_account`@194, `token_program_id`@226.
+**Sanctum SPL Stake Pool — RETIRED.** $PEGGED killed 2026-04-01. Pool exists on-chain but is no longer used. Revenue distributed as SOL directly via Merkle distributor.
 
 **`binIdToBinArrayIndex` uses `Math.trunc` not `Math.floor`.** For negative bin IDs, `Math.floor` rounds toward negative infinity but Meteora's SDK truncates toward zero then subtracts 1 if remainder is non-zero. The off-by-one caused bin array PDAs to mismatch what the on-chain program expected. Fixed in `pda.ts`.
 
-**Gas offloading.** Harvest executor resolves position owner → `walletService.getUserIdForOwner()` → `getOrCreate()` → signs harvest/close with user's custody keypair. User pays gas. Falls back to bot keypair if owner isn't a custody user (permissionless path).
+**Gas offloading (two-signer).** Harvest executor uses two signers: `botKeypair` signs as the `bot` account (authorized bot path — no keeper tip, no remaining_accounts), `userKeypair` is fee payer (user pays gas). Falls back to bot-only if owner isn't a custody user. Previous approach (user-as-sole-signer) was broken — on-chain saw `bot != config.bot` → permissionless path → MissingKeeperAta error.
 
 **Harvest enrichment via `getTransaction`.** After harvest/close, executor calls `getTransaction(txSig)` and reads `preTokenBalances`/`postTokenBalances` from the confirmed transaction metadata. Computes deltas per owner per mint. No timing issues (data comes from the validator, not stale RPC reads).
 
 **WSOL auto-unwrap.** `/balance` closes any WSOL ATA before displaying (user pays). Executor also unwraps WSOL after harvest/close using the user's keypair. `/buy` appends a close WSOL ATA instruction to the open_position tx and auto-unwraps on failure.
 
+**SOL price from Pyth oracle.** `fetchDexScreenerPrice(SOL_MINT)` uses Pyth Hermes API (`hermes.pyth.network`) instead of DexScreener. Eliminates FOGO contamination where DexScreener labels FOGO pairs with `baseToken.address = SOL mint` but returns FOGO's price ($0.01) instead of SOL's ($81). For non-SOL tokens, DexScreener is used with stablecoin-pair preference + symbol consensus filtering.
+
+**Token-2022 transfer hooks unsupported — defense-in-depth guards in place.** bin-farm passes `RemainingAccountsInfo::empty_hooks()` to all Meteora CPI. Tokens with transfer hooks will fail at CPI level, locking ~0.06 SOL rent per position. Guards: (1) curator.json mint whitelist in `open_fee_rovers`, (2) `hasTransferHook()` detection in keeper + `/buy` + `/sell` — rejects Token-2022 mints with hook extensions. Full hook resolution would need a bin-farm program upgrade.
+
 **Safety poll interval: 30 seconds.** Fallback for pools with low gRPC activity (e.g. CRANK/SOL where arb bots fire in bursts). Primary detection is still gRPC sub-second for active pools.
 
 **Sell command auto-resolves quote token.** `/sell CRANK 25kmc to 30kmc 4000000 CRANK` detects token==quote and resolves actual quote from pool registry.
 
-**`/withdraw` one-liner.** Format: `/withdraw SOL 0.5` or `/withdraw CRANK all`. No address field — sends to locked `/setwithdraw` address. Blocks if no withdraw address set.
+**`/withdraw` dashboard + execute.** Bare `/withdraw` shows balances + withdraw wallet + examples. `/withdraw SOL .5` or `/withdraw CRANK all` executes. No address param — sends to auto-detected deposit wallet.
 
-**$PEGGED on-chain metadata.** name=`crankSOL`, symbol=`PEGGED`. Metadata PDA: `4jAz3CwfR9MPNsagtUDoah3AZ3v1Lr1SB7BZVx3LjySc`. Logo/URI not yet set. To add: host off-chain JSON, call `UpdateTokenMetadata` (variant 18) via Sanctum program, signed by pool manager. Script: `scripts/update-pegged-metadata.ts`.
+**`/close` dashboard + execute.** Bare `/close` shows positions with IDs + fill bars. `/close <id>` closes one. `/close all` rage quits everything.
 
 **$BANK metadata not yet registered.** Needs Metaplex token metadata: name, symbol, image, off-chain JSON.
 
 ## DigitalOcean / Bot deployment
 
-**Droplet:** NYC1, s-1vcpu-2gb, Ubuntu 22.04
+**Droplet:** NYC1, s-2vcpu-4gb, Ubuntu 22.04 (+ 1GB swap)
 **Domain:** `bot.crank.money` (A record on Vercel DNS)
 **SSL:** Let's Encrypt via certbot (auto-renewing)
 
@@ -308,7 +306,8 @@ All served via `https://bot.crank.money`:
 | `GET /api/rovers/top5` | Top 5 rovers |
 | `GET /api/feed` | Last 50 activity feed events |
 | `GET /api/protocol-pnl` | Win rate, net PnL, per-pool breakdown, rover portfolio |
-| `WSS /ws` | Real-time: activeBinChanged, harvestNeeded, harvestExecuted, positionClosed, roverTvlUpdated, feedHistory |
+| `GET /api/syncer` | Price syncer stats: divergence %, activeId, change history, profit tracking |
+| `WSS /ws` | Real-time: activeBinChanged, harvestNeeded, harvestExecuted, positionClosed, roverTvlUpdated, syncExecuted, divergenceDetected, feedHistory |
 
 ## Adding a new token/pool
 
@@ -351,25 +350,53 @@ Add `mint_address: 'SYMBOL'`. Used by `/balance` and `/withdraw` for display. Wi
 
 **NEVER deploy without verifying `data/` is excluded from rsync.** The wallet DB (`data/crankbot.json`) contains encrypted custodial keypairs. Deletion = permanent fund loss.
 
-**Custody wallet architecture:** Each Discord user gets an AES-256-GCM encrypted keypair stored in `data/crankbot.json`. Encryption key backed up to `/root/.keys/wallet.key` (chmod 600) + password manager. Wallet DB backed up per-minute to DO Spaces (`s3://crank-backups`). Withdrawals locked to a one-time `/setwithdraw` address per user.
+**Custody wallet architecture:** Each Discord user gets an AES-256-GCM encrypted keypair stored in `data/crankbot.json`. Encryption key backed up to `/root/.keys/wallet.key` (chmod 600) + password manager. Wallet DB backed up per-minute to DO Spaces (`s3://crank-backups`). Withdraw address auto-locked to the first wallet that deposits SOL (detected from tx history, write-once).
 
-## Current state (2026-03-29)
+## Current state (2026-04-01)
 
-- **Discord bot live** — `crankbot#8555`, 15 slash commands, feed channel `#crank-feed`
-- **Harvester running** — gRPC connected, daily keeper sequence, relay on :8080
-- **Droplet hardened** — fail2ban, SSH key-only, UFW, unattended-upgrades, nginx rate limiting
-- **Security hardened** — secrets rotated, wallet DB backed up per-minute to DO Spaces, daily DO snapshots, encryption key separated to `/root/.keys/wallet.key`
-- **Alerting live** — gRPC disconnect/reconnect, low balance, keeper failures → `#crank-feed` channel
-- **`/setwithdraw`** — one-time withdrawal address lock per user (15th command)
-- **`/api/health`** — returns 503 when unhealthy, ready for external uptime monitor
-- **Gas offloading live** — harvests and closes signed with user's custody keypair (user pays gas)
-- **Harvest enrichment live** — token deltas read from confirmed tx via `getTransaction`
-- **WSOL auto-unwrap** — `/balance` unwraps, executor unwraps after harvest/close, `/buy` unwraps on failure
-- **Safety poll** — 30s interval (fallback for low-activity pools)
+- **Discord bot live** — `crankbot#8555`, 12 slash commands, feed channel `#crank-feed`
+- **Harvester running** — gRPC connected, daily keeper sequence (5 steps), relay on :8080
+- **Droplet** — s-2vcpu-4gb NYC1, 1GB swap, fail2ban, SSH key-only, UFW, nginx rate limiting
+- **$PEGGED killed** — all holdings unstaked, ATAs closed, code gutted. Revenue distributed as SOL.
+- **epoch-vault program deployed** — (was pegged-bridge, same ID). `drain_vault` instruction live.
+- **merkle-distributor upgraded** — `update_mint` added, mint set to WSOL on-chain.
+- **trader_dest = bridge_vault** — both 80% fee shares accumulate in one PDA.
+- **epoch-computer built** — `bot/epoch-computer.ts`, wired into keeper daily sequence. Needs end-to-end test.
+- **Withdraw address auto-detection** — first SOL depositor locked as withdraw wallet (`deposit-detect.ts`)
+- **`/withdraw` dashboard** — bare shows balances + withdraw wallet + examples
+- **`/close` dashboard** — bare shows positions with IDs, `/close all` rage quits
+- **Gas offloading live** — two-signer: bot=authorized bot, user=fee payer
+- **WSOL auto-unwrap** — `/balance` unwraps, executor unwraps after harvest/close
+- **Price syncer deployed (disabled)** — detection works, swap execution needs direct Meteora DLMM instructions
+- **SOL price from Pyth** — `fetchDexScreenerPrice(SOL)` uses Pyth Hermes, not DexScreener. Eliminates FOGO contamination.
+- **DexScreener hardened** — stablecoin pair preference + symbol consensus filter for non-SOL tokens
 
 ## Known issues
 
-- **Token-2022 transfer hooks unsupported** — V2 CPI but hook extra accounts not resolved. `RemainingAccountsInfo::empty_hooks()` everywhere.
-- **DataPI portfolio endpoints unusable for user positions** — keyed by wallet, but crank.money positions owned by per-position vault PDAs. Rover portfolio works (single `rover_authority` PDA).
-- **Epoch-computer not built yet** — keeper's `crankNewEpoch()` reads `epoch-data.json` but the service that computes the Merkle tree doesn't exist. Daily distributions no-op until built. See `todo.md`.
-- **Keypair separation pending** — single keypair controls everything. Needs fresh Ledger for cold admin. See todo.md Tier 4.
+- **Epoch-computer untested** — code exists in `bot/epoch-computer.ts` but has never run a real epoch. Needs `@noble/hashes` for correct keccak256 (currently falls back to sha3-256 which won't match on-chain). Needs end-to-end test with real SOL.
+- **Token-2022 transfer hooks unsupported** — V2 CPI but hook extra accounts not resolved. Defense-in-depth guards reject hook-bearing tokens.
+- **No arb on CRANK/SOL DLMM pool** — price syncer detection works but swap execution needs direct Meteora DLMM instructions.
+- **Keypair separation pending** — single keypair controls everything. Needs fresh Ledger for cold admin.
+- **$BANK metadata missing** — no logo, no URI, looks like scam token in wallets.
+
+## Program audit notes (reviewed 2026-04-01)
+
+**epoch-vault** (`programs/epoch-vault/src/lib.rs`) — Clean. `drain_vault` does direct lamport manipulation on the PDA (no CPI needed since vault is system-owned). The `vault_bump` is stored on config but never used in `drain_vault` — not a bug (lamport manipulation doesn't need PDA signing, only CPI invoke_signed does). `destination` is unchecked — authority-gated so only the bot can drain, but it can drain to ANY address. This is intentional (bot drains to itself for WSOL wrapping).
+
+**merkle-distributor** (`programs/merkle-distributor/src/lib.rs`) — Clean. `update_mint` added correctly — authority-gated, validates new vault ATA is owned by distributor PDA and denominated in new mint. Mint changed to WSOL on-chain (verified). The `claim()` instruction uses `transfer_checked` via `token_interface` so it works with both SPL Token and Token-2022. Cumulative accounting is sound — delta computed from `cumulative_amount - claim_status.cumulative_claimed`.
+
+**gauge-voter** (`programs/gauge-voter/src/lib.rs`) — Solid. The ppb (parts-per-billion) math avoids overflow with u128 intermediates. Rounding dust correction on first pool is correct. Flash-loan voting is acknowledged and accepted in comments. One note: `remove_pool` closes the PoolGauge account but does NOT redistribute the removed weight to remaining pools — the weight just disappears, shrinking total below 10000 bps. Self-heals on the next `vote()` call (rounding correction forces sum back to 10000). The epoch-computer should normalize by actual sum when reading gauge weights, not assume 10000.
+
+**bank-mint** (`programs/bank-mint/src/lib.rs`) — Clean. Supply cap invariant `bank_supply + crank_supply <= 2B` is checked on every burn_and_mint. Uses `token_interface` so both SPL Token and Token-2022 work. The PDA is sole mint authority — verified at `initialize`.
+
+**bin-farm** (`programs/bin-farm/src/lib.rs`) — The big one (3054 lines). `sweep_rover` 40/40/20 split is hardcoded and correct. `trader_dest` constraint validates against `rover_authority.trader_dest` — now points to `bridge_vault`, verified on-chain. The keeper's `crankSweepRover` reads RoverAuthority to get the current addresses, so it should pass the right accounts after restart. The `InvalidTraderDest` error from the transition was transient — `set_trader_dest` was called mid-keeper-cycle. The keeper reads RoverAuthority fresh each tick (no cache), so the next daily tick will pass the correct bridge_vault address.
+
+**Cross-program note:** Both `revenue_dest` AND `trader_dest` now point to `bridge_vault` (`B9gTfe...`). sweep_rover sends 40% + 40% = 80% to the same account. This is fine — the lamport additions are sequential in the same instruction, no race condition. The remaining 20% goes to `Config.bot`.
+
+## Next session priorities
+
+See `todo.md` NEXT SESSION section for detailed resume notes. Key priorities:
+
+1. **Epoch-computer end-to-end test** — install `@noble/hashes`, trigger test epoch, verify full pipeline
+2. **Verify sweep_rover with new trader_dest** — keeper logged `InvalidTraderDest` during transition, should resolve after restart
+3. **Remaining doc cleanup** — claude-bot.md, claude-discord.md, claude-core-sdk.md still have stale PEGGED refs

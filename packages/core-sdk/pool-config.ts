@@ -40,6 +40,8 @@ export interface PoolConfig {
   quoteToken: string;
 
   example?: string;
+
+  syncEnabled?: boolean;
 }
 
 let cachedRaw: any = null;

@@ -4,7 +4,7 @@ members = [
     "programs/bin-farm",
     "programs/gauge-voter",
     "programs/merkle-distributor",
-    "programs/pegged-bridge",
+    "programs/epoch-vault",
 ]
 resolver = "2"
 

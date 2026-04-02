@@ -75,6 +75,12 @@ export function formatPositionOpened(params: {
   );
 }
 
+function formatAmount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n >= 1 ? n.toFixed(2) : n.toFixed(4);
+}
+
 function formatMcap(mcap: number): string {
   if (mcap >= 1_000_000_000) return `${(mcap / 1_000_000_000).toFixed(1)}b mc`;
   if (mcap >= 1_000_000) return `${(mcap / 1_000_000).toFixed(1)}m mc`;
@@ -169,9 +175,16 @@ export function formatPositionsList(positions: PositionDisplayData[]): string {
 
     const harvestedNum = Number(p.harvestedAmount) / Math.pow(10, p.quoteDecimals);
 
+    // Deposit info: initialAmount is in the deposited token's lamports
+    // SELL deposits tokenX (e.g. CRANK), BUY deposits tokenY (e.g. SOL)
+    const depositDecimals = isBuy ? p.decimalsY : p.decimalsX;
+    const depositNum = Number(p.initialAmount) / Math.pow(10, depositDecimals);
+    const depositLabel = `${formatAmount(depositNum)} ${p.quoteSymbol}`;
+
     if (fillPct === 0) {
       return (
         `(${i + 1}) ${isBuy ? 'BUY' : 'SELL'} ${p.poolName} — ${rangeLabel}\n` +
+        `    ${depositLabel} deposited\n` +
         `    [${bar}] 0%\n` +
         `    ${statusLabel}`
       );
@@ -179,8 +192,8 @@ export function formatPositionsList(positions: PositionDisplayData[]): string {
 
     return (
       `(${i + 1}) ${isBuy ? 'BUY' : 'SELL'} ${p.poolName} — ${rangeLabel}\n` +
-      `    [${bar}] ${fillPct}%\n` +
-      `    Harvested: [${harvestedNum.toFixed(harvestedNum >= 1 ? 2 : 4)}] ${p.tokenSymbol}`
+      `    ${depositLabel} → ${harvestedNum.toFixed(harvestedNum >= 1 ? 2 : 4)} ${p.tokenSymbol}\n` +
+      `    [${bar}] ${fillPct}%`
     );
   });
 
@@ -288,8 +301,12 @@ export function formatErrorBig(msg: string, example?: string): { monke: string; 
 
 // ─── Balance ───────────────────────────────────────────────────────────────
 
-export function formatBalance(address: string, solBalance: number, tokens: { symbol: string; amount: number }[]): string {
-  let text = `Wallet: ${address}\n\nSOL: ${solBalance.toFixed(4)}`;
+export function formatBalance(address: string, solBalance: number, tokens: { symbol: string; amount: number }[], withdrawAddress?: string): string {
+  let text = `Deposit: [${address}](https://solscan.io/account/${address})\n`;
+  if (withdrawAddress) {
+    text += `Withdraw: [${withdrawAddress}](https://solscan.io/account/${withdrawAddress})\n`;
+  }
+  text += `\nSOL: ${solBalance.toFixed(4)}`;
   for (const t of tokens) {
     if (t.amount > 0) text += `\n${t.symbol}: ${t.amount.toFixed(4)}`;
   }

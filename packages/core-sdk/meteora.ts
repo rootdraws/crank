@@ -171,3 +171,30 @@ export function deriveATA(
 ): PublicKey {
   return getAssociatedTokenAddressSync(mint, owner, allowOwnerOffCurve, tokenProgramId);
 }
+
+/**
+ * Detect if a Token-2022 mint has a TransferHook extension.
+ * Tokens with hooks block Meteora CPI (bin-farm uses empty_hooks()),
+ * causing permanent rent lock on positions.
+ */
+export async function hasTransferHook(connection: Connection, mint: PublicKey): Promise<boolean> {
+  try {
+    const info = await connection.getAccountInfo(mint);
+    if (!info || !info.owner.equals(TOKEN_2022_PROGRAM_ID)) return false;
+    const data = info.data;
+    // Token-2022: 82 bytes standard mint + 1 byte account type + TLV extensions
+    const EXT_START = 83;
+    if (data.length <= EXT_START + 4) return false;
+    let offset = EXT_START;
+    while (offset + 4 <= data.length) {
+      const extType = data.readUInt16LE(offset);
+      const extLen = data.readUInt16LE(offset + 2);
+      if (extType === 7 || extType === 8) return true; // TransferHook / TransferHookAccount
+      offset += 4 + extLen;
+      if (extLen === 0) break;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}

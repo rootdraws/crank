@@ -61,20 +61,14 @@ const commands = [
     .setDescription('Close a position')
     .addStringOption(opt =>
       opt.setName('id')
-        .setDescription('Position ID (or prefix) from /positions')
-        .setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('setwithdraw')
-    .setDescription('Lock your withdrawal address (one-time, cannot be changed)')
-    .addStringOption(opt =>
-      opt.setName('address').setDescription('Your external wallet address').setRequired(true)),
+        .setDescription('Position ID or "all"')
+        .setRequired(false)),
 
   new SlashCommandBuilder()
     .setName('withdraw')
-    .setDescription('Withdraw tokens — funds go to your locked address')
+    .setDescription('Withdraw to your wallet')
     .addStringOption(opt =>
-      opt.setName('range').setDescription('TOKEN AMOUNT — e.g. SOL 0.5 or CRANK all').setRequired(true)),
+      opt.setName('amount').setDescription('SOL .5 or CRANK all').setRequired(false)),
 
   new SlashCommandBuilder()
     .setName('pools')
@@ -93,16 +87,6 @@ const commands = [
     .setDescription('Burn CRANK → mint BANK 1:1')
     .addStringOption(opt =>
       opt.setName('amount').setDescription('Amount of CRANK to burn').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('claim')
-    .setDescription('Claim pending $PEGGED emissions'),
-
-  new SlashCommandBuilder()
-    .setName('unstake')
-    .setDescription('Unstake $PEGGED → SOL (instant from reserve)')
-    .addStringOption(opt =>
-      opt.setName('amount').setDescription('Amount of $PEGGED to unstake (or "all")').setRequired(true)),
 
   new SlashCommandBuilder()
     .setName('help')

@@ -6,15 +6,9 @@
  *
  * Daily sequence (runs once per UTC day):
  *   1. close_rover_wsol    — WSOL ATA → native SOL on rover_authority
- *   2. sweep_rover         — native SOL → 40% bridge_vault + 40% trader_dest + 20% Config.bot
- *   3. stake_and_forward   — bridge: SOL → stake pool → $PEGGED → Merkle distributor vault
- *   4. open_fee_rovers     — token ATAs → DLMM positions
- *   5. new_epoch           — upload Merkle root + fund distributor vault with $PEGGED
- *   6. close_exhausted_rovers — empty rovers → rent reclaimed
- *
- * Plus:
- *   - checkAndDepositPegged — auto-trigger new_epoch when funder ATA $PEGGED > threshold
- *     (called after every keeper tick)
+ *   2. sweep_rover         — native SOL → 40% holders + 40% traders + 20% Config.bot
+ *   3. open_fee_rovers     — token ATAs → DLMM positions
+ *   4. close_exhausted_rovers — empty rovers → rent reclaimed
  *
  * The bot checks hourly (Idle) or every 30s (during daily processing).
  * Returns 'Idle' or 'Processing' to the orchestrator for adaptive interval.
@@ -34,7 +28,7 @@ import {
 } from '@solana/web3.js';
 import { Program } from '@coral-xyz/anchor';
 import { logger } from './logger';
-import { buildMeteoraCPIAccounts, getDLMM, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from './meteora-accounts';
+import { buildMeteoraCPIAccounts, getDLMM, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, hasTransferHook } from './meteora-accounts';
 
 // Priority fee floor (micro-lamports per compute unit)
 const KEEPER_PRIORITY_FEE_FLOOR = 10_000;
@@ -64,12 +58,11 @@ interface KeeperConfig {
   connection: Connection;
   coreProgram: Program;
   distributorProgram: Program;
-  bridgeProgram: Program;
+  epochVaultProgram: Program;
   botKeypair: Keypair;
   coreProgramId: PublicKey;
   distributorProgramId: PublicKey;
-  bridgeProgramId: PublicKey;
-  peggedMint: PublicKey;
+  walletService: any;
   // Optional pool registry from subscriber to avoid position.all() in fee rovers
   getWatchedPools?: () => string[];
 }
@@ -115,12 +108,11 @@ export class MonkeKeeper {
   private connection: Connection;
   private coreProgram: Program;
   private distributorProgram: Program;
-  private bridgeProgram: Program;
+  private epochVaultProgram: Program;
   private botKeypair: Keypair;
+  private walletService: any;
   private coreProgramId: PublicKey;
   private distributorProgramId: PublicKey;
-  private bridgeProgramId: PublicKey;
-  private peggedMint: PublicKey;
   // Track last successful run (UTC day number) for daily gating
   private lastRunDay: number = 0;
   // Cached priority fee instructions (refreshed per daily sequence)
@@ -134,13 +126,16 @@ export class MonkeKeeper {
     this.connection = config.connection;
     this.coreProgram = config.coreProgram;
     this.distributorProgram = config.distributorProgram;
-    this.bridgeProgram = config.bridgeProgram;
+    this.epochVaultProgram = config.epochVaultProgram;
     this.botKeypair = config.botKeypair;
+    this.walletService = config.walletService;
     this.coreProgramId = config.coreProgramId;
     this.distributorProgramId = config.distributorProgramId;
-    this.bridgeProgramId = config.bridgeProgramId;
-    this.peggedMint = config.peggedMint;
     this.getWatchedPools = config.getWatchedPools;
+  }
+
+  setWalletService(ws: any): void {
+    this.walletService = ws;
   }
 
   /**
@@ -150,7 +145,7 @@ export class MonkeKeeper {
    * Runs once per UTC day:
    *   1. close_rover_wsol    — WSOL ATA → native SOL on rover_authority
    *   2. sweep_rover         — native SOL → 40% bridge_vault + 40% trader_dest + 20% Config.bot
-   *   3. stake_and_forward   — bridge: SOL → stake pool → $PEGGED → Merkle distributor vault
+   *   (bridge/PEGGED pipeline retired — SOL distributed directly)
    *   4. open_fee_rovers     — token ATAs → DLMM positions
    *   5. new_epoch           — upload Merkle root + fund distributor vault
    *   6. close_exhausted_rovers — empty rovers → rent reclaimed
@@ -176,19 +171,16 @@ export class MonkeKeeper {
       // Step 1: Close WSOL ATA on rover_authority → unwrap to native SOL
       await this.crankCloseRoverWsol();
 
-      // Step 2: Sweep SOL from rover_authority → bridge_vault (via revenue_dest)
+      // Step 2: Sweep SOL from rover_authority → 40/40/20 split
       await this.crankSweepRover();
 
-      // Step 3: Stake bridge_vault SOL → $PEGGED → dist_pool ATA
-      await this.crankStakeAndForward();
+      // Step 3: Epoch distribution — drain vault → WSOL → Merkle → auto-claim
+      await this.crankEpochDistribution();
 
       // Step 4: Open fee rover positions from accumulated token fees
       await this.crankOpenFeeRovers();
 
-      // Step 5: Upload new Merkle epoch to distributor
-      await this.crankNewEpoch();
-
-      // Step 6: Close exhausted rover positions (reclaim rent)
+      // Step 5: Close exhausted rover positions (reclaim rent)
       await this.crankCloseExhaustedRovers();
 
       this.lastRunDay = today;
@@ -297,212 +289,6 @@ export class MonkeKeeper {
 
   // ─── SANCTUM POOL EPOCH UPDATE ───
 
-  private static readonly STAKE_PROGRAM = new PublicKey('Stake11111111111111111111111111111111111111');
-  private static readonly VALIDATOR_ENTRY_SIZE = 73;
-  private static readonly VALIDATOR_ENTRIES_OFFSET = 9;
-
-  /**
-   * Update the Sanctum SPL stake pool epoch — permissionless, zero signers required.
-   * Sends UpdateValidatorListBalance (variant 6) + UpdateStakePoolBalance (variant 7).
-   * Must run before stake_and_forward each epoch to avoid StakeListAndPoolOutOfDate error.
-   *
-   * Validated on-chain: TX 2owBCguE6iHAZQNyibkdgEK7zcAyM2PESmsrfbRL4BftyKPEqzjSFWnc1dzSGw9g9YLvc8e3Pa7tyaUoK3E9vaE3
-   */
-  private async updateSanctumPool(stakePool: PublicKey, sanctumProgram: PublicKey): Promise<void> {
-    const stakePoolInfo = await this.connection.getAccountInfo(stakePool);
-    if (!stakePoolInfo || stakePoolInfo.data.length < 258) {
-      logger.warn('  [keeper] updateSanctumPool: could not read stake pool');
-      return;
-    }
-    const poolData = stakePoolInfo.data;
-    const validatorListPk = new PublicKey(poolData.subarray(98, 130));
-    const reserveStake    = new PublicKey(poolData.subarray(130, 162));
-    const poolMint        = new PublicKey(poolData.subarray(162, 194));
-    const managerFeeAcct  = new PublicKey(poolData.subarray(194, 226));
-    const tokenProgramId  = new PublicKey(poolData.subarray(226, 258));
-
-    const [withdrawAuth] = PublicKey.findProgramAddressSync(
-      [stakePool.toBuffer(), Buffer.from('withdraw')], sanctumProgram,
-    );
-
-    const validatorListInfo = await this.connection.getAccountInfo(validatorListPk);
-    if (!validatorListInfo) {
-      logger.warn('  [keeper] updateSanctumPool: validator list not found');
-      return;
-    }
-    const vlData = validatorListInfo.data as Buffer;
-    const count = vlData.readUInt32LE(5);
-
-    // Parse validator entries and derive stake PDAs
-    const validatorStakePairs: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] = [];
-    for (let i = 0; i < count; i++) {
-      const off = MonkeKeeper.VALIDATOR_ENTRIES_OFFSET + i * MonkeKeeper.VALIDATOR_ENTRY_SIZE;
-      if (off + MonkeKeeper.VALIDATOR_ENTRY_SIZE > vlData.length) break;
-
-      const status = vlData[off + 40];
-      if (status === 2) continue; // ReadyForRemoval
-      const voteAccount = new PublicKey(vlData.subarray(off + 41, off + 73));
-      if (voteAccount.equals(PublicKey.default)) continue;
-
-      const validatorSeedSuffix = vlData.readUInt32LE(off + 36);
-      const transientSeedSuffix = vlData.readBigUInt64LE(off + 24);
-
-      // Validator stake PDA: seeds = [vote_account, stake_pool, optional_suffix]
-      const valSeeds: Buffer[] = [voteAccount.toBuffer(), stakePool.toBuffer()];
-      if (validatorSeedSuffix !== 0) {
-        const sfx = Buffer.alloc(4);
-        sfx.writeUInt32LE(validatorSeedSuffix);
-        valSeeds.push(sfx);
-      }
-      const [valStake] = PublicKey.findProgramAddressSync(valSeeds, sanctumProgram);
-
-      // Transient stake PDA: seeds = [b"transient", vote, pool, seed_u64_le]
-      const tsfxBuf = Buffer.alloc(8);
-      tsfxBuf.writeBigUInt64LE(transientSeedSuffix);
-      const [transStake] = PublicKey.findProgramAddressSync(
-        [Buffer.from('transient'), voteAccount.toBuffer(), stakePool.toBuffer(), tsfxBuf],
-        sanctumProgram,
-      );
-
-      validatorStakePairs.push({ pubkey: valStake, isSigner: false, isWritable: true });
-      validatorStakePairs.push({ pubkey: transStake, isSigner: false, isWritable: true });
-    }
-
-    // UpdateValidatorListBalance — variant 6
-    const uvlbData = Buffer.alloc(6);
-    uvlbData[0] = 6;
-    uvlbData.writeUInt32LE(0, 1);
-    uvlbData[5] = 0;
-    const uvlbIx = new TransactionInstruction({
-      programId: sanctumProgram,
-      keys: [
-        { pubkey: stakePool,    isSigner: false, isWritable: false },
-        { pubkey: withdrawAuth, isSigner: false, isWritable: false },
-        { pubkey: validatorListPk, isSigner: false, isWritable: true },
-        { pubkey: reserveStake, isSigner: false, isWritable: true },
-        { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
-        { pubkey: SYSVAR_STAKE_HISTORY_PUBKEY, isSigner: false, isWritable: false },
-        { pubkey: MonkeKeeper.STAKE_PROGRAM, isSigner: false, isWritable: false },
-        ...validatorStakePairs,
-      ],
-      data: uvlbData,
-    });
-
-    // UpdateStakePoolBalance — variant 7
-    const uspbIx = new TransactionInstruction({
-      programId: sanctumProgram,
-      keys: [
-        { pubkey: stakePool,    isSigner: false, isWritable: true },
-        { pubkey: withdrawAuth, isSigner: false, isWritable: false },
-        { pubkey: validatorListPk, isSigner: false, isWritable: true },
-        { pubkey: reserveStake, isSigner: false, isWritable: false },
-        { pubkey: managerFeeAcct, isSigner: false, isWritable: true },
-        { pubkey: poolMint,     isSigner: false, isWritable: true },
-        { pubkey: tokenProgramId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from([7]),
-    });
-
-    const tx = new Transaction();
-    tx.add(...this.priorityIxs);
-    tx.add(uvlbIx);
-    tx.add(uspbIx);
-
-    const sig = await sendAndConfirmTransaction(this.connection, tx, [this.botKeypair], { commitment: 'confirmed' });
-    logger.info(`  [keeper] ✓ Sanctum pool epoch update TX: ${sig}`);
-  }
-
-  // ─── CRANK: STAKE AND FORWARD ($PEGGED bridge) ───
-
-  /**
-   * Crank the bridge: stake SOL in bridge_vault → SPL stake pool → $PEGGED → dist_pool ATA.
-   * Permissionless — anyone can call. Requires bridge program to be configured.
-   */
-  private async crankStakeAndForward(): Promise<void> {
-    try {
-      const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
-
-      const [bridgeConfig] = PublicKey.findProgramAddressSync(
-        [Buffer.from('bridge_config')], this.bridgeProgramId
-      );
-      const [bridgeVault] = PublicKey.findProgramAddressSync(
-        [Buffer.from('bridge_vault')], this.bridgeProgramId
-      );
-
-      // Check if bridge vault has enough SOL to stake
-      const vaultBalance = await this.connection.getBalance(bridgeVault);
-      const rent = 890880;
-      const available = vaultBalance - rent;
-      if (available < 10_000_000) { // MIN_STAKE_LAMPORTS
-        logger.info(`  [keeper] stake_and_forward skipped — bridge vault has ${available / 1e9} SOL (< 0.01)`);
-        return;
-      }
-
-      // Fetch bridge config to get stake pool details
-      const config = await (this.bridgeProgram.account as any).bridgeConfig.fetch(bridgeConfig);
-      const stakePool = config.stakePool as PublicKey;
-      const peggedMint = config.peggedMint as PublicKey;
-      const distPoolPeggedAta = config.distPoolPeggedAta as PublicKey;
-
-      const SPL_STAKE_POOL_PROGRAM = new PublicKey('SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY');
-
-      // Update Sanctum pool epoch before staking (prevents StakeListAndPoolOutOfDate)
-      try {
-        await this.updateSanctumPool(stakePool, SPL_STAKE_POOL_PROGRAM);
-      } catch (e: any) {
-        logger.warn(`  [keeper] Sanctum epoch update failed (non-fatal): ${e.message?.slice(0, 120)}`);
-      }
-
-      const [withdrawAuthority] = PublicKey.findProgramAddressSync(
-        [stakePool.toBuffer(), Buffer.from('withdraw')],
-        SPL_STAKE_POOL_PROGRAM
-      );
-
-      const bridgePeggedAta = getAssociatedTokenAddressSync(peggedMint, bridgeVault, true);
-
-      const stakePoolInfo = await this.connection.getAccountInfo(stakePool);
-      if (!stakePoolInfo || stakePoolInfo.data.length < 300) {
-        logger.warn('  [keeper] stake_and_forward error: could not read stake pool state');
-        return;
-      }
-      const data = stakePoolInfo.data;
-      const reserveStake = new PublicKey(data.subarray(130, 162));
-      const managerFeeAccount = new PublicKey(data.subarray(194, 226));
-
-      await withRetry(
-        () => this.bridgeProgram.methods
-          .stakeAndForward()
-          .accounts({
-            crank:                       this.botKeypair.publicKey,
-            config:                      bridgeConfig,
-            bridgeVault:                 bridgeVault,
-            bridgePeggedAta:             bridgePeggedAta,
-            distPoolPeggedAta:           distPoolPeggedAta,
-            peggedMint:                  peggedMint,
-            stakePool:                   stakePool,
-            stakePoolWithdrawAuthority:  withdrawAuthority,
-            reserveStake:                reserveStake,
-            managerFeeAccount:           managerFeeAccount,
-            stakePoolProgram:            SPL_STAKE_POOL_PROGRAM,
-            tokenProgram:                new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-            systemProgram:               SystemProgram.programId,
-          })
-          .preInstructions(this.priorityIxs)
-          .signers([this.botKeypair])
-          .rpc(),
-        'stake_and_forward'
-      );
-
-      logger.info(`  [keeper] ✓ stake_and_forward — ${available / 1e9} SOL staked → $PEGGED → dist_pool`);
-    } catch (e: any) {
-      const isNothingToStake = e.error?.errorCode?.code === 'NothingToStake';
-      if (isNothingToStake) {
-        logger.info('  [keeper] stake_and_forward skipped — nothing to stake');
-      } else {
-        logger.warn(`[keeper] stake_and_forward error: ${e.message}`);
-      }
-    }
-  }
 
   // ─── CRANK: OPEN FEE ROVERS ───
 
@@ -554,6 +340,16 @@ export class MonkeKeeper {
         } catch { /* skip */ }
       }
 
+      // Whitelist: only open rovers for mints that appear in curator.json pools.
+      // Prevents airdrop spam from burning rent on random DLMM pools.
+      const { loadPoolRegistry } = await import('../packages/core-sdk/pool-config');
+      const curatorPools = loadPoolRegistry();
+      const allowedMints = new Set<string>();
+      for (const pool of curatorPools) {
+        if (pool.mintX) allowedMints.add(pool.mintX);
+        if (pool.mintY) allowedMints.add(pool.mintY);
+      }
+
       for (const account of allAccounts) {
         const parsed = account.account.data.parsed;
         const balance = parsed.info.tokenAmount.uiAmount;
@@ -563,8 +359,20 @@ export class MonkeKeeper {
         const mint = new PublicKey(mintStr);
         const tokenProgramId = account.account.owner;
 
+        if (!allowedMints.has(mintStr)) {
+          logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] Skipping fee rover — mint not in curator.json');
+          continue;
+        }
+
         if (DIRECT_SWAP_MINTS.includes(mintStr)) {
           logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] Skipping fee rover — DIRECT_SWAP_MINTS');
+          continue;
+        }
+
+        // Defense-in-depth: skip Token-2022 tokens with transfer hooks.
+        // Meteora CPI uses empty_hooks() — hook-bearing tokens lock rent permanently.
+        if (await hasTransferHook(this.connection, mint)) {
+          logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] Skipping fee rover — Token-2022 transfer hook detected');
           continue;
         }
 
@@ -677,77 +485,21 @@ export class MonkeKeeper {
   // ─── CRANK: NEW EPOCH (Merkle distributor) ───
 
   /**
-   * Upload a new Merkle root to the distributor and fund the vault with this epoch's $PEGGED.
-   * Reads pre-computed epoch data from EPOCH_DATA_PATH (written by the epoch-computer service).
-   * The epoch-computer runs daily, computes BANK holder balances, builds the Merkle tree,
-   * uploads the snapshot to IPFS, and writes { merkle_root, epoch_amount, ipfs_cid } to disk.
-   *
-   * Safe no-op if the file doesn't exist yet (epoch-computer not deployed).
+   * Epoch distribution: drain vault → WSOL → Merkle tree → auto-claim.
+   * Replaces the old stake_and_forward + new_epoch + $PEGGED pipeline.
    */
-  private async crankNewEpoch(): Promise<void> {
-    const fs = await import('fs');
-    const path = await import('path');
-    const { BN } = await import('@coral-xyz/anchor');
-    const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
-
-    const epochDataPath = process.env.EPOCH_DATA_PATH
-      || path.join(__dirname, 'data', 'epoch-data.json');
-
-    if (!fs.existsSync(epochDataPath)) {
-      logger.warn(`  [keeper] crankNewEpoch skipped — epoch-data.json not found at ${epochDataPath} (epoch-computer not running yet)`);
-      return;
-    }
-
+  private async crankEpochDistribution(): Promise<void> {
     try {
-      const raw = JSON.parse(fs.readFileSync(epochDataPath, 'utf-8'));
-      // Expected shape: { merkle_root: number[], epoch_amount: string, ipfs_cid: string }
-      const merkleRoot: number[] = raw.merkle_root;
-      const epochAmount = new BN(raw.epoch_amount ?? DEFAULT_EPOCH_AMOUNT);
-      const ipfsCid: string = raw.ipfs_cid ?? '';
-
-      if (!merkleRoot || merkleRoot.length !== 32) {
-        logger.error('  [keeper] crankNewEpoch error — epoch-data.json has invalid merkle_root (expected 32-byte array)');
-        return;
-      }
-
-      if (epochAmount.isZero()) {
-        logger.info('  [keeper] crankNewEpoch skipped — epoch_amount is 0');
-        return;
-      }
-
-      const [dist] = distributorPDA(this.distributorProgramId);
-      const distributorAccount = await (this.distributorProgram.account as any).distributor.fetch(dist);
-      const vaultPubkey = distributorAccount.vault as PublicKey;
-
-      // funder_ata: bot's $PEGGED ATA (must be pre-funded with epoch_amount before calling)
-      const funderAta = getAssociatedTokenAddressSync(this.peggedMint, this.botKeypair.publicKey, false);
-
-      await withRetry(
-        () => this.distributorProgram.methods
-          .newEpoch(merkleRoot, epochAmount, ipfsCid)
-          .accounts({
-            distributor:  dist,
-            authority:    this.botKeypair.publicKey,
-            mint:         this.peggedMint,
-            vault:        vaultPubkey,
-            funderAta:    funderAta,
-            tokenProgram: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-          })
-          .preInstructions(this.priorityIxs)
-          .signers([this.botKeypair])
-          .rpc(),
-        'new_epoch'
-      );
-
-      logger.info(`  [keeper] ✓ new_epoch — ${raw.epoch_amount} $PEGGED funded, root uploaded, CID: ${ipfsCid}`);
+      const { runEpoch } = await import('./epoch-computer');
+      await runEpoch({
+        connection: this.connection,
+        botKeypair: this.botKeypair,
+        walletService: this.walletService,
+        epochVaultProgram: this.epochVaultProgram,
+        distributorProgram: this.distributorProgram,
+      });
     } catch (e: any) {
-      const isExpected = e.error?.errorCode?.code === 'ZeroAmount'
-        || e.error?.errorCode?.code === 'Paused';
-      if (isExpected) {
-        logger.info(`  [keeper] new_epoch skipped — ${e.error?.errorCode?.code}`);
-      } else {
-        logger.error(`  [keeper] new_epoch error: ${e.message}`);
-      }
+      logger.warn(`[keeper] epoch distribution error: ${e.message?.slice(0, 150)}`);
     }
   }
 
@@ -901,31 +653,4 @@ export class MonkeKeeper {
     }
   }
 
-  /**
-   * Check the bot's funder ATA $PEGGED balance and auto-trigger new_epoch if
-   * an epoch-data.json is ready and the funder has been pre-funded above threshold.
-   */
-  async checkAndDepositPegged(): Promise<void> {
-    try {
-      const fs = await import('fs');
-      const path = await import('path');
-      const epochDataPath = process.env.EPOCH_DATA_PATH
-        || path.join(__dirname, 'data', 'epoch-data.json');
-
-      if (!fs.existsSync(epochDataPath)) return;
-
-      const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
-      const funderAta = getAssociatedTokenAddressSync(this.peggedMint, this.botKeypair.publicKey, false);
-      const funderInfo = await this.connection.getAccountInfo(funderAta);
-      if (!funderInfo || funderInfo.data.length < 72) return;
-      const funderBalance = Number(funderInfo.data.readBigUInt64LE(64));
-
-      if (funderBalance >= DEPOSIT_SOL_THRESHOLD_LAMPORTS) {
-        logger.info(`[keeper] funder ATA has ${funderBalance / 1e9} $PEGGED (threshold: ${DEPOSIT_SOL_THRESHOLD_LAMPORTS / 1e9}) — auto-triggering new_epoch`);
-        await this.crankNewEpoch();
-      }
-    } catch (e: any) {
-      logger.warn(`[keeper] checkAndDepositPegged error: ${e.message}`);
-    }
-  }
 }

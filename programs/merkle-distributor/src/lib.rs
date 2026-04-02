@@ -1,14 +1,14 @@
-// merkle_distributor — cumulative Merkle-based $PEGGED distribution
+// merkle_distributor — cumulative Merkle-based SOL distribution
 //
 // Adapted from Jito's merkle-distributor pattern. Each epoch the bot:
 //   1. Computes all rewards (BANK holder 40% + trader 40% unified)
-//   2. Builds a Merkle tree of (wallet, cumulative_pegged_amount) leaves
+//   2. Builds a Merkle tree of (wallet, cumulative_sol_amount) leaves
 //   3. Pins the tree JSON to IPFS
-//   4. Calls new_epoch to upload root + IPFS CID + fund the vault
+//   4. Calls new_epoch to upload root + IPFS CID + fund the vault with WSOL
 //
 // Claims are cumulative: each root represents total lifetime entitlements.
 // The program tracks how much each user has already claimed and pays the delta.
-// Daily epoch at 4:20 PM CST (22:20 UTC).
+// Auto-claimed daily by the keeper (user pays gas from custody wallet).
 
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
@@ -48,7 +48,7 @@ pub mod merkle_distributor {
 
     /// Upload a new Merkle root for the next epoch.
     /// The bot calls this daily at 4:20 PM CST after computing rewards.
-    /// Funds the vault with this epoch's $PEGGED in the same transaction.
+    /// Funds the vault with this epoch's WSOL in the same transaction.
     pub fn new_epoch(
         ctx: Context<NewEpoch>,
         merkle_root: [u8; 32],
@@ -58,7 +58,7 @@ pub mod merkle_distributor {
         require!(epoch_amount > 0, DistributorError::ZeroAmount);
         require!(ipfs_cid.len() <= MAX_IPFS_CID_LEN, DistributorError::CidTooLong);
 
-        // Transfer epoch's PEGGED from funder to vault
+        // Transfer epoch's WSOL from funder to vault
         transfer_checked(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -196,6 +196,17 @@ pub mod merkle_distributor {
         dist.pending_authority = Pubkey::default();
         Ok(())
     }
+
+    /// Update the distribution mint and vault ATA. Authority-gated.
+    /// Authority-gated. The new vault must be an ATA owned by the distributor PDA.
+    pub fn update_mint(ctx: Context<UpdateMint>) -> Result<()> {
+        let dist = &mut ctx.accounts.distributor;
+        dist.mint = ctx.accounts.new_mint.key();
+        dist.vault = ctx.accounts.new_vault.key();
+        msg!("Distributor mint updated to {}", dist.mint);
+        msg!("Distributor vault updated to {}", dist.vault);
+        Ok(())
+    }
 }
 
 // ─── accounts ──────────────────────────────────────────────────────────────
@@ -328,6 +339,31 @@ pub struct AcceptDistributorAuthority<'info> {
     pub distributor: Account<'info, Distributor>,
 
     pub new_authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateMint<'info> {
+    #[account(
+        mut,
+        seeds = [b"distributor"],
+        bump = distributor.bump,
+        has_one = authority @ DistributorError::Unauthorized,
+    )]
+    pub distributor: Account<'info, Distributor>,
+
+    pub authority: Signer<'info>,
+
+    pub new_mint: InterfaceAccount<'info, Mint>,
+
+    /// New vault ATA owned by the distributor PDA, denominated in new_mint.
+    #[account(
+        token::mint = new_mint,
+        token::authority = distributor,
+        token::token_program = token_program,
+    )]
+    pub new_vault: InterfaceAccount<'info, TokenAccount>,
+
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 // ─── state ─────────────────────────────────────────────────────────────────

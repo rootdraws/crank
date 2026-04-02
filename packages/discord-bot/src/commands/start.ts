@@ -8,9 +8,8 @@ export async function handleStart(interaction: ChatInputCommandInteraction, ctx:
 
   await interaction.reply({
     content:
-      `Your deposit address:\n\`${address}\`\n\n` +
-      `Send at least 0.5 SOL to cover rent + gas for trading.\n` +
-      `/balance to check funds · /deposit to see this again`,
+      `\`${address}\`\n\n` +
+      `Deposit a minimum of 0.5 SOL from your designated withdraw wallet to start.`,
     ephemeral: true,
   });
 }

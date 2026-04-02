@@ -15,7 +15,7 @@ import {
   signAndSend, signAndSendLegacy, withUserLock,
   NATIVE_MINT, TOKEN_PROGRAM_ID,
   loadPoolRegistry, routeCommand, isRouteError,
-  parseCommand, fetchDexScreenerPrice,
+  parseCommand, fetchDexScreenerPrice, hasTransferHook,
 } from '@crankbot/core-sdk';
 import { formatPositionOpened, formatPositionEphemeral, formatFeedOpened, formatError, formatErrorBig } from '../formatter';
 import type { BotContext } from '../index';
@@ -140,6 +140,16 @@ export async function handleOpenPosition(
         `range crosses current price ($${formatPrice(currentPrice)}).`,
         `sell range must be above current price`
       ));
+      return;
+    }
+
+    // Reject pools with Token-2022 transfer hooks (Meteora CPI uses empty_hooks())
+    if (selectedPool.mintX && await hasTransferHook(ctx.connection, new PublicKey(selectedPool.mintX))) {
+      await interaction.editReply(formatError(`${selectedPool.tokenX} has a Token-2022 transfer hook — not supported yet.`));
+      return;
+    }
+    if (selectedPool.mintY && await hasTransferHook(ctx.connection, new PublicKey(selectedPool.mintY))) {
+      await interaction.editReply(formatError(`${selectedPool.tokenY} has a Token-2022 transfer hook — not supported yet.`));
       return;
     }
 

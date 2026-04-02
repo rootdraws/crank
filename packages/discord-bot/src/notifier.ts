@@ -161,13 +161,9 @@ export class DiscordNotifier {
     ipfsCid: string;
     leaves: Array<{ wallet: string; cumulative_amount: string; index: number; proof: number[][] }>;
   }): Promise<void> {
-    // For each leaf:
-    //   1. walletService.getUserIdForOwner(leaf.wallet) — skip if not a custody user
-    //   2. Check SOL balance of custody wallet
-    //   3. If enough: build + sign claim tx with user's keypair, DM "Claimed X $PEGGED"
-    //   4. If dry: DM "You earned X $PEGGED — deposit SOL to auto-claim or /claim manually"
-    //   5. Post epoch summary to feed channel
-    console.log(`[notifier] onEpochComplete stub — epoch ${data.epoch}, ${data.leaves.length} leaves, CID: ${data.ipfsCid}`);
+    // Auto-claim is now handled by epoch-computer.ts in the keeper daily sequence.
+    // This stub remains for DM notifications after epoch distribution.
+    console.log(`[notifier] onEpochComplete — epoch ${data.epoch}, ${data.leaves.length} leaves`);
   }
 
   async postToFeed(text: string): Promise<void> {

@@ -7,8 +7,8 @@
  *   - MonkeKeeper: daily fee sequencer (unwrap → sweep → stake_and_forward → fee rovers → new_epoch → cleanup)
  *
  * The bot never holds user funds or revenue SOL.
- * Revenue SOL flows: rover_authority → bridge_vault → $PEGGED → Merkle distributor vault → holders (on-chain).
- * 40/40/20 split: 40% to bridge_vault (→ $PEGGED for BANK holders), 40% to trader_dest (→ $PEGGED for traders), 20% to Config.bot (operations). Hardcoded in sweep_rover.
+ * Revenue SOL flows: rover_authority → 40/40/20 split → SOL direct to users.
+ * 40/40/20 split: 40% holders + 40% traders + 20% Config.bot. Hardcoded in sweep_rover.
  * The bot only cranks permissionless instructions.
  *
  * Daily cadence: keeper sequence (unwrap WSOL → sweep → stake_and_forward → fee rovers → new_epoch → cleanup).
@@ -34,6 +34,7 @@ import { RelayServer, FeePipelineState } from './relay-server';
 import { logger } from './logger';
 import { getDLMMCacheSize, getDLMM } from './meteora-accounts';
 import { initAlerter, alertLowBalance, alertGrpcDisconnect, alertGrpcReconnect, alertKeeperFailure } from './alerter';
+import { PriceSyncer, SyncPoolConfig } from './price-syncer';
 import * as path from 'path';
 
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -76,8 +77,7 @@ function requireEnvPubkey(name: string): PublicKey {
 const CORE_PROGRAM_ID       = requireEnvPubkey('CORE_PROGRAM_ID');
 const DISTRIBUTOR_PROGRAM_ID = requireEnvPubkey('DISTRIBUTOR_PROGRAM_ID');
 
-const BRIDGE_PROGRAM_ID = requireEnvPubkey('BRIDGE_PROGRAM_ID');
-const PEGGED_MINT       = requireEnvPubkey('PEGGED_MINT');
+// PEGGED/bridge programs retired — SOL distributed directly
 
 const COMMITMENT: Commitment    = 'confirmed';
 const KEEPER_ACTIVE_INTERVAL_MS = parseInt(process.env.KEEPER_CHECK_INTERVAL_MS || '3600000'); // 1hr during Active
@@ -90,6 +90,14 @@ const SOL_BALANCE_WARN = parseInt(process.env.SOL_BALANCE_WARN_LAMPORTS || '1000
 const SOL_BALANCE_CRITICAL = parseInt(process.env.SOL_BALANCE_CRITICAL_LAMPORTS || '100000000'); // 0.1 SOL
 if (!Number.isSafeInteger(SOL_BALANCE_WARN)) { logger.warn(`SOL_BALANCE_WARN exceeds safe integer range`); }
 if (!Number.isSafeInteger(SOL_BALANCE_CRITICAL)) { logger.warn(`SOL_BALANCE_CRITICAL exceeds safe integer range`); }
+
+// ═══ SYNCER CONFIG ═══
+const SYNC_ENABLED = process.env.SYNC_ENABLED === 'true';
+const SYNC_INTERVAL_MS = parseInt(process.env.SYNC_INTERVAL_MS || '60000');
+const SYNC_DIVERGENCE_THRESHOLD_PCT = parseFloat(process.env.SYNC_DIVERGENCE_THRESHOLD_PCT || '2');
+const SYNC_MIN_PROFIT_LAMPORTS = parseInt(process.env.SYNC_MIN_PROFIT_LAMPORTS || '5000000');
+const SYNC_MAX_SWAP_SOL = parseFloat(process.env.SYNC_MAX_SWAP_SOL || '0.5');
+const SYNC_DRY_RUN = process.env.SYNC_DRY_RUN !== 'false'; // default true for safety
 
 // ═══ RETRY ═══
 
@@ -129,13 +137,14 @@ class HarvestBot {
   private provider: AnchorProvider;
   private coreProgram!: Program;
   private distributorProgram!: Program;
-  private bridgeProgram!: Program;
+  private epochVaultProgram!: Program;
 
   // Modules
   private subscriber!: GeyserSubscriber;
   private executor!: HarvestExecutor;
   private keeper!: MonkeKeeper;
   private relay!: RelayServer;
+  private syncer: PriceSyncer | null = null;
 
   // Timers
   private keeperTimer: NodeJS.Timeout | null = null;
@@ -166,6 +175,7 @@ class HarvestBot {
     if (this.keeperTimer) clearTimeout(this.keeperTimer);
     if (this.healthServer) this.healthServer.close();
 
+    if (this.syncer) await this.syncer.shutdown();
     if (this.subscriber) await this.subscriber.shutdown();
     if (this.executor) await this.executor.shutdown();
 
@@ -247,31 +257,17 @@ class HarvestBot {
       if (info && info.data.length >= 72) wsolBal = Number(info.data.readBigUInt64LE(64));
     } catch { /* no WSOL ATA */ }
 
-    // Read distributor vault $PEGGED balance
-    let vaultPeggedBal = 0;
-    if (distAcctInfo) {
-      try {
-        const vaultPubkey = distAcctInfo.vault as PublicKey;
-        const vaultInfo = await this.connection.getAccountInfo(vaultPubkey);
-        if (vaultInfo && vaultInfo.data.length >= 72) {
-          vaultPeggedBal = Number(vaultInfo.data.readBigUInt64LE(64));
-        }
-      } catch { /* vault not yet created */ }
-    }
-
     const distributorState = distAcctInfo ? {
       currentEpoch: distAcctInfo.currentEpoch?.toString() ?? '0',
       totalAmountFunded: distAcctInfo.totalAmountFunded?.toString() ?? '0',
       totalAmountClaimed: distAcctInfo.totalAmountClaimed?.toString() ?? '0',
       paused: distAcctInfo.paused ?? false,
-      mint: distAcctInfo.mint?.toBase58() ?? null,
     } : null;
 
     return {
       roverAuthority: { address: roverPDA.toBase58(), solBalance: roverBal, wsolBalance: wsolBal },
-      distributor: { address: distPDA.toBase58(), vaultPeggedBalance: vaultPeggedBal },
       distributorState,
-      totalInPipeline: roverBal + wsolBal + vaultPeggedBal,
+      totalInPipeline: roverBal + wsolBal,
       timestamp: Date.now(),
     };
   }
@@ -344,8 +340,8 @@ class HarvestBot {
     const distributorIdl = loadIdl('merkle_distributor');
     this.distributorProgram = new Program(distributorIdl, this.provider);
 
-    const bridgeIdl = loadIdl('pegged_bridge');
-    this.bridgeProgram = new Program(bridgeIdl, this.provider);
+    const epochVaultIdl = loadIdl('epoch_vault');
+    this.epochVaultProgram = new Program(epochVaultIdl, this.provider);
 
     // Verify bot authorization
     const [configPDA] = coreConfigPDA();
@@ -387,12 +383,11 @@ class HarvestBot {
       connection: this.connection,
       coreProgram: this.coreProgram,
       distributorProgram: this.distributorProgram,
-      bridgeProgram: this.bridgeProgram,
+      epochVaultProgram: this.epochVaultProgram,
       botKeypair,
       coreProgramId: CORE_PROGRAM_ID,
       distributorProgramId: DISTRIBUTOR_PROGRAM_ID,
-      bridgeProgramId: BRIDGE_PROGRAM_ID,
-      peggedMint: PEGGED_MINT,
+      walletService: null, // set after discord bot starts
       getWatchedPools: () => this.subscriber.getWatchedPools(),
     });
   }
@@ -579,11 +574,62 @@ class HarvestBot {
         });
         await discordBot.start();
         this.executor.setWalletService(discordBot.walletService);
+        this.keeper.setWalletService(discordBot.walletService);
         initAlerter((text) => discordBot.notifier.postToFeed(text));
         logger.info('[discord] Bot started');
       } catch (e: any) {
         logger.warn(`[discord] Failed to start: ${e.message}`);
       }
+    }
+
+    // Price syncer — arb bot for low-liquidity pools
+    if (SYNC_ENABLED) {
+      try {
+        const curatorPath = path.join(__dirname, '..', 'curator.json');
+        const curatorData = JSON.parse(fs.readFileSync(curatorPath, 'utf-8'));
+        const syncPools: SyncPoolConfig[] = curatorData.pools
+          .filter((p: any) => p.syncEnabled === true)
+          .map((p: any) => ({
+            address: p.address,
+            label: p.label,
+            mintX: p.mintX,
+            mintY: p.mintY,
+            decimalsX: p.decimalsX,
+            decimalsY: p.decimalsY,
+            binStep: p.binStep,
+          }));
+
+        if (syncPools.length > 0) {
+          this.syncer = new PriceSyncer({
+            connection: this.connection,
+            botKeypair,
+            subscriber: this.subscriber,
+            syncPools,
+            intervalMs: SYNC_INTERVAL_MS,
+            divergenceThresholdPct: SYNC_DIVERGENCE_THRESHOLD_PCT,
+            minProfitLamports: SYNC_MIN_PROFIT_LAMPORTS,
+            maxSwapLamports: Math.floor(SYNC_MAX_SWAP_SOL * 1e9),
+            dryRun: SYNC_DRY_RUN,
+          });
+
+          this.syncer.on('syncExecuted', (data: any) => {
+            this.relay?.broadcast('syncExecuted', data);
+          });
+          this.syncer.on('divergenceDetected', (data: any) => {
+            this.relay?.broadcast('divergenceDetected', data);
+          });
+
+          this.relay?.setSyncerStatsProvider(() => this.syncer!.getStats());
+          await this.syncer.start();
+          logger.info(`[syncer] Price syncer started: ${syncPools.length} pool(s), interval=${SYNC_INTERVAL_MS}ms, dryRun=${SYNC_DRY_RUN}`);
+        } else {
+          logger.info('[syncer] No sync-enabled pools in curator.json — syncer disabled');
+        }
+      } catch (e: any) {
+        logger.warn(`[syncer] Failed to start: ${e.message}`);
+      }
+    } else {
+      logger.info('[syncer] Price syncer disabled (SYNC_ENABLED != true)');
     }
 
     // Start safety-net polling (5 min fallback for harvests)
@@ -610,8 +656,6 @@ class HarvestBot {
           logger.warn(`[bot] Failed to fetch SOL balance: ${e.message}`);
         }
         const phase = await this.keeper.runDailySequence();
-        // Auto-trigger deposit if dist_pool exceeds threshold ($PEGGED or legacy SOL)
-        await this.keeper.checkAndDepositPegged();
         const nextInterval = phase === 'Idle'
           ? KEEPER_ACTIVE_INTERVAL_MS
           : KEEPER_PROCESSING_INTERVAL_MS;

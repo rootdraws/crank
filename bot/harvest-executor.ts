@@ -184,11 +184,25 @@ export class HarvestExecutor extends EventEmitter {
       }
 
       const binData = meteoraPos.positionData.positionBinData;
-      if (!binData || binData.length === 0) return;
+      if (!binData || binData.length === 0) {
+        logger.info(`  [executor] ${key.slice(0, 8)} ${job.side} — no bin data from Meteora SDK, skipping`);
+        return;
+      }
 
       // Re-confirm safe bins with actual balance data
       const safeBins = this.getSafeWithdrawBins(job.side, activeId, binData);
-      if (safeBins.length === 0) return;
+      if (safeBins.length === 0) {
+        // Count how many bins pass the range check but fail the balance check
+        let rangeSafe = 0;
+        for (const bin of binData) {
+          if (job.side === 'Sell' && bin.binId < activeId) rangeSafe++;
+          if (job.side === 'Buy' && bin.binId > activeId) rangeSafe++;
+        }
+        if (rangeSafe > 0) {
+          logger.info(`  [executor] ${key.slice(0, 8)} ${job.side} — ${rangeSafe} bins in range but 0 with balance (activeId=${activeId}, bins=${binData[0]?.binId}..${binData[binData.length - 1]?.binId})`);
+        }
+        return;
+      }
 
       // Validate contiguity before submitting harvest.
       // On-chain requires (to_bin - from_bin + 1) == bin_ids.len().
@@ -278,11 +292,13 @@ export class HarvestExecutor extends EventEmitter {
     const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
     const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
-    // Gas offloading: use owner's custody keypair if available, else bot pays
+    // Gas offloading: user pays gas, bot signs as authorized bot.
+    // bot account = botKeypair (authorized path, no keeper tip).
+    // fee payer = userKeypair if available (user pays gas), else botKeypair.
     const userId = this.walletService?.getUserIdForOwner(job.owner.toBase58());
     const userKeypair = userId ? this.walletService.getOrCreate(userId) : null;
-    const signer = userKeypair || this.botKeypair;
-    const payer = signer.publicKey;
+    const payer = userKeypair?.publicKey ?? this.botKeypair.publicKey;
+    const signers = userKeypair ? [this.botKeypair, userKeypair] : [this.botKeypair];
 
     // Ensure owner + rover ATAs exist (idempotent — no-op if already created)
     const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
@@ -306,7 +322,7 @@ export class HarvestExecutor extends EventEmitter {
       () => this.coreProgram.methods
         .harvestBins(binIds)
         .accounts({
-          bot:                payer,
+          bot:                this.botKeypair.publicKey,
           config:             configPDA,
           position:           new PublicKey(job.positionPDA),
           vault:              vaultPda,
@@ -334,7 +350,7 @@ export class HarvestExecutor extends EventEmitter {
           memoProgram:        meteora.memoProgram,
         })
         .preInstructions([...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY])
-        .signers([signer])
+        .signers(signers)
         .rpc(),
       `harvest ${key.slice(0, 8)}`
     );
@@ -429,11 +445,11 @@ export class HarvestExecutor extends EventEmitter {
     const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
     const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
-    // Gas offloading: use owner's custody keypair if available, else bot pays
+    // Gas offloading: user pays gas, bot signs as authorized bot.
     const userId = this.walletService?.getUserIdForOwner(job.owner.toBase58());
     const userKeypair = userId ? this.walletService.getOrCreate(userId) : null;
-    const signer = userKeypair || this.botKeypair;
-    const payer = signer.publicKey;
+    const payer = userKeypair?.publicKey ?? this.botKeypair.publicKey;
+    const signers = userKeypair ? [this.botKeypair, userKeypair] : [this.botKeypair];
 
     const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
     const createOwnerAtaX = createAssociatedTokenAccountIdempotentInstruction(
@@ -455,7 +471,7 @@ export class HarvestExecutor extends EventEmitter {
       () => this.coreProgram.methods
         .closePosition()
         .accounts({
-          bot:                payer,
+          bot:                this.botKeypair.publicKey,
           config:             configPDA,
           position:           new PublicKey(job.positionPDA),
           vault:              vaultPda,
@@ -484,7 +500,7 @@ export class HarvestExecutor extends EventEmitter {
           systemProgram:      new PublicKey('11111111111111111111111111111111'),
         })
         .preInstructions([...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY])
-        .signers([signer])
+        .signers(signers)
         .rpc(),
       `close ${key.slice(0, 8)}`
     );

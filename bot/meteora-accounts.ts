@@ -117,6 +117,44 @@ export function buildMeteoraCPIAccounts(
   };
 }
 
+// ═══ TOKEN-2022 HOOK DETECTION ═══
+
+/**
+ * Detect if a Token-2022 mint has a TransferHook extension installed.
+ * Used as defense-in-depth to skip fee rovers and reject /buy /sell
+ * for tokens whose hooks would block Meteora CPI (rent burn risk).
+ *
+ * Token-2022 mint layout: first 82 bytes are standard mint fields.
+ * Extensions start at offset 82+, each prefixed with a 2-byte type
+ * and 2-byte length. We scan for ExtensionType::TransferHook (7)
+ * or ExtensionType::TransferHookAccount (8).
+ */
+export async function hasTransferHook(connection: Connection, mint: PublicKey): Promise<boolean> {
+  try {
+    const info = await connection.getAccountInfo(mint);
+    if (!info || !info.owner.equals(TOKEN_2022_PROGRAM_ID)) return false;
+
+    const data = info.data;
+    // Standard mint is 82 bytes. Token-2022 adds a 1-byte account type at 82,
+    // then TLV extensions starting at 83 (type: u16 LE, length: u16 LE, data).
+    const EXT_START = 83;
+    if (data.length <= EXT_START + 4) return false;
+
+    let offset = EXT_START;
+    while (offset + 4 <= data.length) {
+      const extType = data.readUInt16LE(offset);
+      const extLen = data.readUInt16LE(offset + 2);
+      // TransferHook = 7, TransferHookAccount = 8
+      if (extType === 7 || extType === 8) return true;
+      offset += 4 + extLen;
+      if (extLen === 0) break; // safety: avoid infinite loop on malformed data
+    }
+    return false;
+  } catch {
+    return false; // fail open — curator.json whitelist is the primary guard
+  }
+}
+
 // ═══ DLMM CACHE ═══
 
 const DLMM_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes

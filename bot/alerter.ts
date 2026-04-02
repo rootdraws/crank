@@ -47,3 +47,11 @@ export async function alertLowBalance(solBalance: number): Promise<void> {
 export async function alertKeeperFailure(step: string, error: string): Promise<void> {
   await send(`keeper_${step}`, `**ALERT:** Keeper \`${step}\` failed: ${error.slice(0, 200)}`);
 }
+
+export async function alertSyncFailure(pool: string, error: string): Promise<void> {
+  await send(`sync_failure_${pool}`, `**ALERT:** Price sync failed on \`${pool}\`: ${error.slice(0, 200)}`);
+}
+
+export async function alertLargeDivergence(pool: string, divergencePct: number): Promise<void> {
+  await send(`large_divergence_${pool}`, `**ALERT:** Large price divergence on \`${pool}\`: ${divergencePct.toFixed(2)}% — sync may be needed.`);
+}

@@ -4,9 +4,9 @@ The off-chain infrastructure that monitors and executes on Solana. Runs on a Dig
 
 ## What it does
 
-Watches all crank.money DLMM positions via Helius LaserStream gRPC. When price moves through a user's bin range, the bot harvests those bins — pulling converted tokens back to the owner's wallet before the chart reverses. It also runs the daily fee pipeline: sweep fees, stake SOL into $PEGGED, and upload Merkle distributions.
+Watches all crank.money DLMM positions via Helius LaserStream gRPC. When price moves through a user's bin range, the bot harvests those bins — pulling converted tokens back to the owner's wallet before the chart reverses. It also runs the daily fee pipeline: sweep fees, distribute SOL via Merkle tree, and auto-claim for users.
 
-When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 15 slash commands for trading, wallet management, burn/claim, and governance. Harvest and close events are piped to the Discord notifier for DMs and feed channel posts. Gas offloading: harvests and closes are signed with the user's custody keypair (user pays gas), with bot keypair as permissionless fallback.
+When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 12 slash commands for trading, wallet management, burn, and governance. Harvest and close events are piped to the Discord notifier for DMs and feed channel posts. Gas offloading: harvests and closes are signed with the user's custody keypair (user pays gas), with bot keypair as permissionless fallback.
 
 ## Files
 
@@ -15,15 +15,17 @@ When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 15 sl
 | `anchor-harvest-bot.ts` | Orchestrator / main entry point. Wires modules together, boots the process, runs health server on :8080, manages graceful shutdown. Conditionally starts Discord bot if `DISCORD_TOKEN` is set. |
 | `geyser-subscriber.ts` | Helius LaserStream gRPC subscriber. Parses raw 904-byte LbPair accounts for activeId changes. Maintains in-memory position registry grouped by pool. Emits `harvestNeeded` events. Auto-reconnect with exponential backoff. |
 | `harvest-executor.ts` | Job queue that submits harvest/close transactions. Deduplicates jobs, confirms bin balances via RPC before submitting, handles Token-2022. Max 5 concurrent. Gas offloading: signs with user's custody keypair when available. Enrichment: reads token deltas from confirmed tx via `getTransaction`. Auto-unwraps WSOL after harvest/close. |
-| `keeper.ts` | Daily fee sequencer (runs once per UTC day). 6 steps: close WSOL → sweep rover (40/40/20 split) → stake_and_forward ($PEGGED) → open fee rovers → new_epoch (Merkle) → close exhausted rovers. |
+| `keeper.ts` | Daily fee sequencer (runs once per UTC day). 5 steps: close WSOL → sweep rover (40/40/20 split) → epoch distribution (drain vault → WSOL → Merkle → auto-claim) → open fee rovers → close exhausted rovers. |
+| `epoch-computer.ts` | Daily SOL distribution engine. Computes per-user shares from harvest fees, builds Merkle tree, drains epoch-vault, wraps WSOL, funds distributor, auto-claims for all users above threshold. |
 | `relay-server.ts` | REST API + WebSocket relay. Exposes bot state: pools, positions, pending harvests, fee pipeline, rovers, protocol PnL, activity feed. `/api/health` returns 503 when unhealthy. |
 | `alerter.ts` | Discord feed channel alerts with 5-min cooldown + dedup. Fires on: gRPC disconnect/reconnect, low bot balance, keeper failures. |
 | `meteora-accounts.ts` | Shared Meteora CPI account resolution + DLMM instance cache (10-min TTL, LRU eviction). Used by executor and keeper. |
+| `price-syncer.ts` | Price divergence detection + arb bot (disabled, pending direct Meteora swap). |
 | `logger.ts` | pino logger. |
 | `retry.ts` | Shared `withRetry()` — 3 retries, exponential backoff. |
 | `bot.test.ts` | Unit tests (vitest): LbPair byte parsing, safe bin detection, job dedup, bin contiguity. No RPC deps. |
 | `ecosystem.config.cjs` | PM2 config for the droplet. 512MB max memory. |
-| `idl/` | Anchor IDL JSON files for all 5 active programs. |
+| `idl/` | Anchor IDL JSON files (bin_farm, merkle_distributor, epoch_vault, etc.). |
 
 ## Architecture
 
@@ -44,15 +46,14 @@ GeyserSubscriber (gRPC stream)
 
 Keeper (daily timer)
   ├─ close WSOL on rover_authority
-  ├─ sweep_rover → 40% bridge_vault + 40% trader_dest + 20% bot
-  ├─ stake_and_forward → SOL → $PEGGED → Merkle vault
+  ├─ sweep_rover → 80% bridge_vault + 20% bot
+  ├─ epoch distribution → drain vault → WSOL → Merkle → auto-claim
   ├─ open fee rovers (token fees → DLMM positions)
-  ├─ new_epoch (upload Merkle root + fund vault)
   └─ close exhausted rovers
 
 DiscordBot (conditional — requires DISCORD_TOKEN)
-  ├─ 15 slash commands: start, balance, deposit, buy, sell,
-  │   positions, close, setwithdraw, withdraw, pools, vote, burn, claim, unstake, help
+  ├─ 12 slash commands: start, balance, deposit, buy, sell,
+  │   positions, close, withdraw, pools, vote, burn, help
   ├─ Pool routing: multi-pool selection, auto-split, mcap/price/pct input
   ├─ Custodial wallets: AES-256-GCM encrypted keypairs
   └─ Notifier: DM on harvest/close, feed channel posts
@@ -65,8 +66,7 @@ RelayServer (HTTP :8080)
 ## Fee split
 
 40/40/20 — hardcoded on-chain in `sweep_rover`:
-- 40% to `bridge_vault` → staked → $PEGGED → Merkle distributor (BANK holders)
-- 40% to `trader_dest` → staked → $PEGGED → Merkle distributor (traders, gauge-weighted)
+- 80% to `bridge_vault` (both revenue_dest + trader_dest point here) → epoch-computer drains daily → WSOL → Merkle distributor → auto-claimed to users
 - 20% to `Config.bot` (operations, self-funding)
 
 ## Deployment
@@ -98,8 +98,6 @@ npm run bot
 | `BOT_KEYPAIR_PATH` | Path to bot wallet keypair JSON |
 | `CORE_PROGRAM_ID` | bin_farm program |
 | `DISTRIBUTOR_PROGRAM_ID` | merkle_distributor program |
-| `BRIDGE_PROGRAM_ID` | pegged_bridge program |
-| `PEGGED_MINT` | $PEGGED / crankSOL mint |
 
 ## Discord env vars (optional — bot starts only if DISCORD_TOKEN is set)
 

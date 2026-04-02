@@ -28,7 +28,6 @@ export const NATIVE_MINT             = new PublicKey('So111111111111111111111111
 
 export const CRANK_MINT  = new PublicKey('Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump');
 export const BANK_MINT   = new PublicKey('BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA');
-export const PEGGED_MINT = new PublicKey('GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1');
 export const USDC_MINT   = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 
 // ─── LbPair Account Layout ─────────────────────────────────────────────────
@@ -70,6 +69,5 @@ export const KNOWN_TOKENS: Record<string, string> = {
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
   'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump': 'CRANK',
   'BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA': 'BANK',
-  'GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1': 'PEGGED',
 };
 

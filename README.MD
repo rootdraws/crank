@@ -1,8 +1,8 @@
 # crank.money
 
-**Limit orders that earn fees. Burn $CRANK, earn $PEGGED.**
+**Limit orders that earn fees. Burn $CRANK, earn SOL.**
 
-Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream. Revenue shared via $BANK token governance and daily Merkle distribution on Solana.
+Managed Meteora DLMM positions with sub-second bin harvesting via Helius LaserStream. Revenue shared via $BANK token governance and daily Merkle SOL distribution on Solana.
 
 ## The Problem
 
@@ -39,25 +39,17 @@ Zero fee on deposit. 0.3% on converted output only. LP fees can be claimed anyti
 
 ### Permissionless Harvesting
 
-Every step in the revenue pipeline is permissionless. Harvest, close, sweep, stake, deposit — all crankable by anyone. The system is resilient without our infrastructure.
+Every step in the revenue pipeline is permissionless. Harvest, close, sweep, distribute — all crankable by anyone. The system is resilient without our infrastructure.
 
 ## Programs
 
-| Program | Address |
-|---------|---------|
-| bin-farm (core) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` |
-| bank-mint | `FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk` |
-| gauge-voter | `DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA` |
-| merkle-distributor | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` |
-| pegged-bridge | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` |
-
-| Program | Description |
-|---------|-------------|
-| **bin-farm** (core) | Position wrapper on Meteora DLMM. Harvest, close, rovers. `sweep_rover` splits 40/40/20: 40% BANK holders, 40% traders, 20% operations. |
-| **bank-mint** | Burn $CRANK to mint $BANK 1:1. Supply cap: `bank_supply + crank_supply <= 2B`. |
-| **gauge-voter** | BANK holders vote on global pool weights. Admin-curated pool registry. |
-| **merkle-distributor** | Cumulative $PEGGED distribution via Merkle proofs. Daily epoch. IPFS-pinned trees. |
-| **pegged-bridge** | SOL → Sanctum SPL multi-stake pool (Helius + LP Army + MonkeDAO validators) → $PEGGED → Merkle distributor vault. |
+| Program | Address | Description |
+|---------|---------|-------------|
+| **bin-farm** (core) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` | Position wrapper on Meteora DLMM. Harvest, close, rovers. `sweep_rover` splits 40/40/20. |
+| **bank-mint** | `FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk` | Burn $CRANK to mint $BANK 1:1. Supply cap: `bank_supply + crank_supply <= 2B`. |
+| **gauge-voter** | `DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA` | BANK holders vote on global pool weights. Admin-curated pool registry. |
+| **merkle-distributor** | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` | Cumulative SOL (WSOL) distribution via Merkle proofs. Daily epoch. Auto-claimed. |
+| **epoch-vault** | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` | SOL fee accumulator. Receives 80% from sweep_rover. Drained daily by epoch-computer. |
 
 ## Tokens
 
@@ -65,10 +57,8 @@ Every step in the revenue pipeline is permissionless. Harvest, close, sweep, sta
 |-------|------|----------|
 | $CRANK | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` | 6 |
 | $BANK | `BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA` | 6 |
-| $PEGGED (crankSOL) | `GmqNKeVoKJiF52xRriHXsmmgvTWpkU4UVn2LdPgEiEX1` | 9 |
-| SPL Stake Pool | `9tkzwSotpYFNWYg7ggunktSqcpykVzzPunsSoNwPacjg` | — |
 
-## $BANK Token — Burn $CRANK, Earn $PEGGED
+## $BANK Token — Burn $CRANK, Earn SOL
 
 Burn $CRANK to mint $BANK at a 1:1 ratio. Supply cap enforced on-chain.
 
@@ -76,23 +66,13 @@ Burn $CRANK to mint $BANK at a 1:1 ratio. Supply cap enforced on-chain.
 
 1. Protocol fees (0.3% on converted output) collected by the rover system.
 2. `sweep_rover` splits 40/40/20:
-   - **40% BANK holders** — SOL → staked via SPL stake pool → $PEGGED → Merkle distributor vault
-   - **40% Traders** — distributed proportional to fees paid, weighted by gauge votes
+   - **80% to bridge_vault** — accumulated SOL for daily distribution
    - **20% Operations** — self-funding bot infrastructure
-3. Daily Merkle tree combines both holder and trader rewards.
-4. Trees pinned to IPFS for transparency.
+3. Daily epoch-computer drains vault, wraps SOL → WSOL, funds Merkle distributor.
+4. Auto-claimed to user custody wallets (user pays gas). SOL just shows up.
+5. Trees pinned to IPFS for transparency.
 
-**Gauge voting:** BANK holders call `vote()` to influence how the 40% trader reward is allocated across curated pools.
-
-## $PEGGED (crankSOL)
-
-The 40% holder share and 40% trader share are converted into a SOL Liquid Staking token, delegated to three validators:
-
-- Helius Validator
-- Meteora LP Army Validator
-- MonkeDAO Validator
-
-$PEGGED is Liquid Staked SOL launched on Sanctum. APR ~7% depending on Solana staking yield.
+**Gauge voting:** BANK holders call `vote()` to influence how rewards are allocated across curated pools.
 
 ## Project Structure
 
@@ -103,11 +83,11 @@ crank-money/
 │   ├── bin-farm/
 │   ├── gauge-voter/
 │   ├── merkle-distributor/
-│   └── pegged-bridge/
+│   └── epoch-vault/
 ├── bot/                # Crank's Harvester (off-chain infrastructure)
 ├── packages/
 │   ├── core-sdk/       # Shared SDK (pool routing, range parsing, wallet service)
-│   └── discord-bot/    # 15 slash commands (buy, sell, vote, burn, claim, setwithdraw, etc.)
+│   └── discord-bot/    # 12 slash commands (buy, sell, vote, burn, withdraw, etc.)
 ├── public/             # On-chain referenced assets (token logos, metadata)
 ├── scripts/            # Deploy, diagnostics, admin utilities
 ├── curator.json        # Pool registry + gauge map (read by bot at runtime)
@@ -154,11 +134,10 @@ npx tsx scripts/preflight-check.ts     # Verify all programs + PDAs on-chain
 - All harvests, sweeps, and distributions are permissionless. Anyone can crank them if the bot goes stale — no fund lock-up.
 - Fee split (40/40/20) is hardcoded in the program. Cannot be changed without a program upgrade.
 - Programs can be upgraded (upgrade authority held by deployer). Keypair separation to cold wallet (Ledger) planned.
-- AI Audit using [Adversarial Spec](https://github.com/zscole/adversarial-spec) and several rounds of analysis with Opus 4.6.
 
 **Custody:**
 - User wallets are AES-256-GCM encrypted at rest. Encryption key stored separately from the wallet database.
-- Withdrawals are locked to a one-time `/setwithdraw` address per user. Once set, funds can only go to that wallet.
+- Withdraw address auto-locked to the first wallet that deposits SOL. Once set, funds can only go to that wallet.
 - Wallet database backed up every minute to off-server object storage. Daily full-server snapshots.
 
 **Infrastructure:**
@@ -175,7 +154,6 @@ npx tsx scripts/preflight-check.ts     # Verify all programs + PDAs on-chain
 - Meteora DLMM SDK (`@meteora-ag/dlmm`)
 - Helius LaserStream gRPC (`@triton-one/yellowstone-grpc`)
 - tsx (TypeScript execution for bot)
-- esbuild (Codama client generation)
 
 ## License
 

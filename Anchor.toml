@@ -11,14 +11,14 @@ bank_mint = "FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk"
 bin_farm = "8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"
 gauge_voter = "DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA"
 merkle_distributor = "DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV"
-pegged_bridge = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
+epoch_vault = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
 
 [programs.mainnet]
 bank_mint = "FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk"
 bin_farm = "8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"
 gauge_voter = "DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA"
 merkle_distributor = "DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV"
-pegged_bridge = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
+epoch_vault = "7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN"
 
 [registry]
 url = "https://api.apr.dev"

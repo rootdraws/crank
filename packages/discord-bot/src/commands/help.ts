@@ -14,13 +14,10 @@ export async function handleHelp(interaction: ChatInputCommandInteraction, ctx: 
       '`/sell SOL 98 to 115 10 SOL` — sell SOL over a range\n' +
       '`/positions` — view open positions\n' +
       '`/close ID` — close a position\n' +
-      '`/setwithdraw ADDRESS` — lock your withdrawal address (one-time)\n' +
-      '`/withdraw SOL 0.5` — funds can only go to your wallet\n' +
+      '`/withdraw SOL 0.5` — withdraw to your deposit wallet\n' +
       '`/pools` — show covered pools\n' +
       '`/vote SOL 50 CRANK 50` — allocate vote weight\n' +
-      '`/burn 1000000` — burn CRANK\n' +
-      '`/claim` — claim pending $PEGGED\n' +
-      '`/unstake 0.5` — unstake $PEGGED → SOL\n',
+      '`/burn 1000000` — burn CRANK\n',
     ephemeral: true,
   });
 }

@@ -30,9 +30,6 @@ import { handleWithdraw } from './commands/withdraw';
 import { handlePools } from './commands/pools';
 import { handleVote } from './commands/vote';
 import { handleBurn } from './commands/burn';
-import { handleClaim } from './commands/claim';
-import { handleUnstake } from './commands/unstake';
-import { handleSetWithdraw } from './commands/setwithdraw';
 import { handleHelp } from './commands/help';
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '..', '.env') });
@@ -112,12 +109,9 @@ export class DiscordBot {
           case 'positions': return await handlePositions(interaction, ctx);
           case 'close':     return await handleClose(interaction, ctx);
           case 'withdraw':  return await handleWithdraw(interaction, ctx);
-          case 'setwithdraw': return await handleSetWithdraw(interaction, ctx);
           case 'pools':     return await handlePools(interaction, ctx);
           case 'vote':      return await handleVote(interaction, ctx);
           case 'burn':      return await handleBurn(interaction, ctx);
-          case 'claim':     return await handleClaim(interaction, ctx);
-          case 'unstake':   return await handleUnstake(interaction, ctx);
           case 'help':      return await handleHelp(interaction, ctx);
           default:
             await interaction.reply({ content: 'Unknown command.', ephemeral: true });

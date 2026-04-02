@@ -4,15 +4,14 @@ import { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentIn
 import {
   signAndSendLegacy,
   NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
-  KNOWN_TOKENS, CRANK_MINT, BANK_MINT, PEGGED_MINT,
+  KNOWN_TOKENS, CRANK_MINT, BANK_MINT,
 } from '@crankbot/core-sdk';
+import { tryLockDepositor } from '../deposit-detect';
 import type { BotContext } from '../index';
 
-// Token decimals and program for each known mint
 const TOKEN_META: Record<string, { decimals: number; program: PublicKey }> = {
   [CRANK_MINT.toBase58()]:  { decimals: 6, program: TOKEN_2022_PROGRAM_ID },
   [BANK_MINT.toBase58()]:   { decimals: 6, program: TOKEN_PROGRAM_ID },
-  [PEGGED_MINT.toBase58()]: { decimals: 9, program: TOKEN_PROGRAM_ID },
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': { decimals: 6, program: TOKEN_PROGRAM_ID },
   'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': { decimals: 6, program: TOKEN_PROGRAM_ID },
 };
@@ -20,31 +19,58 @@ const TOKEN_META: Record<string, { decimals: number; program: PublicKey }> = {
 export async function handleWithdraw(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
   const userId = `discord:${interaction.user.id}`;
 
-  // Enforce withdraw address lock
-  const lockedAddr = ctx.walletService.getWithdrawAddress(userId);
+  const lockedAddr = await tryLockDepositor(ctx.connection, ctx.walletService, userId);
   if (!lockedAddr) {
-    await interaction.reply({ content: '🦧', ephemeral: true });
-    await interaction.followUp({ content: 'Set your withdraw address first.\n`/setwithdraw <your wallet address>`', ephemeral: true });
+    await interaction.reply({
+      content: 'No withdraw address detected.\nDeposit SOL from your personal wallet first — that wallet becomes your withdraw address.',
+      ephemeral: true,
+    });
     return;
   }
 
-  const rangeStr = interaction.options.getString('range', true).trim();
-  const parts = rangeStr.split(/\s+/);
+  const input = interaction.options.getString('amount')?.trim() ?? '';
+  const destPubkey = new PublicKey(lockedAddr);
+  const destShort = `${lockedAddr.slice(0, 4)}...${lockedAddr.slice(-4)}`;
+  const keypair = ctx.walletService.getOrCreate(userId);
+  const user = keypair.publicKey;
 
+  // Bare /withdraw — show balances + withdraw wallet + example
+  if (!input) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const solBalance = await ctx.connection.getBalance(user);
+    const tokenAccounts = await ctx.connection.getParsedTokenAccountsByOwner(user, { programId: TOKEN_PROGRAM_ID });
+    const token2022Accounts = await ctx.connection.getParsedTokenAccountsByOwner(user, { programId: TOKEN_2022_PROGRAM_ID }).catch(() => ({ value: [] }));
+
+    let balanceLines = `SOL: ${(solBalance / 1e9).toFixed(4)}`;
+    for (const { account } of [...tokenAccounts.value, ...token2022Accounts.value]) {
+      const parsed = account.data.parsed.info;
+      const amount = parseFloat(parsed.tokenAmount.uiAmount || '0');
+      if (amount <= 0) continue;
+      if (parsed.mint === NATIVE_MINT.toBase58()) continue;
+      const symbol = KNOWN_TOKENS[parsed.mint] || parsed.mint.slice(0, 6) + '...';
+      balanceLines += `\n${symbol}: ${amount.toFixed(4)}`;
+    }
+
+    await interaction.editReply(
+      `Withdraw to: [${lockedAddr}](https://solscan.io/account/${lockedAddr})\n\n` +
+      `${balanceLines}\n\n` +
+      `\`/withdraw SOL .5\` · \`/withdraw CRANK all\``
+    );
+    return;
+  }
+
+  // /withdraw SOL .5 — execute
+  const parts = input.split(/\s+/);
   if (parts.length < 2) {
-    await interaction.reply({ content: '🦧', ephemeral: true });
-    await interaction.followUp({ content: 'Usage: `/withdraw SOL 0.5` or `/withdraw CRANK all`', ephemeral: true });
+    await interaction.reply({ content: '`/withdraw SOL .5` or `/withdraw CRANK all`', ephemeral: true });
     return;
   }
 
   const tokenSymbol = parts[0].toUpperCase();
   const amountStr = parts[1].toLowerCase();
-  const destPubkey = new PublicKey(lockedAddr);
 
   await interaction.deferReply({ ephemeral: true });
-
-  const keypair = ctx.walletService.getOrCreate(userId);
-  const user = keypair.publicKey;
 
   try {
     if (tokenSymbol === 'SOL') {
@@ -68,12 +94,11 @@ export async function handleWithdraw(interaction: ChatInputCommandInteraction, c
         SystemProgram.transfer({ fromPubkey: user, toPubkey: destPubkey, lamports })
       );
       const sig = await signAndSendLegacy(tx, keypair, ctx.connection);
-      const solAmount = Number(lamports) / 1e9;
-      await interaction.editReply(`Sent ${solAmount} SOL to ${lockedAddr.slice(0, 8)}...${lockedAddr.slice(-4)}\n<${`https://solscan.io/tx/${sig}`}>`);
+      await interaction.editReply(`Sent ${Number(lamports) / 1e9} SOL to ${destShort}\n<https://solscan.io/tx/${sig}>`);
     } else {
       const mintAddr = Object.entries(KNOWN_TOKENS).find(([, sym]) => sym === tokenSymbol)?.[0];
       if (!mintAddr) {
-        await interaction.editReply(`Unknown token "${tokenSymbol}". Use /balance to see your tokens.`);
+        await interaction.editReply(`Unknown token "${tokenSymbol}". Use /withdraw to see your tokens.`);
         return;
       }
       const mint = new PublicKey(mintAddr);
@@ -113,9 +138,8 @@ export async function handleWithdraw(interaction: ChatInputCommandInteraction, c
       const tx = new Transaction();
       tx.add(createAssociatedTokenAccountIdempotentInstruction(user, destAta, destPubkey, mint, tokenProgram));
 
-      const dataLen = 1 + 8 + 1;
-      const transferData = Buffer.alloc(dataLen);
-      transferData[0] = 12; // TransferChecked variant
+      const transferData = Buffer.alloc(10);
+      transferData[0] = 12;
       transferData.writeBigUInt64LE(rawAmount, 1);
       transferData.writeUInt8(decimals, 9);
 
@@ -132,7 +156,7 @@ export async function handleWithdraw(interaction: ChatInputCommandInteraction, c
 
       const sig = await signAndSendLegacy(tx, keypair, ctx.connection);
       const humanAmount = Number(rawAmount) / Math.pow(10, decimals);
-      await interaction.editReply(`Sent ${humanAmount} ${tokenSymbol} to ${lockedAddr.slice(0, 8)}...${lockedAddr.slice(-4)}\n<${`https://solscan.io/tx/${sig}`}>`);
+      await interaction.editReply(`Sent ${humanAmount} ${tokenSymbol} to ${destShort}\n<https://solscan.io/tx/${sig}>`);
     }
   } catch (e: any) {
     await interaction.editReply(`Withdraw failed: ${e.message?.slice(0, 100)}`);

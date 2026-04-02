@@ -486,6 +486,69 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "update_mint",
+      "docs": [
+        "Update the distribution mint (e.g. PEGGED → WSOL) and vault ATA.",
+        "Authority-gated. The new vault must be an ATA owned by the distributor PDA."
+      ],
+      "discriminator": [
+        212,
+        203,
+        57,
+        78,
+        75,
+        245,
+        222,
+        5
+      ],
+      "accounts": [
+        {
+          "name": "distributor",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  116,
+                  114,
+                  105,
+                  98,
+                  117,
+                  116,
+                  111,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "distributor"
+          ]
+        },
+        {
+          "name": "new_mint"
+        },
+        {
+          "name": "new_vault",
+          "docs": [
+            "New vault ATA owned by the distributor PDA, denominated in new_mint."
+          ]
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [

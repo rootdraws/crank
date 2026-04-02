@@ -110,7 +110,7 @@ export function getClaimStatusPDA(distributor: PublicKey, claimant: PublicKey): 
   );
 }
 
-// ─── pegged_bridge PDAs ───────────────────────────────────────────────────
+// ─── epoch_vault PDAs (was pegged_bridge — same program ID, same seeds) ──
 
 export function getBridgeConfigPDA(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
