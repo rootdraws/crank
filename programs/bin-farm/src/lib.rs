@@ -1,5 +1,7 @@
 // crank.money Core Contract
-// Wraps Meteora DLMM with custody + auto-close capability
+// Wraps Meteora DLMM with UserVault PDAs + auto-harvest/close capability.
+// Users interact via a PDA seeded by their real Solana wallet; bot is the
+// sole signer and fee payer, reimbursed from the vault PDA via deduct_gas.
 //
 #![deny(clippy::integer_arithmetic)]
 #![deny(clippy::unwrap_used)]
@@ -14,7 +16,7 @@
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program;
-use anchor_spl::token_interface::{TokenAccount as ITokenAccount, TransferChecked, transfer_checked};
+use anchor_spl::token_interface::{TokenAccount as ITokenAccount, TransferChecked, transfer_checked, CloseAccount, close_account};
 
 mod meteora_dlmm_cpi;
 use meteora_dlmm_cpi::*;
@@ -36,6 +38,19 @@ pub const MIN_ROVER_BIN_STEP: u16 = 20;
 
 pub const TOKEN_2022_PROGRAM_ID: Pubkey =
     solana_program::pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+
+pub const BANK_MINT_PROGRAM_ID: Pubkey =
+    solana_program::pubkey!("FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk");
+
+pub const GAUGE_VOTER_PROGRAM_ID: Pubkey =
+    solana_program::pubkey!("DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA");
+
+/// Pool weight allocation for gauge voting CPI
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct PoolAllocation {
+    pub lb_pair: Pubkey,
+    pub weight_bps: u16,
+}
 
 #[program]
 pub mod bin_farm {
@@ -68,12 +83,16 @@ pub mod bin_farm {
         config.emergency_close_at = 0;
         config.last_bot_close_slot = 0;
         config.last_bot_sweep_slot = 0;
-        config._reserved = [0u8; 96];
+        config.gas_lamports = 0;
+        config._reserved = [0u8; 88];
 
         msg!("crank.money initialized | bot={} fee={}bps", bot, fee_bps);
         Ok(())
     }
 
+    /// Open a DLMM position on behalf of a user vault.
+    /// Bot is the tx signer + rent payer. Tokens come from the user vault's ATA.
+    /// For SOL-side buys: inline wrapping via lamport manipulation + sync_native.
     pub fn open_position_v2<'info>(
         ctx: Context<'_, '_, 'info, 'info, OpenPositionV2<'info>>,
         amount: u64,
@@ -83,6 +102,7 @@ pub mod bin_farm {
         max_active_bin_slippage: i32,
     ) -> Result<()> {
         require!(!ctx.accounts.config.paused, CoreError::Paused);
+        require!(ctx.accounts.bot.key() == ctx.accounts.config.bot, CoreError::Unauthorized);
         require!(amount > 0, CoreError::ZeroAmount);
         require!(amount >= MIN_POSITION_AMOUNT, CoreError::PositionTooSmall);
         require!(max_active_bin_slippage >= 0 && max_active_bin_slippage <= 20, CoreError::InvalidSlippage);
@@ -93,13 +113,7 @@ pub mod bin_farm {
         // Validate DLMM program
         require!(ctx.accounts.dlmm_program.key() == METEORA_DLMM_PROGRAM_ID, CoreError::InvalidProgram);
 
-        // Validate token account owners (moved from struct constraints for stack savings)
-        {
-            let data = ctx.accounts.user_token_account.try_borrow_data()?;
-            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
-            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
-            require!(owner == ctx.accounts.user.key(), CoreError::InvalidTokenOwner);
-        }
+        // Validate position vault token account owners (stack savings: manual check)
         {
             let data = ctx.accounts.vault_token_x.try_borrow_data()?;
             require!(data.len() >= 64, CoreError::InvalidTokenOwner);
@@ -112,6 +126,13 @@ pub mod bin_farm {
             let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
             require!(owner == ctx.accounts.vault.key(), CoreError::InvalidTokenOwner);
         }
+        // Validate user vault deposit ATA owner
+        {
+            let data = ctx.accounts.user_vault_deposit_ata.try_borrow_data()?;
+            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
+            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
+            require!(owner == ctx.accounts.user_vault.key(), CoreError::InvalidTokenOwner);
+        }
 
         // Derive side from on-chain active_id — never trust caller
         let active_id = {
@@ -122,42 +143,54 @@ pub mod bin_farm {
         require!(active_id > -443636 && active_id < 443636, CoreError::InvalidBinRange);
         let side = if min_bin_id > active_id { Side::Sell } else { Side::Buy };
 
+        // --- Transfer tokens from UserVault ATA → position Vault ATA ---
+        // The UserVault PDA signs the transfer via invoke_signed.
+        let uv_owner_key = ctx.accounts.user_vault.owner;
+        let uv_bump = [ctx.accounts.user_vault.bump];
+        let user_vault_seeds: &[&[u8]] = &[
+            b"user_vault",
+            uv_owner_key.as_ref(),
+            &uv_bump,
+        ];
+
         let deposit_token_program = if side == Side::Sell {
             &ctx.accounts.token_x_program
         } else {
             &ctx.accounts.token_y_program
         };
-
-        let deposit_vault = if side == Side::Sell {
+        let deposit_position_vault = if side == Side::Sell {
             &ctx.accounts.vault_token_x
         } else {
             &ctx.accounts.vault_token_y
         };
+
+        // Transfer from user_vault_deposit_ata → position vault ATA (user vault PDA signs)
         let transfer_ix = anchor_lang::solana_program::instruction::Instruction {
             program_id: *deposit_token_program.key,
             accounts: vec![
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.user_token_account.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(deposit_vault.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.user.key(), true),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.user_vault_deposit_ata.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(deposit_position_vault.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.user_vault.key(), true),
             ],
             data: {
-                let mut d = vec![3u8];
+                let mut d = vec![3u8]; // transfer variant
                 d.extend_from_slice(&amount.to_le_bytes());
                 d
             },
         };
-        anchor_lang::solana_program::program::invoke(
+        anchor_lang::solana_program::program::invoke_signed(
             &transfer_ix,
             &[
-                ctx.accounts.user_token_account.to_account_info(),
-                deposit_vault.to_account_info(),
-                ctx.accounts.user.to_account_info(),
+                ctx.accounts.user_vault_deposit_ata.to_account_info(),
+                deposit_position_vault.to_account_info(),
+                ctx.accounts.user_vault.to_account_info(),
                 deposit_token_program.to_account_info(),
             ],
+            &[user_vault_seeds],
         )?;
 
-        // Build PDA signer seeds for meteora_position (replaces keypair signing)
-        let user_key = ctx.accounts.user.key();
+        // Build PDA signer seeds for meteora_position
+        let user_vault_key = ctx.accounts.user_vault.key();
         let lb_pair_key = ctx.accounts.lb_pair.key();
         let count_bytes = ctx.accounts.position_counter.count.to_le_bytes();
         let meteora_pos_bump = [ctx.bumps.meteora_position];
@@ -165,7 +198,7 @@ pub mod bin_farm {
         let meteora_pos_key = ctx.accounts.meteora_position.key();
         let meteora_pos_seeds: &[&[u8]] = &[
             b"meteora_pos",
-            user_key.as_ref(),
+            user_vault_key.as_ref(),
             lb_pair_key.as_ref(),
             &count_bytes,
             &meteora_pos_bump,
@@ -186,7 +219,7 @@ pub mod bin_farm {
 
         initialize_position2(
             &[
-                ctx.accounts.user.to_account_info(),
+                ctx.accounts.bot.to_account_info(),  // payer (was: user)
                 ctx.accounts.meteora_position.to_account_info(),
                 ctx.accounts.lb_pair.to_account_info(),
                 ctx.accounts.vault.to_account_info(),
@@ -232,7 +265,7 @@ pub mod bin_farm {
         )?;
 
         let position = &mut ctx.accounts.position;
-        position.owner = ctx.accounts.user.key();
+        position.user_vault = ctx.accounts.user_vault.key();
         position.lb_pair = ctx.accounts.lb_pair.key();
         position.meteora_position = ctx.accounts.meteora_position.key();
         position.side = side;
@@ -258,9 +291,16 @@ pub mod bin_farm {
         config.total_positions = config.total_positions.saturating_add(1);
         config.total_volume = config.total_volume.saturating_add(amount);
 
+        // Gas reimbursement
+        deduct_gas(
+            config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.bot.to_account_info(),
+        )?;
+
         emit!(PositionOpenedEvent {
             position: ctx.accounts.position.key(),
-            user: ctx.accounts.user.key(),
+            user: ctx.accounts.user_vault.owner,
             lb_pair: ctx.accounts.lb_pair.key(),
             side,
             amount,
@@ -289,7 +329,7 @@ pub mod bin_farm {
         let y_decimals = read_mint_decimals(&ctx.accounts.token_y_mint)?;
 
         let position_key = ctx.accounts.position.key();
-        let owner_key = ctx.accounts.owner.key();
+        let owner_key = ctx.accounts.user_vault.owner; // real wallet for event
         let side = ctx.accounts.position.side;
         let min_bin_id = ctx.accounts.position.min_bin_id;
         let max_bin_id = ctx.accounts.position.max_bin_id;
@@ -596,6 +636,13 @@ pub mod bin_farm {
             total_harvested: position.harvested_amount,
         });
 
+        // Gas reimbursement
+        deduct_gas(
+            &ctx.accounts.config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.bot.to_account_info(),
+        )?;
+
         msg!("Harvested bins [{},{}] | fee={} | tip={} | cumulative={}",
             from_bin, to_bin, fee_taken, keeper_tip_taken, position.harvested_amount);
         Ok(())
@@ -703,7 +750,7 @@ pub mod bin_farm {
         )?;
 
         let position_key = ctx.accounts.position.key();
-        let owner_key = ctx.accounts.owner.key();
+        let owner_key = ctx.accounts.user_vault.owner;
 
         let (x_fee, y_fee, x_out, y_out) = execute_close_transfers(
             side,
@@ -715,7 +762,7 @@ pub mod bin_farm {
             &ctx.accounts.rover_fee_token_y.to_account_info(),
             &ctx.accounts.rover_fee_token_x.to_account_info(),
             &ctx.accounts.vault.to_account_info(),
-            &ctx.accounts.owner,
+            &ctx.accounts.user_vault.to_account_info(),
             &ctx.accounts.token_x_program.to_account_info(),
             &ctx.accounts.token_y_program.to_account_info(),
             &ctx.accounts.token_x_mint.to_account_info(),
@@ -727,6 +774,14 @@ pub mod bin_farm {
         let close_harvested = match side { Side::Buy => x_out, Side::Sell => y_out };
         ctx.accounts.config.total_harvested = ctx.accounts.config.total_harvested
             .checked_add(close_harvested).ok_or(CoreError::Overflow)?;
+        ctx.accounts.config.total_positions = ctx.accounts.config.total_positions.saturating_sub(1);
+
+        // Gas reimbursement — user's vault pays for bot-initiated close
+        deduct_gas(
+            &ctx.accounts.config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.bot.to_account_info(),
+        )?;
 
         emit!(CloseEvent {
             position: position_key,
@@ -742,8 +797,13 @@ pub mod bin_farm {
         Ok(())
     }
 
-    /// User manually closes their own position
+    /// User or bot closes position. Caller must be authorized bot or vault owner.
     pub fn user_close(ctx: Context<UserClose>) -> Result<()> {
+        // Dual-caller: either authorized bot or vault owner (real wallet)
+        let caller = ctx.accounts.caller.key();
+        let is_authorized = caller == ctx.accounts.config.bot
+            || caller == ctx.accounts.user_vault.owner;
+        require!(is_authorized, CoreError::UnauthorizedCaller);
         let side = ctx.accounts.position.side;
         let min_bin_id = ctx.accounts.position.min_bin_id;
         let max_bin_id = ctx.accounts.position.max_bin_id;
@@ -816,12 +876,12 @@ pub mod bin_farm {
             remaining,
         )?;
 
-        // 3. Close Meteora position (rent -> user)
+        // 3. Close Meteora position (rent -> user_vault)
         close_position2(
             &[
                 ctx.accounts.meteora_position.to_account_info(),
                 ctx.accounts.vault.to_account_info(),
-                ctx.accounts.user.to_account_info(),
+                ctx.accounts.user_vault.to_account_info(),
                 ctx.accounts.event_authority.to_account_info(),
                 ctx.accounts.dlmm_program.to_account_info(),
             ],
@@ -829,7 +889,7 @@ pub mod bin_farm {
         )?;
 
         let position_key = ctx.accounts.position.key();
-        let user_key = ctx.accounts.user.key();
+        let owner_key = ctx.accounts.user_vault.owner;
 
         let (x_fee, y_fee, x_out, y_out) = execute_close_transfers(
             side,
@@ -841,7 +901,7 @@ pub mod bin_farm {
             &ctx.accounts.rover_fee_token_y.to_account_info(),
             &ctx.accounts.rover_fee_token_x.to_account_info(),
             &ctx.accounts.vault.to_account_info(),
-            &ctx.accounts.user.to_account_info(),
+            &ctx.accounts.user_vault.to_account_info(),
             &ctx.accounts.token_x_program.to_account_info(),
             &ctx.accounts.token_y_program.to_account_info(),
             &ctx.accounts.token_x_mint.to_account_info(),
@@ -853,10 +913,18 @@ pub mod bin_farm {
         let close_harvested = match side { Side::Buy => x_out, Side::Sell => y_out };
         ctx.accounts.config.total_harvested = ctx.accounts.config.total_harvested
             .checked_add(close_harvested).ok_or(CoreError::Overflow)?;
+        ctx.accounts.config.total_positions = ctx.accounts.config.total_positions.saturating_sub(1);
+
+        // Gas reimbursement
+        deduct_gas(
+            &ctx.accounts.config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.caller.to_account_info(),
+        )?;
 
         emit!(CloseEvent {
             position: position_key,
-            owner: user_key,
+            owner: owner_key,
             side,
             token_x_out: x_out,
             token_y_out: y_out,
@@ -874,6 +942,12 @@ pub mod bin_farm {
     // even when the protocol is paused for new deposits. Same rationale as
     // harvest_bins — existing positions must remain fully accessible.
     pub fn claim_fees(ctx: Context<ClaimFees>) -> Result<()> {
+        // Dual-caller: either authorized bot or vault owner
+        let caller = ctx.accounts.caller.key();
+        let is_authorized = caller == ctx.accounts.config.bot
+            || caller == ctx.accounts.user_vault.owner;
+        require!(is_authorized, CoreError::UnauthorizedCaller);
+
         let min_bin_id = ctx.accounts.position.min_bin_id;
         let max_bin_id = ctx.accounts.position.max_bin_id;
         let meteora_pos_key = ctx.accounts.position.meteora_position;
@@ -953,12 +1027,19 @@ pub mod bin_farm {
         // Emit event using pre-transfer captured amounts (stale cache fix)
         emit!(ClaimFeesEvent {
             position: ctx.accounts.position.key(),
-            user: ctx.accounts.user.key(),
+            user: ctx.accounts.user_vault.owner,
             lb_pair: ctx.accounts.position.lb_pair,
             x_amount: x_claimed,
             y_amount: y_claimed,
             timestamp: Clock::get()?.unix_timestamp,
         });
+
+        // Gas reimbursement
+        deduct_gas(
+            &ctx.accounts.config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.caller.to_account_info(),
+        )?;
 
         msg!("LP fees claimed");
         Ok(())
@@ -1170,6 +1251,7 @@ pub mod bin_farm {
         // Clear pending state
         config.pending_emergency_close = Pubkey::default();
         config.emergency_close_at = 0;
+        config.total_positions = config.total_positions.saturating_sub(1);
 
         // Position + Vault are closed by Anchor `close` constraints on the context
         emit!(EmergencyCloseEvent {
@@ -1414,7 +1496,7 @@ pub mod bin_farm {
 
         // Store position metadata — owner is rover_authority, side is always Sell
         let position = &mut ctx.accounts.position;
-        position.owner = rover_key;
+        position.user_vault = rover_key;
         position.lb_pair = lb_pair_key;
         position.meteora_position = meteora_pos_key2;
         position.side = Side::Sell;
@@ -1655,7 +1737,7 @@ pub mod bin_farm {
         let created_at = Clock::get()?.unix_timestamp;
 
         let position = &mut ctx.accounts.position;
-        position.owner = rover_key;
+        position.user_vault = rover_key;
         position.lb_pair = lb_pair_key;
         position.meteora_position = ctx.accounts.meteora_position.key();
         position.side = Side::Sell;
@@ -1693,6 +1775,338 @@ pub mod bin_farm {
         msg!("Fee rover opened: {} bins [{},{}] amount={}", width, min_bin_id, max_bin_id, amount);
         Ok(())
     }
+
+    // ============ USER VAULT INSTRUCTIONS ============
+
+    /// Create a vault PDA for a user. Anyone can pay rent. The vault is
+    /// cryptographically bound to `owner` via PDA seeds — no signer check needed.
+    pub fn create_vault(ctx: Context<CreateVault>) -> Result<()> {
+        let vault = &mut ctx.accounts.user_vault;
+        vault.owner = ctx.accounts.owner.key();
+        vault.bump = ctx.bumps.user_vault;
+
+        emit!(VaultCreatedEvent {
+            user_vault: ctx.accounts.user_vault.key(),
+            owner: ctx.accounts.owner.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        msg!("Vault created for owner={}", ctx.accounts.owner.key());
+        Ok(())
+    }
+
+    /// Withdraw native SOL from user vault to the vault owner's wallet.
+    /// Caller must be authorized bot or the vault owner.
+    pub fn withdraw_sol(ctx: Context<WithdrawSol>, amount: u64) -> Result<()> {
+        let caller = ctx.accounts.caller.key();
+        let config_bot = ctx.accounts.config.bot;
+        let vault_owner = ctx.accounts.user_vault.owner;
+        require!(
+            caller == config_bot || caller == vault_owner,
+            CoreError::UnauthorizedCaller
+        );
+        require!(amount > 0, CoreError::ZeroAmount);
+
+        let rent = Rent::get()?.minimum_balance(UserVault::SIZE);
+        let available = ctx.accounts.user_vault.to_account_info().lamports()
+            .saturating_sub(rent);
+        require!(amount <= available, CoreError::InsufficientBalance);
+
+        **ctx.accounts.user_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
+        **ctx.accounts.owner.try_borrow_mut_lamports()? += amount;
+
+        // Gas reimbursement
+        deduct_gas(
+            &ctx.accounts.config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.caller.to_account_info(),
+        )?;
+
+        msg!("Withdrew {} lamports to {}", amount, vault_owner);
+        Ok(())
+    }
+
+    /// Withdraw SPL/Token-2022 tokens from user vault ATA to owner's ATA.
+    /// Caller must be authorized bot or the vault owner.
+    pub fn withdraw_token(ctx: Context<WithdrawToken>, amount: u64) -> Result<()> {
+        let caller = ctx.accounts.caller.key();
+        let config_bot = ctx.accounts.config.bot;
+        let vault_owner = ctx.accounts.user_vault.owner;
+        require!(
+            caller == config_bot || caller == vault_owner,
+            CoreError::UnauthorizedCaller
+        );
+        require!(amount > 0, CoreError::ZeroAmount);
+
+        let decimals = read_mint_decimals(&ctx.accounts.token_mint)?;
+        let owner_key = ctx.accounts.user_vault.owner;
+        let vault_seeds: &[&[u8]] = &[
+            b"user_vault",
+            owner_key.as_ref(),
+            &[ctx.accounts.user_vault.bump],
+        ];
+
+        transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault_token_account.to_account_info(),
+                    mint: ctx.accounts.token_mint.to_account_info(),
+                    to: ctx.accounts.owner_token_account.to_account_info(),
+                    authority: ctx.accounts.user_vault.to_account_info(),
+                },
+                &[vault_seeds],
+            ),
+            amount,
+            decimals,
+        )?;
+
+        // Gas reimbursement
+        deduct_gas(
+            &ctx.accounts.config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.caller.to_account_info(),
+        )?;
+
+        msg!("Withdrew {} tokens to {}", amount, vault_owner);
+        Ok(())
+    }
+
+    /// Wrap native SOL in user vault to WSOL in the vault's WSOL ATA.
+    /// Uses direct lamport manipulation (bin-farm owns the vault PDA) + sync_native CPI.
+    /// Bot calls this before open_position_v2 for SOL-side buys.
+    pub fn wrap_sol_in_vault(ctx: Context<WrapSolInVault>, amount: u64) -> Result<()> {
+        let caller = ctx.accounts.caller.key();
+        let is_authorized = caller == ctx.accounts.config.bot
+            || caller == ctx.accounts.user_vault.owner;
+        require!(is_authorized, CoreError::UnauthorizedCaller);
+        require!(amount > 0, CoreError::ZeroAmount);
+
+        let rent = Rent::get()?.minimum_balance(UserVault::SIZE);
+        let available = ctx.accounts.user_vault.to_account_info().lamports()
+            .saturating_sub(rent);
+        require!(amount <= available, CoreError::InsufficientBalance);
+
+        // Debit vault PDA (bin-farm-owned: can decrease lamports)
+        **ctx.accounts.user_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
+        // Credit WSOL ATA (any program can increase lamports on any account)
+        **ctx.accounts.vault_wsol_ata.to_account_info().try_borrow_mut_lamports()? += amount;
+
+        // CPI: sync_native updates the WSOL token balance to match lamports
+        let sync_ix = anchor_lang::solana_program::instruction::Instruction {
+            program_id: anchor_spl::token::ID,
+            accounts: vec![
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_wsol_ata.key(), false),
+            ],
+            data: vec![17u8], // SyncNative instruction variant
+        };
+        anchor_lang::solana_program::program::invoke(
+            &sync_ix,
+            &[ctx.accounts.vault_wsol_ata.to_account_info()],
+        )?;
+
+        // Gas reimbursement
+        deduct_gas(
+            &ctx.accounts.config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.caller.to_account_info(),
+        )?;
+
+        msg!("Wrapped {} lamports SOL → WSOL in vault", amount);
+        Ok(())
+    }
+
+    /// Unwrap WSOL in vault back to native SOL.
+    /// Closes the vault's WSOL ATA — all lamports (token balance + rent) return to vault PDA.
+    /// Called after harvest/close that produces WSOL, or before withdraw_sol.
+    pub fn unwrap_wsol_in_vault(ctx: Context<UnwrapWsolInVault>) -> Result<()> {
+        let caller = ctx.accounts.caller.key();
+        let is_authorized = caller == ctx.accounts.config.bot
+            || caller == ctx.accounts.user_vault.owner;
+        require!(is_authorized, CoreError::UnauthorizedCaller);
+
+        let owner_key = ctx.accounts.user_vault.owner;
+        let vault_seeds: &[&[u8]] = &[
+            b"user_vault",
+            owner_key.as_ref(),
+            &[ctx.accounts.user_vault.bump],
+        ];
+
+        // Close vault's WSOL ATA — lamports (token balance + rent) go to vault PDA
+        close_account(CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            CloseAccount {
+                account: ctx.accounts.vault_wsol_ata.to_account_info(),
+                destination: ctx.accounts.user_vault.to_account_info(),
+                authority: ctx.accounts.user_vault.to_account_info(),
+            },
+            &[vault_seeds],
+        ))?;
+
+        // Gas reimbursement
+        deduct_gas(
+            &ctx.accounts.config,
+            &ctx.accounts.user_vault.to_account_info(),
+            &ctx.accounts.caller.to_account_info(),
+        )?;
+
+        msg!("Unwrapped WSOL → native SOL in vault");
+        Ok(())
+    }
+
+    /// CPI wrapper: burn CRANK → mint BANK via bank-mint, on behalf of user vault.
+    pub fn vault_burn_and_mint(ctx: Context<VaultBurnAndMint>, amount: u64) -> Result<()> {
+        let caller = ctx.accounts.caller.key();
+        let is_authorized = caller == ctx.accounts.config.bot
+            || caller == ctx.accounts.user_vault.owner;
+        require!(is_authorized, CoreError::UnauthorizedCaller);
+        require!(amount > 0, CoreError::ZeroAmount);
+
+        // Validate bank-mint program ID
+        require!(
+            ctx.accounts.bank_mint_program.key() == BANK_MINT_PROGRAM_ID,
+            CoreError::InvalidExternalProgram
+        );
+
+        let owner_key = ctx.accounts.user_vault.owner;
+        let user_vault_seeds: &[&[u8]] = &[
+            b"user_vault",
+            owner_key.as_ref(),
+            &[ctx.accounts.user_vault.bump],
+        ];
+
+        // Build burn_and_mint instruction
+        let mut data = vec![0xcbu8, 0x8e, 0x42, 0x51, 0xc7, 0xaa, 0x43, 0x82]; // discriminator
+        data.extend_from_slice(&amount.to_le_bytes());
+
+        let ix = anchor_lang::solana_program::instruction::Instruction {
+            program_id: BANK_MINT_PROGRAM_ID,
+            accounts: vec![
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.user_vault.key(), true),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.bank_config.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.crank_mint.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.bank_mint.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_crank_ata.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_bank_ata.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.crank_token_program.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.bank_token_program.key(), false),
+            ],
+            data,
+        };
+
+        anchor_lang::solana_program::program::invoke_signed(
+            &ix,
+            &[
+                ctx.accounts.user_vault.to_account_info(),
+                ctx.accounts.bank_config.to_account_info(),
+                ctx.accounts.crank_mint.to_account_info(),
+                ctx.accounts.bank_mint.to_account_info(),
+                ctx.accounts.vault_crank_ata.to_account_info(),
+                ctx.accounts.vault_bank_ata.to_account_info(),
+                ctx.accounts.crank_token_program.to_account_info(),
+                ctx.accounts.bank_token_program.to_account_info(),
+                ctx.accounts.bank_mint_program.to_account_info(),
+            ],
+            &[user_vault_seeds],
+        )?;
+
+        msg!("Vault burned {} CRANK → minted BANK", amount);
+        Ok(())
+    }
+
+    /// CPI wrapper: vote on gauge weights via gauge-voter, on behalf of user vault.
+    pub fn vault_vote<'info>(
+        ctx: Context<'_, '_, 'info, 'info, VaultVote<'info>>,
+        desired_allocations: Vec<PoolAllocation>,
+    ) -> Result<()> {
+        let caller = ctx.accounts.caller.key();
+        let is_authorized = caller == ctx.accounts.config.bot
+            || caller == ctx.accounts.user_vault.owner;
+        require!(is_authorized, CoreError::UnauthorizedCaller);
+
+        // Validate gauge-voter program ID
+        require!(
+            ctx.accounts.gauge_voter_program.key() == GAUGE_VOTER_PROGRAM_ID,
+            CoreError::InvalidExternalProgram
+        );
+
+        let owner_key = ctx.accounts.user_vault.owner;
+        let user_vault_seeds: &[&[u8]] = &[
+            b"user_vault",
+            owner_key.as_ref(),
+            &[ctx.accounts.user_vault.bump],
+        ];
+
+        // Build vote instruction data: discriminator + serialized Vec<PoolAllocation>
+        let mut data = vec![0xe3u8, 0x6e, 0x9b, 0x17, 0x88, 0x7e, 0xac, 0x19]; // discriminator
+        AnchorSerialize::serialize(&desired_allocations, &mut data)
+            .map_err(|_| CoreError::Overflow)?;
+
+        // Fixed accounts
+        let mut accounts = vec![
+            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.user_vault.key(), true),
+            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.gauge_config.key(), false),
+            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.bank_mint_account.key(), false),
+            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.vault_bank_ata.key(), false),
+            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
+        ];
+
+        // Forward PoolGauge remaining_accounts (writable)
+        let mut account_infos = vec![
+            ctx.accounts.user_vault.to_account_info(),
+            ctx.accounts.gauge_config.to_account_info(),
+            ctx.accounts.bank_mint_account.to_account_info(),
+            ctx.accounts.vault_bank_ata.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.gauge_voter_program.to_account_info(),
+        ];
+        for acc in ctx.remaining_accounts.iter() {
+            accounts.push(anchor_lang::solana_program::instruction::AccountMeta::new(acc.key(), false));
+            account_infos.push(acc.clone());
+        }
+
+        let ix = anchor_lang::solana_program::instruction::Instruction {
+            program_id: GAUGE_VOTER_PROGRAM_ID,
+            accounts,
+            data,
+        };
+
+        anchor_lang::solana_program::program::invoke_signed(
+            &ix,
+            &account_infos,
+            &[user_vault_seeds],
+        )?;
+
+        msg!("Vault voted on {} pools", desired_allocations.len());
+        Ok(())
+    }
+
+    /// Admin sets gas reimbursement amount per operation.
+    pub fn update_gas_lamports(ctx: Context<AdminOnly>, gas_lamports: u64) -> Result<()> {
+        ctx.accounts.config.gas_lamports = gas_lamports;
+        msg!("Gas lamports updated to {}", gas_lamports);
+        Ok(())
+    }
+}
+
+/// Deduct gas reimbursement from user vault → caller (bot).
+/// Never drains vault below rent-exempt minimum.
+fn deduct_gas<'info>(
+    config: &Config,
+    user_vault_info: &AccountInfo<'info>,
+    bot_info: &AccountInfo<'info>,
+) -> Result<()> {
+    let gas = config.gas_lamports;
+    if gas > 0 {
+        let rent = Rent::get()?.minimum_balance(UserVault::SIZE);
+        let available = user_vault_info.lamports().saturating_sub(rent);
+        let deduct = gas.min(available);
+        if deduct > 0 {
+            **user_vault_info.try_borrow_mut_lamports()? -= deduct;
+            **bot_info.try_borrow_mut_lamports()? += deduct;
+        }
+    }
+    Ok(())
 }
 
 /// Prepend a memo CPI before token transfers. Satisfies the Memo Transfer extension
@@ -1928,6 +2342,13 @@ pub struct AdminConfigEvent {
     pub timestamp: i64,
 }
 
+#[event]
+pub struct VaultCreatedEvent {
+    pub user_vault: Pubkey,
+    pub owner: Pubkey,
+    pub timestamp: i64,
+}
+
 // ============ STATE ============
 
 #[account]
@@ -1954,21 +2375,23 @@ pub struct Config {
     // --- Permissionless close + sweep heartbeat ---
     pub last_bot_close_slot: u64,        // Slot of last bot-initiated close_position
     pub last_bot_sweep_slot: u64,        // Slot of last bot-initiated sweep_rover
-    // Reserved space for future fields (e.g. strategy platform)
-    pub _reserved: [u8; 96],
+    // --- Gas reimbursement (carved from reserved) ---
+    pub gas_lamports: u64,               // Per-operation gas deduction from user vault → bot
+    // Reserved space for future fields
+    pub _reserved: [u8; 88],
 }
 
 impl Config {
     // 8 (disc) + 32*3 (authority, pending_authority, bot) + 2+2+8 (fee_bps, pending, change_at)
     // + 8+8 (positions, volume) + 1+1+1 (paused, bot_paused, bump)
     // + 8+2+8+8 (harvest slot, keeper_tip, priority, harvested)
-    // + 32+8 (emergency close) + 8+8 (close/sweep slots) + 96 (reserved)
-    pub const SIZE: usize = 8 + 32 + 32 + 32 + 2 + 2 + 8 + 8 + 8 + 1 + 1 + 1 + 8 + 2 + 8 + 8 + 32 + 8 + 8 + 8 + 96;
+    // + 32+8 (emergency close) + 8+8 (close/sweep slots) + 8 (gas_lamports) + 88 (reserved)
+    pub const SIZE: usize = 8 + 32 + 32 + 32 + 2 + 2 + 8 + 8 + 8 + 1 + 1 + 1 + 8 + 2 + 8 + 8 + 32 + 8 + 8 + 8 + 8 + 88;
 }
 
 #[account]
 pub struct Position {
-    pub owner: Pubkey,
+    pub user_vault: Pubkey,    // UserVault PDA (was: owner custody keypair)
     pub lb_pair: Pubkey,
     pub meteora_position: Pubkey,
     pub side: Side,
@@ -2004,6 +2427,19 @@ pub struct PositionCounter {
 
 impl PositionCounter {
     pub const SIZE: usize = 8 + 8 + 1;
+}
+
+/// Per-user vault PDA. Holds SOL + token ATAs. Replaces custodial keypairs.
+/// Seeds: [b"user_vault", owner.as_ref()]
+/// owner = user's real Solana wallet (immutable withdrawal destination).
+#[account]
+pub struct UserVault {
+    pub owner: Pubkey,   // Real wallet (= PDA seed = withdraw destination)
+    pub bump: u8,
+}
+
+impl UserVault {
+    pub const SIZE: usize = 8 + 32 + 1;
 }
 
 /// Rover authority PDA — owns rover (bribe) positions.
@@ -2046,13 +2482,19 @@ pub struct Initialize<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Token-2022 compatible open_position. All CPI via V2 variants.
-/// Single-signer: meteora_position is a PDA (signed via invoke_signed), not a keypair.
+/// Token-2022 compatible open_position. Bot is sole signer + rent payer.
+/// Tokens come from user vault's ATA. PDA seeds use user_vault.key().
 #[derive(Accounts)]
 #[instruction(amount: u64, min_bin_id: i32, max_bin_id: i32, side: Side)]
 pub struct OpenPositionV2<'info> {
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub bot: Signer<'info>,
+
+    #[account(
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
 
     #[account(mut, seeds = [b"config"], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
@@ -2063,17 +2505,17 @@ pub struct OpenPositionV2<'info> {
 
     #[account(
         init_if_needed,
-        payer = user,
+        payer = bot,
         space = PositionCounter::SIZE,
-        seeds = [b"pos_counter", user.key().as_ref(), lb_pair.key().as_ref()],
+        seeds = [b"pos_counter", user_vault.key().as_ref(), lb_pair.key().as_ref()],
         bump
     )]
     pub position_counter: Account<'info, PositionCounter>,
 
-    /// CHECK: PDA signed via invoke_signed — replaces the old keypair Signer
+    /// CHECK: PDA signed via invoke_signed
     #[account(
         mut,
-        seeds = [b"meteora_pos", user.key().as_ref(), lb_pair.key().as_ref(), &position_counter.count.to_le_bytes()],
+        seeds = [b"meteora_pos", user_vault.key().as_ref(), lb_pair.key().as_ref(), &position_counter.count.to_le_bytes()],
         bump
     )]
     pub meteora_position: UncheckedAccount<'info>,
@@ -2091,7 +2533,7 @@ pub struct OpenPositionV2<'info> {
 
     #[account(
         init,
-        payer = user,
+        payer = bot,
         space = Position::SIZE,
         seeds = [b"position", meteora_position.key().as_ref()],
         bump
@@ -2100,22 +2542,22 @@ pub struct OpenPositionV2<'info> {
 
     #[account(
         init,
-        payer = user,
+        payer = bot,
         space = Vault::SIZE,
         seeds = [b"vault", meteora_position.key().as_ref()],
         bump
     )]
     pub vault: Box<Account<'info, Vault>>,
 
-    /// CHECK: User's deposit token account (Token-2022 compatible). Validated in handler.
+    /// CHECK: User vault's deposit token ATA (Token-2022 compatible). Validated in handler.
     #[account(mut)]
-    pub user_token_account: AccountInfo<'info>,
+    pub user_vault_deposit_ata: AccountInfo<'info>,
 
-    /// CHECK: Vault's token X account. Validated in handler.
+    /// CHECK: Position vault's token X account. Validated in handler.
     #[account(mut)]
     pub vault_token_x: AccountInfo<'info>,
 
-    /// CHECK: Vault's token Y account. Validated in handler.
+    /// CHECK: Position vault's token Y account. Validated in handler.
     #[account(mut)]
     pub vault_token_y: AccountInfo<'info>,
 
@@ -2162,25 +2604,30 @@ pub struct ClosePosition<'info> {
     )]
     pub config: Box<Account<'info, Config>>,
 
+    /// UserVault PDA — receives rent on close + gas deduction source
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+        constraint = user_vault.key() == position.user_vault @ CoreError::Unauthorized,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
     #[account(
         mut,
         seeds = [b"position", position.meteora_position.as_ref()],
         bump = position.bump,
-        close = owner
+        close = user_vault
     )]
     pub position: Box<Account<'info, Position>>,
 
     #[account(
         mut,
-        close = owner,
+        close = user_vault,
         seeds = [b"vault", position.meteora_position.as_ref()],
         bump = vault.bump
     )]
     pub vault: Box<Account<'info, Vault>>,
-
-    /// CHECK: Position owner
-    #[account(mut, constraint = owner.key() == position.owner @ CoreError::Unauthorized)]
-    pub owner: AccountInfo<'info>,
 
     // --- Meteora ---
 
@@ -2231,10 +2678,10 @@ pub struct ClosePosition<'info> {
     #[account(mut, constraint = vault_token_y.owner == vault.key() @ CoreError::InvalidTokenOwner)]
     pub vault_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = owner_token_x.owner == position.owner @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = owner_token_x.owner == position.user_vault @ CoreError::InvalidTokenOwner)]
     pub owner_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = owner_token_y.owner == position.owner @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = owner_token_y.owner == position.user_vault @ CoreError::InvalidTokenOwner)]
     pub owner_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
@@ -2288,8 +2735,17 @@ pub struct BotHarvest<'info> {
     )]
     pub vault: Box<Account<'info, Vault>>,
 
+    /// UserVault PDA — receives harvested tokens, gas deducted from here
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+        constraint = user_vault.key() == position.user_vault @ CoreError::Unauthorized,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
     /// CHECK: Position owner
-    #[account(mut, constraint = owner.key() == position.owner @ CoreError::Unauthorized)]
+    #[account(mut, constraint = owner.key() == position.user_vault @ CoreError::Unauthorized)]
     pub owner: AccountInfo<'info>,
 
     // --- Meteora ---
@@ -2341,10 +2797,10 @@ pub struct BotHarvest<'info> {
     #[account(mut, constraint = vault_token_y.owner == vault.key() @ CoreError::InvalidTokenOwner)]
     pub vault_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = owner_token_x.owner == position.owner @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = owner_token_x.owner == position.user_vault @ CoreError::InvalidTokenOwner)]
     pub owner_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = owner_token_y.owner == position.owner @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = owner_token_y.owner == position.user_vault @ CoreError::InvalidTokenOwner)]
     pub owner_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
@@ -2371,24 +2827,33 @@ pub struct BotHarvest<'info> {
 
 #[derive(Accounts)]
 pub struct UserClose<'info> {
+    /// Caller: authorized bot or vault owner (real wallet)
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub caller: Signer<'info>,
 
     #[account(mut, seeds = [b"config"], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
+
+    /// UserVault PDA — authorization checked in handler body (dual-caller)
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
 
     #[account(
         mut,
         seeds = [b"position", position.meteora_position.as_ref()],
         bump = position.bump,
-        constraint = position.owner == user.key() @ CoreError::Unauthorized,
-        close = user
+        constraint = position.user_vault == user_vault.key() @ CoreError::Unauthorized,
+        close = user_vault
     )]
     pub position: Box<Account<'info, Position>>,
 
     #[account(
         mut,
-        close = user,
+        close = user_vault,
         seeds = [b"vault", position.meteora_position.as_ref()],
         bump = vault.bump
     )]
@@ -2443,10 +2908,10 @@ pub struct UserClose<'info> {
     #[account(mut, constraint = vault_token_y.owner == vault.key() @ CoreError::InvalidTokenOwner)]
     pub vault_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = user_token_x.owner == user.key() @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = user_token_x.owner == user_vault.key() @ CoreError::InvalidTokenOwner)]
     pub user_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = user_token_y.owner == user.key() @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = user_token_y.owner == user_vault.key() @ CoreError::InvalidTokenOwner)]
     pub user_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
@@ -2475,13 +2940,24 @@ pub struct UserClose<'info> {
 
 #[derive(Accounts)]
 pub struct ClaimFees<'info> {
+    /// Caller: authorized bot or vault owner
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    /// UserVault PDA — authorization checked in handler body
+    #[account(
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
 
     #[account(
         seeds = [b"position", position.meteora_position.as_ref()],
         bump = position.bump,
-        constraint = position.owner == user.key() @ CoreError::Unauthorized
+        constraint = position.user_vault == user_vault.key() @ CoreError::Unauthorized
     )]
     pub position: Box<Account<'info, Position>>,
 
@@ -2537,10 +3013,10 @@ pub struct ClaimFees<'info> {
     #[account(mut, constraint = vault_token_y.owner == vault.key() @ CoreError::InvalidTokenOwner)]
     pub vault_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = user_token_x.owner == user.key() @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = user_token_x.owner == user_vault.key() @ CoreError::InvalidTokenOwner)]
     pub user_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = user_token_y.owner == user.key() @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = user_token_y.owner == user_vault.key() @ CoreError::InvalidTokenOwner)]
     pub user_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     /// CHECK: Token X program — must be SPL Token or Token-2022
@@ -2554,6 +3030,209 @@ pub struct ClaimFees<'info> {
     #[account(constraint = memo_program.key() == SPL_MEMO_PROGRAM_ID @ CoreError::InvalidProgram)]
     pub memo_program: AccountInfo<'info>,
 }
+
+// ============ USER VAULT CONTEXTS ============
+
+#[derive(Accounts)]
+pub struct CreateVault<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: The real wallet owner. Not required to be signer — PDA seed enforcement
+    /// means the vault is cryptographically bound to this pubkey regardless.
+    pub owner: AccountInfo<'info>,
+
+    #[account(
+        init,
+        payer = payer,
+        space = UserVault::SIZE,
+        seeds = [b"user_vault", owner.key().as_ref()],
+        bump
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawSol<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    /// CHECK: Must be vault owner. Receives SOL.
+    #[account(mut, constraint = owner.key() == user_vault.owner @ CoreError::InvalidVaultOwner)]
+    pub owner: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawToken<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    /// CHECK: Token mint for decimals
+    pub token_mint: AccountInfo<'info>,
+
+    #[account(mut, constraint = vault_token_account.owner == user_vault.key() @ CoreError::InvalidTokenOwner)]
+    pub vault_token_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(mut, constraint = owner_token_account.owner == user_vault.owner @ CoreError::InvalidTokenOwner)]
+    pub owner_token_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// CHECK: Token program — must be SPL Token or Token-2022
+    #[account(constraint = *token_program.key == anchor_spl::token::ID || *token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_program: AccountInfo<'info>,
+}
+
+// ============ SOL WRAPPING CONTEXT ============
+
+#[derive(Accounts)]
+pub struct WrapSolInVault<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    /// CHECK: Vault's WSOL ATA. Must be owned by SPL Token with mint = NATIVE_MINT.
+    /// Lamport credit is validated by sync_native CPI.
+    #[account(mut)]
+    pub vault_wsol_ata: AccountInfo<'info>,
+
+    /// CHECK: SPL Token program (for sync_native)
+    #[account(constraint = token_program.key() == anchor_spl::token::ID @ CoreError::InvalidProgram)]
+    pub token_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct UnwrapWsolInVault<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    /// CHECK: Vault's WSOL ATA to close. Must be owned by vault PDA.
+    #[account(mut)]
+    pub vault_wsol_ata: AccountInfo<'info>,
+
+    /// CHECK: SPL Token program (for close_account)
+    #[account(constraint = *token_program.key == anchor_spl::token::ID || *token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_program: AccountInfo<'info>,
+}
+
+// ============ CPI WRAPPER CONTEXTS ============
+
+#[derive(Accounts)]
+pub struct VaultBurnAndMint<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    /// CHECK: bank-mint BankConfig PDA
+    #[account(mut)]
+    pub bank_config: AccountInfo<'info>,
+
+    /// CHECK: CRANK mint
+    #[account(mut)]
+    pub crank_mint: AccountInfo<'info>,
+
+    /// CHECK: BANK mint
+    #[account(mut)]
+    pub bank_mint: AccountInfo<'info>,
+
+    /// CHECK: Vault's CRANK ATA (owned by user_vault PDA)
+    #[account(mut)]
+    pub vault_crank_ata: AccountInfo<'info>,
+
+    /// CHECK: Vault's BANK ATA (owned by user_vault PDA)
+    #[account(mut)]
+    pub vault_bank_ata: AccountInfo<'info>,
+
+    /// CHECK: Token program for CRANK
+    pub crank_token_program: AccountInfo<'info>,
+
+    /// CHECK: Token program for BANK
+    pub bank_token_program: AccountInfo<'info>,
+
+    /// CHECK: bank-mint program — validated in handler
+    pub bank_mint_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct VaultVote<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    /// CHECK: gauge-voter GaugeConfig PDA
+    pub gauge_config: AccountInfo<'info>,
+
+    /// CHECK: BANK mint
+    pub bank_mint_account: AccountInfo<'info>,
+
+    /// CHECK: Vault's BANK ATA (owned by user_vault PDA)
+    pub vault_bank_ata: AccountInfo<'info>,
+
+    /// CHECK: Token program
+    pub token_program: AccountInfo<'info>,
+
+    /// CHECK: gauge-voter program — validated in handler
+    pub gauge_voter_program: AccountInfo<'info>,
+    // PoolGauge accounts passed via remaining_accounts
+}
+
+// ============ ADMIN CONTEXTS ============
 
 #[derive(Accounts)]
 pub struct AdminOnly<'info> {
@@ -2602,7 +3281,7 @@ pub struct ApplyEmergencyClose<'info> {
     pub vault: Box<Account<'info, Vault>>,
 
     /// CHECK: Position owner — receives any remaining vault tokens
-    #[account(constraint = owner.key() == position.owner @ CoreError::Unauthorized)]
+    #[account(constraint = owner.key() == position.user_vault @ CoreError::Unauthorized)]
     pub owner: AccountInfo<'info>,
 
     #[account(mut, constraint = vault_token_x.owner == vault.key() @ CoreError::InvalidTokenOwner)]
@@ -2611,10 +3290,10 @@ pub struct ApplyEmergencyClose<'info> {
     #[account(mut, constraint = vault_token_y.owner == vault.key() @ CoreError::InvalidTokenOwner)]
     pub vault_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = owner_token_x.owner == position.owner @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = owner_token_x.owner == position.user_vault @ CoreError::InvalidTokenOwner)]
     pub owner_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = owner_token_y.owner == position.owner @ CoreError::InvalidTokenOwner)]
+    #[account(mut, constraint = owner_token_y.owner == position.user_vault @ CoreError::InvalidTokenOwner)]
     pub owner_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     /// CHECK: Token X mint
@@ -3051,4 +3730,12 @@ pub enum CoreError {
     InvalidTraderDest,
     #[msg("Trader destination not set — call set_trader_dest first")]
     TraderDestNotSet,
+    #[msg("Insufficient vault balance for withdrawal")]
+    InsufficientBalance,
+    #[msg("Invalid vault owner — does not match PDA seed")]
+    InvalidVaultOwner,
+    #[msg("Caller must be authorized bot or vault owner")]
+    UnauthorizedCaller,
+    #[msg("Invalid external program ID")]
+    InvalidExternalProgram,
 }

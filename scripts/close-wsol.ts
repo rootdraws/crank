@@ -1,62 +1,41 @@
 /**
- * close-wsol.ts — Close a user's WSOL ATA and return SOL to their wallet.
- * Usage: WALLET=<pubkey> npx tsx scripts/close-wsol.ts
+ * close-wsol.ts — Show vault WSOL balance and instructions for withdrawal.
+ * PDA vault architecture: WSOL in vault ATAs is handled by on-chain withdraw_sol.
+ * Usage: npx tsx scripts/close-wsol.ts <discord_user_id>
  */
-
-import { Connection, PublicKey, Transaction } from '@solana/web3.js';
-import { createCloseAccountInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, NATIVE_MINT } from '@solana/spl-token';
 import { WalletService } from '../packages/core-sdk/wallet-service';
 import dotenv from 'dotenv';
-import path from 'path';
+import * as path from 'path';
 import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.join(__dirname, '..', 'bot', '.env') });
-
-const WSOL = new PublicKey('So11111111111111111111111111111111111111112');
-const TOKEN_PROGRAM = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const __dirname2 = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname2, '../bot/.env') });
 
 async function main() {
-  const walletAddr = process.env.WALLET;
-  if (!walletAddr) { console.error('Usage: WALLET=<pubkey> npx tsx scripts/close-wsol.ts'); process.exit(1); }
+  const userId = process.argv[2];
+  if (!userId) { console.error('Usage: npx tsx scripts/close-wsol.ts <discord_user_id>'); process.exit(1); }
 
-  const rpc = process.env.HELIUS_RPC_URL || process.env.RPC_URL;
-  if (!rpc) { console.error('RPC_URL not set'); process.exit(1); }
+  const conn = new Connection(process.env.RPC_URL!, 'confirmed');
+  const ws = new WalletService(path.join(__dirname2, '../data/crankbot.json'));
 
-  const c = new Connection(rpc);
-  const ws = new WalletService();
+  const vaultPda = ws.getVaultPda(userId);
+  if (!vaultPda) { console.error(`No vault found for user ${userId}`); process.exit(1); }
 
-  const userId = ws.getUserIdForOwner(walletAddr);
-  if (!userId) { console.error('Wallet not found in DB'); process.exit(1); }
+  const vaultBalance = await conn.getBalance(vaultPda);
+  console.log(`Vault: ${vaultPda.toBase58()}`);
+  console.log(`SOL balance: ${(vaultBalance / 1e9).toFixed(4)} SOL`);
 
-  const keypair = ws.getOrCreate(userId);
-  const wallet = keypair.publicKey;
-  const wsolAta = getAssociatedTokenAddressSync(WSOL, wallet, false, TOKEN_PROGRAM);
-
-  const info = await c.getAccountInfo(wsolAta);
-  if (!info) { console.log('No WSOL ATA — nothing to close.'); ws.close(); return; }
-
-  const balance = Buffer.from(info.data).readBigUInt64LE(64);
-  console.log(`WSOL ATA: ${wsolAta.toBase58()}`);
-  console.log(`WSOL balance: ${Number(balance) / 1e9} SOL`);
-
-  const tx = new Transaction().add(
-    createCloseAccountInstruction(wsolAta, wallet, wallet, [], TOKEN_PROGRAM)
-  );
-  const { blockhash, lastValidBlockHeight } = await c.getLatestBlockhash();
-  tx.recentBlockhash = blockhash;
-  tx.lastValidBlockHeight = lastValidBlockHeight;
-  tx.feePayer = wallet;
-  tx.sign(keypair);
-
-  const sig = await c.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-  await c.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
-
-  console.log(`Closed. TX: ${sig}`);
-  const newBal = await c.getBalance(wallet);
-  console.log(`New SOL balance: ${newBal / 1e9}`);
-  ws.close();
+  const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, vaultPda, true, TOKEN_PROGRAM_ID);
+  const wsolInfo = await conn.getAccountInfo(wsolAta);
+  if (wsolInfo) {
+    const wsolBalance = Buffer.from(wsolInfo.data).readBigUInt64LE(64);
+    console.log(`WSOL ATA: ${wsolAta.toBase58()}`);
+    console.log(`WSOL balance: ${Number(wsolBalance) / 1e9} SOL`);
+    console.log(`\nTo withdraw: use /withdraw SOL <amount> in Discord.`);
+    console.log(`On-chain withdraw_sol handles native SOL from vault PDA.`);
+  } else {
+    console.log(`No WSOL ATA found.`);
+  }
 }
-
-main().catch(e => { console.error(e.message); process.exit(1); });
+main().catch(e => { console.error(e); process.exit(1); });

@@ -12,6 +12,7 @@ import {
   fixEncoderSize,
   getBytesDecoder,
   getBytesEncoder,
+  getProgramDerivedAddress,
   getStructDecoder,
   getStructEncoder,
   transformEncoder,
@@ -43,7 +44,9 @@ export function getClaimFeesDiscriminatorBytes() {
 
 export type ClaimFeesInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
-  TAccountUser extends string | AccountMeta<string> = string,
+  TAccountCaller extends string | AccountMeta<string> = string,
+  TAccountConfig extends string | AccountMeta<string> = string,
+  TAccountUserVault extends string | AccountMeta<string> = string,
   TAccountPosition extends string | AccountMeta<string> = string,
   TAccountVault extends string | AccountMeta<string> = string,
   TAccountMeteoraPosition extends string | AccountMeta<string> = string,
@@ -68,9 +71,16 @@ export type ClaimFeesInstruction<
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
-      TAccountUser extends string
-        ? WritableSignerAccount<TAccountUser> & AccountSignerMeta<TAccountUser>
-        : TAccountUser,
+      TAccountCaller extends string
+        ? WritableSignerAccount<TAccountCaller> &
+            AccountSignerMeta<TAccountCaller>
+        : TAccountCaller,
+      TAccountConfig extends string
+        ? ReadonlyAccount<TAccountConfig>
+        : TAccountConfig,
+      TAccountUserVault extends string
+        ? ReadonlyAccount<TAccountUserVault>
+        : TAccountUserVault,
       TAccountPosition extends string
         ? ReadonlyAccount<TAccountPosition>
         : TAccountPosition,
@@ -159,8 +169,10 @@ export function getClaimFeesInstructionDataCodec(): FixedSizeCodec<
   );
 }
 
-export type ClaimFeesInput<
-  TAccountUser extends string = string,
+export type ClaimFeesAsyncInput<
+  TAccountCaller extends string = string,
+  TAccountConfig extends string = string,
+  TAccountUserVault extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
   TAccountMeteoraPosition extends string = string,
@@ -181,7 +193,236 @@ export type ClaimFeesInput<
   TAccountTokenYProgram extends string = string,
   TAccountMemoProgram extends string = string,
 > = {
-  user: TransactionSigner<TAccountUser>;
+  /** Caller: authorized bot or vault owner */
+  caller: TransactionSigner<TAccountCaller>;
+  config?: Address<TAccountConfig>;
+  /** UserVault PDA — authorization checked in handler body */
+  userVault: Address<TAccountUserVault>;
+  position: Address<TAccountPosition>;
+  vault: Address<TAccountVault>;
+  meteoraPosition: Address<TAccountMeteoraPosition>;
+  lbPair: Address<TAccountLbPair>;
+  binArrayLower: Address<TAccountBinArrayLower>;
+  binArrayUpper: Address<TAccountBinArrayUpper>;
+  reserveX: Address<TAccountReserveX>;
+  reserveY: Address<TAccountReserveY>;
+  tokenXMint: Address<TAccountTokenXMint>;
+  tokenYMint: Address<TAccountTokenYMint>;
+  eventAuthority: Address<TAccountEventAuthority>;
+  dlmmProgram: Address<TAccountDlmmProgram>;
+  vaultTokenX: Address<TAccountVaultTokenX>;
+  vaultTokenY: Address<TAccountVaultTokenY>;
+  userTokenX: Address<TAccountUserTokenX>;
+  userTokenY: Address<TAccountUserTokenY>;
+  tokenXProgram: Address<TAccountTokenXProgram>;
+  tokenYProgram: Address<TAccountTokenYProgram>;
+  memoProgram: Address<TAccountMemoProgram>;
+};
+
+export async function getClaimFeesInstructionAsync<
+  TAccountCaller extends string,
+  TAccountConfig extends string,
+  TAccountUserVault extends string,
+  TAccountPosition extends string,
+  TAccountVault extends string,
+  TAccountMeteoraPosition extends string,
+  TAccountLbPair extends string,
+  TAccountBinArrayLower extends string,
+  TAccountBinArrayUpper extends string,
+  TAccountReserveX extends string,
+  TAccountReserveY extends string,
+  TAccountTokenXMint extends string,
+  TAccountTokenYMint extends string,
+  TAccountEventAuthority extends string,
+  TAccountDlmmProgram extends string,
+  TAccountVaultTokenX extends string,
+  TAccountVaultTokenY extends string,
+  TAccountUserTokenX extends string,
+  TAccountUserTokenY extends string,
+  TAccountTokenXProgram extends string,
+  TAccountTokenYProgram extends string,
+  TAccountMemoProgram extends string,
+  TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
+>(
+  input: ClaimFeesAsyncInput<
+    TAccountCaller,
+    TAccountConfig,
+    TAccountUserVault,
+    TAccountPosition,
+    TAccountVault,
+    TAccountMeteoraPosition,
+    TAccountLbPair,
+    TAccountBinArrayLower,
+    TAccountBinArrayUpper,
+    TAccountReserveX,
+    TAccountReserveY,
+    TAccountTokenXMint,
+    TAccountTokenYMint,
+    TAccountEventAuthority,
+    TAccountDlmmProgram,
+    TAccountVaultTokenX,
+    TAccountVaultTokenY,
+    TAccountUserTokenX,
+    TAccountUserTokenY,
+    TAccountTokenXProgram,
+    TAccountTokenYProgram,
+    TAccountMemoProgram
+  >,
+  config?: { programAddress?: TProgramAddress }
+): Promise<
+  ClaimFeesInstruction<
+    TProgramAddress,
+    TAccountCaller,
+    TAccountConfig,
+    TAccountUserVault,
+    TAccountPosition,
+    TAccountVault,
+    TAccountMeteoraPosition,
+    TAccountLbPair,
+    TAccountBinArrayLower,
+    TAccountBinArrayUpper,
+    TAccountReserveX,
+    TAccountReserveY,
+    TAccountTokenXMint,
+    TAccountTokenYMint,
+    TAccountEventAuthority,
+    TAccountDlmmProgram,
+    TAccountVaultTokenX,
+    TAccountVaultTokenY,
+    TAccountUserTokenX,
+    TAccountUserTokenY,
+    TAccountTokenXProgram,
+    TAccountTokenYProgram,
+    TAccountMemoProgram
+  >
+> {
+  // Program address.
+  const programAddress = config?.programAddress ?? BIN_FARM_PROGRAM_ADDRESS;
+
+  // Original accounts.
+  const originalAccounts = {
+    caller: { value: input.caller ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    userVault: { value: input.userVault ?? null, isWritable: false },
+    position: { value: input.position ?? null, isWritable: false },
+    vault: { value: input.vault ?? null, isWritable: false },
+    meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
+    lbPair: { value: input.lbPair ?? null, isWritable: true },
+    binArrayLower: { value: input.binArrayLower ?? null, isWritable: true },
+    binArrayUpper: { value: input.binArrayUpper ?? null, isWritable: true },
+    reserveX: { value: input.reserveX ?? null, isWritable: true },
+    reserveY: { value: input.reserveY ?? null, isWritable: true },
+    tokenXMint: { value: input.tokenXMint ?? null, isWritable: false },
+    tokenYMint: { value: input.tokenYMint ?? null, isWritable: false },
+    eventAuthority: { value: input.eventAuthority ?? null, isWritable: false },
+    dlmmProgram: { value: input.dlmmProgram ?? null, isWritable: false },
+    vaultTokenX: { value: input.vaultTokenX ?? null, isWritable: true },
+    vaultTokenY: { value: input.vaultTokenY ?? null, isWritable: true },
+    userTokenX: { value: input.userTokenX ?? null, isWritable: true },
+    userTokenY: { value: input.userTokenY ?? null, isWritable: true },
+    tokenXProgram: { value: input.tokenXProgram ?? null, isWritable: false },
+    tokenYProgram: { value: input.tokenYProgram ?? null, isWritable: false },
+    memoProgram: { value: input.memoProgram ?? null, isWritable: false },
+  };
+  const accounts = originalAccounts as Record<
+    keyof typeof originalAccounts,
+    ResolvedAccount
+  >;
+
+  // Resolve default values.
+  if (!accounts.config.value) {
+    accounts.config.value = await getProgramDerivedAddress({
+      programAddress,
+      seeds: [
+        getBytesEncoder().encode(new Uint8Array([99, 111, 110, 102, 105, 103])),
+      ],
+    });
+  }
+
+  const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
+  return Object.freeze({
+    accounts: [
+      getAccountMeta(accounts.caller),
+      getAccountMeta(accounts.config),
+      getAccountMeta(accounts.userVault),
+      getAccountMeta(accounts.position),
+      getAccountMeta(accounts.vault),
+      getAccountMeta(accounts.meteoraPosition),
+      getAccountMeta(accounts.lbPair),
+      getAccountMeta(accounts.binArrayLower),
+      getAccountMeta(accounts.binArrayUpper),
+      getAccountMeta(accounts.reserveX),
+      getAccountMeta(accounts.reserveY),
+      getAccountMeta(accounts.tokenXMint),
+      getAccountMeta(accounts.tokenYMint),
+      getAccountMeta(accounts.eventAuthority),
+      getAccountMeta(accounts.dlmmProgram),
+      getAccountMeta(accounts.vaultTokenX),
+      getAccountMeta(accounts.vaultTokenY),
+      getAccountMeta(accounts.userTokenX),
+      getAccountMeta(accounts.userTokenY),
+      getAccountMeta(accounts.tokenXProgram),
+      getAccountMeta(accounts.tokenYProgram),
+      getAccountMeta(accounts.memoProgram),
+    ],
+    data: getClaimFeesInstructionDataEncoder().encode({}),
+    programAddress,
+  } as ClaimFeesInstruction<
+    TProgramAddress,
+    TAccountCaller,
+    TAccountConfig,
+    TAccountUserVault,
+    TAccountPosition,
+    TAccountVault,
+    TAccountMeteoraPosition,
+    TAccountLbPair,
+    TAccountBinArrayLower,
+    TAccountBinArrayUpper,
+    TAccountReserveX,
+    TAccountReserveY,
+    TAccountTokenXMint,
+    TAccountTokenYMint,
+    TAccountEventAuthority,
+    TAccountDlmmProgram,
+    TAccountVaultTokenX,
+    TAccountVaultTokenY,
+    TAccountUserTokenX,
+    TAccountUserTokenY,
+    TAccountTokenXProgram,
+    TAccountTokenYProgram,
+    TAccountMemoProgram
+  >);
+}
+
+export type ClaimFeesInput<
+  TAccountCaller extends string = string,
+  TAccountConfig extends string = string,
+  TAccountUserVault extends string = string,
+  TAccountPosition extends string = string,
+  TAccountVault extends string = string,
+  TAccountMeteoraPosition extends string = string,
+  TAccountLbPair extends string = string,
+  TAccountBinArrayLower extends string = string,
+  TAccountBinArrayUpper extends string = string,
+  TAccountReserveX extends string = string,
+  TAccountReserveY extends string = string,
+  TAccountTokenXMint extends string = string,
+  TAccountTokenYMint extends string = string,
+  TAccountEventAuthority extends string = string,
+  TAccountDlmmProgram extends string = string,
+  TAccountVaultTokenX extends string = string,
+  TAccountVaultTokenY extends string = string,
+  TAccountUserTokenX extends string = string,
+  TAccountUserTokenY extends string = string,
+  TAccountTokenXProgram extends string = string,
+  TAccountTokenYProgram extends string = string,
+  TAccountMemoProgram extends string = string,
+> = {
+  /** Caller: authorized bot or vault owner */
+  caller: TransactionSigner<TAccountCaller>;
+  config: Address<TAccountConfig>;
+  /** UserVault PDA — authorization checked in handler body */
+  userVault: Address<TAccountUserVault>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
@@ -204,7 +445,9 @@ export type ClaimFeesInput<
 };
 
 export function getClaimFeesInstruction<
-  TAccountUser extends string,
+  TAccountCaller extends string,
+  TAccountConfig extends string,
+  TAccountUserVault extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
   TAccountMeteoraPosition extends string,
@@ -227,7 +470,9 @@ export function getClaimFeesInstruction<
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
   input: ClaimFeesInput<
-    TAccountUser,
+    TAccountCaller,
+    TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
     TAccountMeteoraPosition,
@@ -251,7 +496,9 @@ export function getClaimFeesInstruction<
   config?: { programAddress?: TProgramAddress }
 ): ClaimFeesInstruction<
   TProgramAddress,
-  TAccountUser,
+  TAccountCaller,
+  TAccountConfig,
+  TAccountUserVault,
   TAccountPosition,
   TAccountVault,
   TAccountMeteoraPosition,
@@ -277,7 +524,9 @@ export function getClaimFeesInstruction<
 
   // Original accounts.
   const originalAccounts = {
-    user: { value: input.user ?? null, isWritable: true },
+    caller: { value: input.caller ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: false },
+    userVault: { value: input.userVault ?? null, isWritable: false },
     position: { value: input.position ?? null, isWritable: false },
     vault: { value: input.vault ?? null, isWritable: false },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
@@ -306,7 +555,9 @@ export function getClaimFeesInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.user),
+      getAccountMeta(accounts.caller),
+      getAccountMeta(accounts.config),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
       getAccountMeta(accounts.meteoraPosition),
@@ -331,7 +582,9 @@ export function getClaimFeesInstruction<
     programAddress,
   } as ClaimFeesInstruction<
     TProgramAddress,
-    TAccountUser,
+    TAccountCaller,
+    TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
     TAccountMeteoraPosition,
@@ -360,26 +613,30 @@ export type ParsedClaimFeesInstruction<
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    user: TAccountMetas[0];
-    position: TAccountMetas[1];
-    vault: TAccountMetas[2];
-    meteoraPosition: TAccountMetas[3];
-    lbPair: TAccountMetas[4];
-    binArrayLower: TAccountMetas[5];
-    binArrayUpper: TAccountMetas[6];
-    reserveX: TAccountMetas[7];
-    reserveY: TAccountMetas[8];
-    tokenXMint: TAccountMetas[9];
-    tokenYMint: TAccountMetas[10];
-    eventAuthority: TAccountMetas[11];
-    dlmmProgram: TAccountMetas[12];
-    vaultTokenX: TAccountMetas[13];
-    vaultTokenY: TAccountMetas[14];
-    userTokenX: TAccountMetas[15];
-    userTokenY: TAccountMetas[16];
-    tokenXProgram: TAccountMetas[17];
-    tokenYProgram: TAccountMetas[18];
-    memoProgram: TAccountMetas[19];
+    /** Caller: authorized bot or vault owner */
+    caller: TAccountMetas[0];
+    config: TAccountMetas[1];
+    /** UserVault PDA — authorization checked in handler body */
+    userVault: TAccountMetas[2];
+    position: TAccountMetas[3];
+    vault: TAccountMetas[4];
+    meteoraPosition: TAccountMetas[5];
+    lbPair: TAccountMetas[6];
+    binArrayLower: TAccountMetas[7];
+    binArrayUpper: TAccountMetas[8];
+    reserveX: TAccountMetas[9];
+    reserveY: TAccountMetas[10];
+    tokenXMint: TAccountMetas[11];
+    tokenYMint: TAccountMetas[12];
+    eventAuthority: TAccountMetas[13];
+    dlmmProgram: TAccountMetas[14];
+    vaultTokenX: TAccountMetas[15];
+    vaultTokenY: TAccountMetas[16];
+    userTokenX: TAccountMetas[17];
+    userTokenY: TAccountMetas[18];
+    tokenXProgram: TAccountMetas[19];
+    tokenYProgram: TAccountMetas[20];
+    memoProgram: TAccountMetas[21];
   };
   data: ClaimFeesInstructionData;
 };
@@ -392,7 +649,7 @@ export function parseClaimFeesInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedClaimFeesInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 20) {
+  if (instruction.accounts.length < 22) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -405,7 +662,9 @@ export function parseClaimFeesInstruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
-      user: getNextAccount(),
+      caller: getNextAccount(),
+      config: getNextAccount(),
+      userVault: getNextAccount(),
       position: getNextAccount(),
       vault: getNextAccount(),
       meteoraPosition: getNextAccount(),

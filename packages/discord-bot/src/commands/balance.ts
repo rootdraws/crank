@@ -3,34 +3,24 @@ import { Transaction } from '@solana/web3.js';
 import { createCloseAccountInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, KNOWN_TOKENS, NATIVE_MINT, signAndSendLegacy } from '@crankbot/core-sdk';
 import { formatBalance } from '../formatter';
-import { tryLockDepositor } from '../deposit-detect';
 import type { BotContext } from '../index';
 
 export async function handleBalance(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
   const userId = `discord:${interaction.user.id}`;
-  const keypair = ctx.walletService.getOrCreate(userId);
-  const pubkey = keypair.publicKey;
+  const vaultPda = ctx.walletService.getVaultPda(userId);
+  if (!vaultPda) {
+    await interaction.reply({ content: 'No vault found. Run `/start wallet:<your-address>` first.', ephemeral: true });
+    return;
+  }
+  const pubkey = vaultPda;
 
   await interaction.deferReply({ ephemeral: true });
 
-  // Auto-detect depositor and lock as withdraw address
-  const withdrawAddr = await tryLockDepositor(ctx.connection, ctx.walletService, userId);
+  const withdrawAddr = ctx.walletService.getWithdrawAddress(userId);
 
-  // Auto-unwrap any WSOL before showing balance
-  try {
-    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, pubkey, false, TOKEN_PROGRAM_ID);
-    const wsolInfo = await ctx.connection.getAccountInfo(wsolAta);
-    if (wsolInfo && wsolInfo.data.length >= 72) {
-      const wsolBalance = Buffer.from(wsolInfo.data).readBigUInt64LE(64);
-      if (wsolBalance > 0n || wsolInfo) {
-        const tx = new Transaction().add(
-          createCloseAccountInstruction(wsolAta, pubkey, pubkey, [], TOKEN_PROGRAM_ID)
-        );
-        await signAndSendLegacy(tx, keypair, ctx.connection);
-      }
-    }
-  } catch { /* no WSOL ATA or close failed — continue */ }
-
+  // PDA vault: no WSOL auto-unwrap on balance check. Vault holds native SOL
+  // directly; WSOL in vault ATAs is from harvests/claims and is unwrapped on
+  // /withdraw SOL via unwrap_wsol_in_vault.
   const solBalance = await ctx.connection.getBalance(pubkey);
   const tokenAccounts = await ctx.connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
   const token2022Accounts = await ctx.connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_2022_PROGRAM_ID }).catch(() => ({ value: [] }));
@@ -40,7 +30,7 @@ export async function handleBalance(interaction: ChatInputCommandInteraction, ct
     const parsed = account.data.parsed.info;
     const amount = parseFloat(parsed.tokenAmount.uiAmount || '0');
     if (amount <= 0) continue;
-    if (parsed.mint === NATIVE_MINT.toBase58()) continue; // already unwrapped above
+    if (parsed.mint === NATIVE_MINT.toBase58()) continue; // WSOL is transient — auto-unwrapped to native SOL by harvest-executor / /withdraw SOL
     const symbol = KNOWN_TOKENS[parsed.mint] || parsed.mint.slice(0, 8) + '...';
     tokens.push({ symbol, amount });
   }

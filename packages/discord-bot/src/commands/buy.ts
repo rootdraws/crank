@@ -1,6 +1,7 @@
 import { ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { PublicKey, VersionedTransaction, TransactionMessage, Transaction } from '@solana/web3.js';
 import { address } from '@solana/kit';
+import { BN } from '@coral-xyz/anchor';
 import {
   getOpenPositionV2InstructionAsync,
   Side,
@@ -35,8 +36,8 @@ export async function handleOpenPosition(
   const parsed = parseCommand(rangeStr);
   if (!parsed) {
     const example = side === 'Buy'
-      ? '/buy SOL 84 to 74 1000 USDC'
-      : '/sell SOL 98 to 115 10 SOL';
+      ? '/buy CRANK 15k to 20k 0.5 SOL'
+      : '/sell CRANK 25k to 35k 4000000 CRANK';
     const err = formatErrorBig('could not parse that.', `e.g. ${example}`);
     await interaction.reply({ content: err.monke, ephemeral: true });
     await interaction.followUp({ content: err.body, ephemeral: true });
@@ -55,14 +56,25 @@ export async function handleOpenPosition(
     }
   }
 
-  // Check minimum SOL balance for rent + gas
+  // Ensure user has a vault
+  const vaultPda = ctx.walletService.getVaultPda(userId);
+  if (!vaultPda) {
+    const err = formatErrorBig(
+      'no vault found.',
+      'Run `/start wallet:<your-solana-address>` first to create your vault.'
+    );
+    await interaction.reply({ content: err.monke, ephemeral: true });
+    await interaction.followUp({ content: err.body, ephemeral: true });
+    return;
+  }
+
+  // Check minimum SOL balance in vault for rent + gas
   const MIN_SOL_LAMPORTS = 250_000_000; // 0.25 SOL
-  const keypair = ctx.walletService.getOrCreate(userId);
-  const solBalance = await ctx.connection.getBalance(keypair.publicKey);
+  const solBalance = await ctx.connection.getBalance(vaultPda);
   if (solBalance < MIN_SOL_LAMPORTS) {
     const err = formatErrorBig(
-      `need at least 0.25 SOL for rent + gas (you have ${(solBalance / 1e9).toFixed(3)} SOL).`,
-      `/deposit to see your address. We recommend adding 0.5 SOL for transactions.`
+      `need at least 0.25 SOL in your vault (you have ${(solBalance / 1e9).toFixed(3)} SOL).`,
+      `Deposit SOL to \`${vaultPda.toBase58()}\` — your vault address.`
     );
     await interaction.reply({ content: err.monke, ephemeral: true });
     await interaction.followUp({ content: err.body, ephemeral: true });
@@ -161,23 +173,23 @@ export async function handleOpenPosition(
 
     const lockKey = `${userId}:${selectedPool.address}`;
 
-    const walletPubkey = ctx.walletService.getOrCreate(userId).publicKey;
+    const { getUserVaultPDA } = await import('@crankbot/core-sdk');
+    const bot = ctx.botKeypair;
 
     for (const pos of positions) {
       const result = await withUserLock(lockKey, async () => {
-        const keypair = ctx.walletService.getOrCreate(userId);
-        const user = keypair.publicKey;
         const poolPubkey = new PublicKey(selectedPool.address);
-
         const cpi = await resolveMeteoraCPIAccounts(ctx.connection, poolPubkey, pos.minBinId, pos.maxBinId);
 
         const depositMint = side === 'Buy' ? cpi.tokenYMint : cpi.tokenXMint;
         const depositTokenProgram = side === 'Buy' ? cpi.tokenYProgramId : cpi.tokenXProgramId;
         const depositDecimals = side === 'Buy' ? selectedPool.decimalsY : selectedPool.decimalsX;
-        const positionAmount = BigInt(Math.round(amount * pos.depositFraction * Math.pow(10, depositDecimals)));
+        const scaledAmount = BigInt(Math.round(amount * 1e9)) * BigInt(Math.round(pos.depositFraction * 1e9));
+        const positionAmount = scaledAmount * BigInt(Math.pow(10, depositDecimals)) / BigInt(1e18);
+        const positionAmountBN = new BN(positionAmount.toString());
 
-        // Read position counter
-        const [counterPDA] = getPositionCounterPDA(user, cpi.lbPair);
+        // PDA seeds use vaultPda (not user wallet)
+        const [counterPDA] = getPositionCounterPDA(vaultPda!, cpi.lbPair);
         let posCounter = 0;
         try {
           const counterInfo = await ctx.connection.getAccountInfo(counterPDA);
@@ -189,107 +201,94 @@ export async function handleOpenPosition(
           }
         } catch { /* first position */ }
 
-        const [meteoraPositionPDA] = getMeteoraPositionPDA(user, cpi.lbPair, posCounter);
+        const [meteoraPositionPDA] = getMeteoraPositionPDA(vaultPda!, cpi.lbPair, posCounter);
         const [positionPDA] = getPositionPDA(meteoraPositionPDA);
-        const [vaultPDA] = getVaultPDA(meteoraPositionPDA);
+        const [posVaultPDA] = getVaultPDA(meteoraPositionPDA);
 
+        // Vault's deposit ATA (tokens/WSOL come from user vault PDA's ATAs)
+        const userVaultDepositAta = deriveATA(depositMint, vaultPda!, depositTokenProgram, true);
+        const posVaultTokenX = deriveATA(cpi.tokenXMint, posVaultPDA, cpi.tokenXProgramId, true);
+        const posVaultTokenY = deriveATA(cpi.tokenYMint, posVaultPDA, cpi.tokenYProgramId, true);
+
+        // TX 1: setup (bot pays)
+        // For native SOL buys: bot wraps SOL from vault PDA to WSOL ATA
+        // (on-chain open_position_v2 handles transfer from vault ATA → position vault ATA)
         const isNative = depositMint.equals(NATIVE_MINT);
-        const userTokenAccount = deriveATA(depositMint, user, depositTokenProgram, false);
-        const vaultTokenX = deriveATA(cpi.tokenXMint, vaultPDA, cpi.tokenXProgramId, true);
-        const vaultTokenY = deriveATA(cpi.tokenYMint, vaultPDA, cpi.tokenYProgramId, true);
-
-        // TX 1: setup
-        const initBinArrayIxs = await ensureBinArraysExist(ctx.connection, cpi.lbPair, pos.minBinId, pos.maxBinId, user);
+        const initBinArrayIxs = await ensureBinArraysExist(ctx.connection, cpi.lbPair, pos.minBinId, pos.maxBinId, bot.publicKey);
         const extraSetupIxs = [...initBinArrayIxs];
-        if (isNative) extraSetupIxs.push(...buildWrapSolIxs(user, userTokenAccount, positionAmount));
 
         const setupTx = await buildSetupTx(
-          ctx.connection, user,
+          ctx.connection, bot.publicKey,
           [
-            { ata: userTokenAccount, owner: user, mint: depositMint, tokenProgram: depositTokenProgram },
-            { ata: vaultTokenX, owner: vaultPDA, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
-            { ata: vaultTokenY, owner: vaultPDA, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+            { ata: userVaultDepositAta, owner: vaultPda!, mint: depositMint, tokenProgram: depositTokenProgram },
+            { ata: posVaultTokenX, owner: posVaultPDA, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+            { ata: posVaultTokenY, owner: posVaultPDA, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
           ],
           extraSetupIxs
         );
 
         if (setupTx) {
-          await signAndSendLegacy(setupTx, keypair, ctx.connection);
+          await signAndSendLegacy(setupTx, bot, ctx.connection);
         }
 
-        // TX 2: open position
-        const slippage = selectedPool.binStep >= 80 ? 15 : 5;
-        const openIx = await getOpenPositionV2InstructionAsync({
-          user: asSigner(user),
-          lbPair: address(cpi.lbPair.toBase58()),
-          positionCounter: address(counterPDA.toBase58()),
-          meteoraPosition: address(meteoraPositionPDA.toBase58()),
-          binArrayBitmapExt: address(cpi.binArrayBitmapExt.toBase58()),
-          reserveX: address(cpi.reserveX.toBase58()),
-          reserveY: address(cpi.reserveY.toBase58()),
-          userTokenAccount: address(userTokenAccount.toBase58()),
-          vaultTokenX: address(vaultTokenX.toBase58()),
-          vaultTokenY: address(vaultTokenY.toBase58()),
-          tokenXProgram: address(cpi.tokenXProgramId.toBase58()),
-          tokenYProgram: address(cpi.tokenYProgramId.toBase58()),
-          binArrayLower: address(cpi.binArrayLower.toBase58()),
-          binArrayUpper: address(cpi.binArrayUpper.toBase58()),
-          eventAuthority: address(cpi.eventAuthority.toBase58()),
-          dlmmProgram: address(cpi.dlmmProgram.toBase58()),
-          tokenXMint: address(cpi.tokenXMint.toBase58()),
-          tokenYMint: address(cpi.tokenYMint.toBase58()),
-          amount: BigInt(positionAmount.toString()),
-          minBinId: pos.minBinId,
-          maxBinId: pos.maxBinId,
-          side: side === 'Buy' ? Side.Buy : Side.Sell,
-          maxActiveBinSlippage: slippage,
-        });
-
-        const openWeb3Ix = kitIxToWeb3(openIx);
-
-        if (!cpi.binArrayBitmapExt.equals(cpi.dlmmProgram)) {
-          const bmIdx = openWeb3Ix.keys.findIndex(k => k.pubkey.equals(cpi.binArrayBitmapExt));
-          if (bmIdx >= 0) openWeb3Ix.keys[bmIdx].isWritable = true;
-        }
-
-        // Build close WSOL ATA instruction (appended after open — cleans up whether or not position uses all SOL)
-        const closeWsolIxs: any[] = [];
+        // TX 1.5: wrap SOL → WSOL in vault (for buy-side native SOL deposits)
         if (isNative) {
-          const { createCloseAccountInstruction } = await import('@solana/spl-token');
-          closeWsolIxs.push(createCloseAccountInstruction(userTokenAccount, user, user, [], TOKEN_PROGRAM_ID));
+          await ctx.coreProgram.methods
+            .wrapSolInVault(positionAmountBN)
+            .accounts({
+              caller: bot.publicKey,
+              config: ctx.configPDA,
+              userVault: vaultPda!,
+              vaultWsolAta: userVaultDepositAta,
+              tokenProgram: TOKEN_PROGRAM_ID,
+            })
+            .signers([bot])
+            .rpc();
         }
 
-        const priorityIxs = await buildPriorityFeeIxs(ctx.connection);
-        const { blockhash, lastValidBlockHeight } = await ctx.connection.getLatestBlockhash();
-        const msg = new TransactionMessage({
-          payerKey: user,
-          recentBlockhash: blockhash,
-          instructions: [...priorityIxs, openWeb3Ix, ...closeWsolIxs],
-        }).compileToV0Message();
-        const vtx = new VersionedTransaction(msg);
+        // TX 2: open position via Anchor program methods (bot is sole signer)
+        const slippage = selectedPool.binStep >= 80 ? 15 : 5;
 
-        let sig: string;
-        try {
-          sig = await signAndSend(vtx, keypair, ctx.connection, blockhash, lastValidBlockHeight);
-        } catch (openErr: any) {
-          // Position failed — unwrap WSOL so user isn't stuck
-          if (isNative) {
-            try {
-              const { createCloseAccountInstruction } = await import('@solana/spl-token');
-              const cleanupTx = new Transaction().add(
-                createCloseAccountInstruction(userTokenAccount, user, user, [], TOKEN_PROGRAM_ID)
-              );
-              await signAndSendLegacy(cleanupTx, keypair, ctx.connection);
-              console.log(`[buy] Auto-unwrapped WSOL for ${user.toBase58()}`);
-            } catch { /* cleanup is best-effort */ }
-          }
-          throw openErr;
-        }
+        const sig = await ctx.coreProgram.methods
+          .openPositionV2(
+            positionAmountBN,
+            pos.minBinId,
+            pos.maxBinId,
+            side === 'Buy' ? { buy: {} } : { sell: {} },
+            slippage,
+          )
+          .accounts({
+            bot: bot.publicKey,
+            userVault: vaultPda!,
+            config: ctx.configPDA,
+            lbPair: cpi.lbPair,
+            positionCounter: counterPDA,
+            meteoraPosition: meteoraPositionPDA,
+            binArrayBitmapExt: cpi.binArrayBitmapExt,
+            reserveX: cpi.reserveX,
+            reserveY: cpi.reserveY,
+            position: positionPDA,
+            vault: posVaultPDA,
+            userVaultDepositAta,
+            vaultTokenX: posVaultTokenX,
+            vaultTokenY: posVaultTokenY,
+            tokenXProgram: cpi.tokenXProgramId,
+            tokenYProgram: cpi.tokenYProgramId,
+            systemProgram: new PublicKey('11111111111111111111111111111111'),
+            binArrayLower: cpi.binArrayLower,
+            binArrayUpper: cpi.binArrayUpper,
+            eventAuthority: cpi.eventAuthority,
+            dlmmProgram: cpi.dlmmProgram,
+            tokenXMint: cpi.tokenXMint,
+            tokenYMint: cpi.tokenYMint,
+          })
+          .signers([bot])
+          .rpc();
 
         ctx.walletService.savePosition({
           positionPda: positionPDA.toBase58(),
           userId,
-          walletPubkey: user.toBase58(),
+          vaultPda: vaultPda!.toBase58(),
           lbPair: cpi.lbPair.toBase58(),
           meteoraPosition: meteoraPositionPDA.toBase58(),
           side,
@@ -319,7 +318,7 @@ export async function handleOpenPosition(
       displayMode: selectedPool.displayMode as 'price' | 'mc',
       supply: selectedPool.supply,
       token,
-      walletAddress: walletPubkey.toBase58(),
+      walletAddress: vaultPda!.toBase58(),
     });
     await interaction.editReply(
       positions.length > 1
@@ -353,18 +352,24 @@ export async function handleOpenPosition(
       } catch { /* feed channel post is best-effort */ }
     }
   } catch (e: any) {
-    // Extract useful error from simulation logs
-    let errMsg = 'unknown error';
-    const logs: string[] = e.logs || e.simulationResponse?.logs || [];
-    const failLog = logs.find((l: string) => l.includes('failed') || l.includes('Error') || l.includes('insufficient'));
-    if (failLog) {
-      errMsg = failLog.slice(0, 300);
-    } else if (e.message) {
-      errMsg = e.message.slice(0, 300);
-    }
-    // Log full error server-side for debugging
+    // Log full error server-side for debugging (never shown to user)
     console.error(`[buy] Error for ${interaction.user.id}:`, e.message?.slice(0, 500));
+    const logs: string[] = e.logs || e.simulationResponse?.logs || [];
     if (logs.length) console.error(`[buy] Simulation logs:`, logs.join('\n'));
+
+    // Extract a safe, user-facing error message (no raw logs or account addresses)
+    let errMsg = 'Transaction failed.';
+    const anchorError = e.error?.errorCode?.code || e.error?.errorMessage;
+    if (anchorError) {
+      errMsg = `Transaction failed: ${anchorError}`;
+    } else if (e.message?.includes('insufficient')) {
+      errMsg = 'Insufficient balance for this transaction.';
+    } else if (e.message?.includes('SlippageExceeded') || e.message?.includes('slippage')) {
+      errMsg = 'Transaction failed: price moved too fast (slippage). Try again.';
+    } else if (e.message) {
+      // Strip anything that looks like a base58 address (32+ alphanumeric chars)
+      errMsg = e.message.replace(/[1-9A-HJ-NP-Za-km-z]{32,}/g, '***').slice(0, 200);
+    }
 
     if (interaction.deferred) {
       await interaction.editReply(errMsg);

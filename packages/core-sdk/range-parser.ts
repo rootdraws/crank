@@ -41,9 +41,16 @@ export function parseRangeInput(raw: string): RangeInput | null {
     return { type: 'mc', value: base * multiplier };
   }
 
-  // Plain price: "84", "97.43", "0.0000089"
-  const val = parseFloat(s);
-  if (!isNaN(val) && val > 0) return { type: 'price', value: val };
+  // Plain number with optional k/m/b suffix: "24k", "1.5m", "84", "0.0000089"
+  const numMatch = s.match(/^(\d+(?:\.\d+)?)(k|m|b)?$/);
+  if (numMatch) {
+    const base = parseFloat(numMatch[1]);
+    if (!isNaN(base) && base > 0) {
+      const mult: Record<string, number> = { k: 1_000, m: 1_000_000, b: 1_000_000_000 };
+      const value = numMatch[2] ? base * (mult[numMatch[2]] ?? 1) : base;
+      return { type: 'price', value };
+    }
+  }
 
   return null;
 }
@@ -58,6 +65,11 @@ export function rangeInputToPrice(
 ): number {
   switch (input.type) {
     case 'price':
+      // For mc-display pools, treat plain numbers as mcap, not USD price.
+      // Nobody types a per-token price for a microcap token.
+      if (pool.displayMode === 'mc' && pool.supply) {
+        return input.value / pool.supply;
+      }
       return input.value;
     case 'mc':
       if (!pool.supply) throw new Error(`Pool ${pool.id} missing supply for MC conversion`);

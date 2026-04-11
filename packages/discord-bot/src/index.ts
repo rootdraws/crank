@@ -11,7 +11,7 @@
  */
 
 import { Client, GatewayIntentBits, Interaction } from 'discord.js';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { Program } from '@coral-xyz/anchor';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -38,6 +38,8 @@ export interface BotContext {
   connection: Connection;
   coreProgram: Program;
   coreProgramId: PublicKey;
+  botKeypair: Keypair;
+  configPDA: PublicKey;
   walletService: WalletService;
   approvedPools: Set<string>;
   subscriber?: any; // GeyserSubscriber — has getPoolInfo(lbPair) for real-time activeId
@@ -51,6 +53,8 @@ interface DiscordBotConfig {
   connection: Connection;
   coreProgram: Program;
   coreProgramId: PublicKey;
+  botKeypair: Keypair;
+  configPDA: PublicKey;
 }
 
 export class DiscordBot {
@@ -77,6 +81,8 @@ export class DiscordBot {
       connection: config.connection,
       coreProgram: config.coreProgram,
       coreProgramId: config.coreProgramId,
+      botKeypair: config.botKeypair,
+      configPDA: config.configPDA,
       walletService: this.walletService,
       approvedPools,
       subscriber: config.subscriber,

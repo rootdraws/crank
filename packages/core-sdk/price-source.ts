@@ -8,6 +8,8 @@
 import { NATIVE_MINT } from './constants';
 
 const CACHE_TTL_MS = 10_000;
+/** Reject DexScreener prices that deviate >50% from the last cached value (flash manipulation) */
+const MAX_PRICE_DEVIATION_PCT = 50;
 const cache = new Map<string, { data: { priceUsd: number; marketCap?: number }; ts: number }>();
 
 // Pyth SOL/USD feed ID
@@ -18,6 +20,9 @@ const STABLECOIN_SYMBOLS = new Set(['USDC', 'USDT', 'USDS', 'USD1', 'DAI', 'PYUS
 /**
  * Fetch SOL/USD directly from Pyth oracle. No DexScreener, no FOGO.
  */
+/** Maximum age of a Pyth price feed before we consider it stale (60 seconds) */
+const PYTH_MAX_AGE_S = 60;
+
 async function fetchSolPrice(): Promise<number | null> {
   try {
     const resp = await fetch(
@@ -28,6 +33,14 @@ async function fetchSolPrice(): Promise<number | null> {
     const data: any = await resp.json();
     const feed = data[0];
     if (!feed?.price) return null;
+
+    // Reject stale feeds — publishTime is Unix seconds
+    const publishTime = parseInt(feed.price.publish_time ?? '0');
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (publishTime > 0 && nowSec - publishTime > PYTH_MAX_AGE_S) {
+      return null; // stale
+    }
+
     return parseInt(feed.price.price) * Math.pow(10, parseInt(feed.price.expo));
   } catch {
     return null;
@@ -105,8 +118,22 @@ export async function fetchDexScreenerPrice(mint: string): Promise<{ priceUsd: n
     )[0];
 
     if (!bestPair) return null;
+    const newPrice = parseFloat(bestPair.priceUsd);
+    if (!newPrice || newPrice <= 0) return null;
+
+    // Deviation guard: reject sudden price spikes that indicate manipulation.
+    // Only applies when we have a prior cached value (first fetch always passes).
+    const prev = cache.get(mint);
+    if (prev && prev.data.priceUsd > 0) {
+      const deviation = Math.abs(newPrice - prev.data.priceUsd) / prev.data.priceUsd * 100;
+      if (deviation > MAX_PRICE_DEVIATION_PCT) {
+        // Return stale cache instead of a manipulated price
+        return prev.data;
+      }
+    }
+
     const result = {
-      priceUsd: parseFloat(bestPair.priceUsd),
+      priceUsd: newPrice,
       marketCap: bestPair.marketCap ? Number(bestPair.marketCap) : undefined,
     };
     cache.set(mint, { data: result, ts: Date.now() });

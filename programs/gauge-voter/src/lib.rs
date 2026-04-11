@@ -151,6 +151,13 @@ pub mod gauge_voter {
         for (i, alloc) in desired_allocations.iter().enumerate() {
             let account_info = &ctx.remaining_accounts[i];
 
+            // Verify account is owned by this program (defense-in-depth against
+            // crafted accounts from other programs with matching discriminators)
+            require!(
+                account_info.owner == ctx.program_id,
+                GaugeError::InvalidPoolGauge
+            );
+
             // Deserialize & validate the PoolGauge PDA
             let mut data = account_info.try_borrow_mut_data()?;
             let disc = &data[..8];

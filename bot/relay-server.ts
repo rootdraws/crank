@@ -202,8 +202,8 @@ export class ProtocolPnlAggregator {
         isClosed,
         lastFetchedAt: Date.now(),
       });
-    } catch {
-      // Skip failures silently
+    } catch (e: any) {
+      logger.warn(`[relay] PnL fetch failed for ${pos.meteoraPosition.slice(0, 8)}: ${e.message?.slice(0, 80)}`);
     }
   }
 
@@ -320,16 +320,26 @@ export class ProtocolPnlAggregator {
 
 // ═══ RELAY SERVER ═══
 
-/** Fee pipeline state returned by the /api/fees endpoint */
+/**
+ * Fee pipeline state returned by the /api/fees endpoint.
+ *
+ * Three holding tanks:
+ *   1. roverAuthority   — pre-sweep (token fees + WSOL from harvests)
+ *   2. bridgeVault      — post-sweep, pre-drain (80% of sweeps, native SOL)
+ *   3. distributorVault — funded epoch rewards waiting for user claims (WSOL)
+ *
+ * totalInPipeline is the sum of all live balances across the three stages.
+ * distributorState surfaces cumulative counters from the on-chain Distributor account.
+ */
 export interface FeePipelineState {
   roverAuthority: { address: string; solBalance: number; wsolBalance: number };
-  distributor: { address: string; vaultPeggedBalance: number };
+  bridgeVault: { address: string; solBalance: number };
+  distributorVault: { address: string; wsolBalance: number };
   distributorState: {
     currentEpoch: string;
     totalAmountFunded: string;
     totalAmountClaimed: string;
     paused: boolean;
-    mint: string | null;
   } | null;
   totalInPipeline: number;
   timestamp: number;
@@ -443,7 +453,14 @@ export class RelayServer {
       }
     });
 
+    const MAX_WS_CLIENTS = 100;
+
     this.wss.on('connection', (ws) => {
+      if (this.clients.size >= MAX_WS_CLIENTS) {
+        logger.warn(`[relay] WebSocket rejected — at capacity (${MAX_WS_CLIENTS})`);
+        ws.close(1013, 'Too many connections');
+        return;
+      }
       this.clients.add(ws);
       logger.info(`[relay] WebSocket client connected (${this.clients.size} total)`);
 
@@ -500,7 +517,7 @@ export class RelayServer {
 
     // CORS — nginx handles Access-Control-Allow-Origin; app sets methods/headers only
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -509,6 +526,17 @@ export class RelayServer {
     }
 
     if (!path.startsWith('/api/')) return false;
+
+    // Auth gate: /api/health is public (uptime monitors), everything else requires token.
+    // Set RELAY_AUTH_TOKEN in bot/.env. If unset, all endpoints are open (backward compat).
+    const authToken = process.env.RELAY_AUTH_TOKEN;
+    if (authToken && path !== '/api/health') {
+      const header = req.headers['authorization'] || '';
+      if (header !== `Bearer ${authToken}`) {
+        this.json(res, 401, { error: 'Unauthorized' });
+        return true;
+      }
+    }
 
     try {
       switch (path) {
@@ -606,12 +634,14 @@ export class RelayServer {
       const poolPositions = this.subscriber.getPositionsForPool(poolKey);
       for (const pos of poolPositions) {
         const info = this.subscriber.getPoolInfo(poolKey);
-        const activeId = info?.activeId ?? 0;
+        const activeId = info?.activeId;
         let filledBins = 0;
         const totalBins = pos.maxBinId - pos.minBinId + 1;
-        for (let b = pos.minBinId; b <= pos.maxBinId; b++) {
-          if (pos.side === 'Sell' && b < activeId) filledBins++;
-          if (pos.side === 'Buy' && b > activeId) filledBins++;
+        if (activeId !== undefined) {
+          for (let b = pos.minBinId; b <= pos.maxBinId; b++) {
+            if (pos.side === 'Sell' && b < activeId) filledBins++;
+            if (pos.side === 'Buy' && b > activeId) filledBins++;
+          }
         }
 
         positions.push({
@@ -621,6 +651,7 @@ export class RelayServer {
           side: pos.side,
           minBinId: pos.minBinId,
           maxBinId: pos.maxBinId,
+          activeId: activeId ?? null,
           totalBins,
           filledBins,
           fillPercent: totalBins > 0 ? Math.round((filledBins / totalBins) * 100) : 0,

@@ -5,7 +5,7 @@ import { readFileSync } from "fs";
 
 const idls = [
   { name: "bin_farm", path: "bot/idl/bin_farm.json", dir: "packages/core-sdk/generated/bin-farm" },
-  { name: "pegged_bridge", path: "bot/idl/pegged_bridge.json", dir: "packages/core-sdk/generated/pegged-bridge" },
+  { name: "epoch_vault", path: "bot/idl/epoch_vault.json", dir: "packages/core-sdk/generated/epoch-vault" },
 ];
 
 for (const { name, path, dir } of idls) {

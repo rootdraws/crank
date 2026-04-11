@@ -82,6 +82,14 @@ export const BIN_FARM_ERROR__INVALID_BOT = 0x178f; // 6031
 export const BIN_FARM_ERROR__INVALID_TRADER_DEST = 0x1790; // 6032
 /** TraderDestNotSet: Trader destination not set — call set_trader_dest first */
 export const BIN_FARM_ERROR__TRADER_DEST_NOT_SET = 0x1791; // 6033
+/** InsufficientBalance: Insufficient vault balance for withdrawal */
+export const BIN_FARM_ERROR__INSUFFICIENT_BALANCE = 0x1792; // 6034
+/** InvalidVaultOwner: Invalid vault owner — does not match PDA seed */
+export const BIN_FARM_ERROR__INVALID_VAULT_OWNER = 0x1793; // 6035
+/** UnauthorizedCaller: Caller must be authorized bot or vault owner */
+export const BIN_FARM_ERROR__UNAUTHORIZED_CALLER = 0x1794; // 6036
+/** InvalidExternalProgram: Invalid external program ID */
+export const BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM = 0x1795; // 6037
 
 export type BinFarmError =
   | typeof BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE
@@ -90,9 +98,11 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__EMERGENCY_CLOSE_TIMELOCK_NOT_EXPIRED
   | typeof BIN_FARM_ERROR__FEE_TIMELOCK_NOT_EXPIRED
   | typeof BIN_FARM_ERROR__FEE_TOO_HIGH
+  | typeof BIN_FARM_ERROR__INSUFFICIENT_BALANCE
   | typeof BIN_FARM_ERROR__INVALID_BIN_RANGE
   | typeof BIN_FARM_ERROR__INVALID_BOT
   | typeof BIN_FARM_ERROR__INVALID_DIST_POOL
+  | typeof BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM
   | typeof BIN_FARM_ERROR__INVALID_MINT_DATA
   | typeof BIN_FARM_ERROR__INVALID_POOL
   | typeof BIN_FARM_ERROR__INVALID_POSITION
@@ -100,6 +110,7 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__INVALID_SLIPPAGE
   | typeof BIN_FARM_ERROR__INVALID_TOKEN_OWNER
   | typeof BIN_FARM_ERROR__INVALID_TRADER_DEST
+  | typeof BIN_FARM_ERROR__INVALID_VAULT_OWNER
   | typeof BIN_FARM_ERROR__MISSING_KEEPER_ATA
   | typeof BIN_FARM_ERROR__NO_BINS_PROVIDED
   | typeof BIN_FARM_ERROR__NON_CONTIGUOUS_BINS
@@ -117,6 +128,7 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__TOO_MANY_BINS
   | typeof BIN_FARM_ERROR__TRADER_DEST_NOT_SET
   | typeof BIN_FARM_ERROR__UNAUTHORIZED
+  | typeof BIN_FARM_ERROR__UNAUTHORIZED_CALLER
   | typeof BIN_FARM_ERROR__ZERO_AMOUNT;
 
 let binFarmErrorMessages: Record<BinFarmError, string> | undefined;
@@ -128,9 +140,11 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__EMERGENCY_CLOSE_TIMELOCK_NOT_EXPIRED]: `Emergency close timelock not expired (24 hours required)`,
     [BIN_FARM_ERROR__FEE_TIMELOCK_NOT_EXPIRED]: `Fee timelock not expired (24 hours required)`,
     [BIN_FARM_ERROR__FEE_TOO_HIGH]: `Fee too high (max 10%)`,
+    [BIN_FARM_ERROR__INSUFFICIENT_BALANCE]: `Insufficient vault balance for withdrawal`,
     [BIN_FARM_ERROR__INVALID_BIN_RANGE]: `Invalid bin range (min must be <= max)`,
     [BIN_FARM_ERROR__INVALID_BOT]: `Invalid bot destination`,
     [BIN_FARM_ERROR__INVALID_DIST_POOL]: `dist_pool cannot be the null address`,
+    [BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM]: `Invalid external program ID`,
     [BIN_FARM_ERROR__INVALID_MINT_DATA]: `Invalid mint account data (too short to read decimals)`,
     [BIN_FARM_ERROR__INVALID_POOL]: `Invalid pool`,
     [BIN_FARM_ERROR__INVALID_POSITION]: `Invalid Meteora position`,
@@ -138,6 +152,7 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__INVALID_SLIPPAGE]: `Invalid slippage (must be 0-20)`,
     [BIN_FARM_ERROR__INVALID_TOKEN_OWNER]: `Token account owner mismatch`,
     [BIN_FARM_ERROR__INVALID_TRADER_DEST]: `Invalid trader destination`,
+    [BIN_FARM_ERROR__INVALID_VAULT_OWNER]: `Invalid vault owner — does not match PDA seed`,
     [BIN_FARM_ERROR__MISSING_KEEPER_ATA]: `Permissionless harvester must provide keeper ATA in remaining_accounts`,
     [BIN_FARM_ERROR__NO_BINS_PROVIDED]: `No bin IDs provided`,
     [BIN_FARM_ERROR__NON_CONTIGUOUS_BINS]: `Bin IDs must be contiguous (no gaps)`,
@@ -155,6 +170,7 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__TOO_MANY_BINS]: `Too many bins (max 70 per call)`,
     [BIN_FARM_ERROR__TRADER_DEST_NOT_SET]: `Trader destination not set — call set_trader_dest first`,
     [BIN_FARM_ERROR__UNAUTHORIZED]: `Not authorized`,
+    [BIN_FARM_ERROR__UNAUTHORIZED_CALLER]: `Caller must be authorized bot or vault owner`,
     [BIN_FARM_ERROR__ZERO_AMOUNT]: `Amount must be greater than zero`,
   };
 }

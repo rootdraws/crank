@@ -10,4 +10,5 @@ export * from './config';
 export * from './position';
 export * from './positionCounter';
 export * from './roverAuthority';
+export * from './userVault';
 export * from './vault';

@@ -6,7 +6,7 @@ The off-chain infrastructure that monitors and executes on Solana. Runs on a Dig
 
 Watches all crank.money DLMM positions via Helius LaserStream gRPC. When price moves through a user's bin range, the bot harvests those bins — pulling converted tokens back to the owner's wallet before the chart reverses. It also runs the daily fee pipeline: sweep fees, distribute SOL via Merkle tree, and auto-claim for users.
 
-When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 12 slash commands for trading, wallet management, burn, and governance. Harvest and close events are piped to the Discord notifier for DMs and feed channel posts. Gas offloading: harvests and closes are signed with the user's custody keypair (user pays gas), with bot keypair as permissionless fallback.
+When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 12 slash commands for trading, wallet management, burn, and governance. Harvest and close events are piped to the Discord notifier for DMs and feed channel posts. Gas model: bot is the sole signer + fee payer; `deduct_gas` reimburses the bot from each user's vault PDA on every user-facing instruction.
 
 ## Files
 
@@ -14,7 +14,7 @@ When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 12 sl
 |------|-------------|
 | `anchor-harvest-bot.ts` | Orchestrator / main entry point. Wires modules together, boots the process, runs health server on :8080, manages graceful shutdown. Conditionally starts Discord bot if `DISCORD_TOKEN` is set. |
 | `geyser-subscriber.ts` | Helius LaserStream gRPC subscriber. Parses raw 904-byte LbPair accounts for activeId changes. Maintains in-memory position registry grouped by pool. Emits `harvestNeeded` events. Auto-reconnect with exponential backoff. |
-| `harvest-executor.ts` | Job queue that submits harvest/close transactions. Deduplicates jobs, confirms bin balances via RPC before submitting, handles Token-2022. Max 5 concurrent. Gas offloading: signs with user's custody keypair when available. Enrichment: reads token deltas from confirmed tx via `getTransaction`. Auto-unwraps WSOL after harvest/close. |
+| `harvest-executor.ts` | Job queue that submits harvest/close transactions. Deduplicates jobs, confirms bin balances via RPC before submitting, handles Token-2022. Max 5 concurrent. Bot-signed, fee payer; vault PDAs reimburse via `deduct_gas`. Enrichment: reads token deltas from confirmed tx via `getTransaction`. Auto-unwraps WSOL after harvest/close via `unwrap_wsol_in_vault`. |
 | `keeper.ts` | Daily fee sequencer (runs once per UTC day). 5 steps: close WSOL → sweep rover (40/40/20 split) → epoch distribution (drain vault → WSOL → Merkle → auto-claim) → open fee rovers → close exhausted rovers. |
 | `epoch-computer.ts` | Daily SOL distribution engine. Computes per-user shares from harvest fees, builds Merkle tree, drains epoch-vault, wraps WSOL, funds distributor, auto-claims for all users above threshold. |
 | `relay-server.ts` | REST API + WebSocket relay. Exposes bot state: pools, positions, pending harvests, fee pipeline, rovers, protocol PnL, activity feed. `/api/health` returns 503 when unhealthy. |
@@ -55,7 +55,7 @@ DiscordBot (conditional — requires DISCORD_TOKEN)
   ├─ 12 slash commands: start, balance, deposit, buy, sell,
   │   positions, close, withdraw, pools, vote, burn, help
   ├─ Pool routing: multi-pool selection, auto-split, mcap/price/pct input
-  ├─ Custodial wallets: AES-256-GCM encrypted keypairs
+  ├─ Vault PDAs: user wallet → UserVault PDA (seeded by owner wallet), no keypairs
   └─ Notifier: DM on harvest/close, feed channel posts
 
 RelayServer (HTTP :8080)
@@ -106,5 +106,4 @@ npm run bot
 | `DISCORD_TOKEN` | Bot token from discord.com/developers |
 | `DISCORD_CLIENT_ID` | Application client ID |
 | `DISCORD_FEED_CHANNEL_ID` | Channel ID for public activity feed |
-| `WALLET_ENCRYPTION_KEY` | 32 bytes hex for custodial wallet encryption (`openssl rand -hex 32`) |
-| `DB_PATH` | Path to wallet/position DB (default: `./data/crankbot.json`) |
+| `DB_PATH` | Path to vault PDA mapping / position DB (default: `./data/crankbot.json`) |

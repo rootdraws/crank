@@ -12,7 +12,7 @@ import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import dotenv from 'dotenv';
 import path from 'path';
 
-dotenv.config({ path: path.join(__dirname, '..', '..', '..', '.env') });
+dotenv.config({ path: path.join(__dirname, '..', '..', '..', 'bot', '.env') });
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -26,7 +26,7 @@ if (!TOKEN || !CLIENT_ID) {
 const commands = [
   new SlashCommandBuilder()
     .setName('start')
-    .setDescription('Create your custodial wallet and get a deposit address'),
+    .setDescription('Create your vault and get a deposit address'),
 
   new SlashCommandBuilder()
     .setName('balance')
@@ -41,7 +41,7 @@ const commands = [
     .setDescription('Open a buy-side DLMM position')
     .addStringOption(opt =>
       opt.setName('range')
-        .setDescription('TOKEN HIGH to LOW AMOUNT QUOTE — e.g. SOL 84 to 74 1000 USDC')
+        .setDescription('TOKEN HIGH to LOW AMOUNT QUOTE — e.g. CRANK 15k to 20k 0.5 SOL')
         .setRequired(true)),
 
   new SlashCommandBuilder()
@@ -49,7 +49,7 @@ const commands = [
     .setDescription('Open a sell-side DLMM position')
     .addStringOption(opt =>
       opt.setName('range')
-        .setDescription('TOKEN LOW to HIGH AMOUNT QUOTE — e.g. SOL 98 to 115 10 SOL')
+        .setDescription('TOKEN LOW to HIGH AMOUNT QUOTE — e.g. CRANK 25k to 35k 4000000 CRANK')
         .setRequired(true)),
 
   new SlashCommandBuilder()

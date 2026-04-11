@@ -166,10 +166,8 @@ export function formatPositionsList(positions: PositionDisplayData[]): string {
     const aboveRange = isBuy ? p.activeBinId < p.minBinId : p.activeBinId < p.minBinId;
     let statusLabel = '';
     if (fillPct === 0) {
-      if (isBuy && aboveRange) statusLabel = 'Currently above range.';
-      else if (isBuy && belowRange) statusLabel = 'Currently below range.';
-      else if (!isBuy && aboveRange) statusLabel = 'Currently above range.';
-      else if (!isBuy && belowRange) statusLabel = 'Currently below range.';
+      if (aboveRange) statusLabel = 'Range is above current price.';
+      else if (belowRange) statusLabel = 'Range is below current price.';
       else statusLabel = 'waiting';
     }
 

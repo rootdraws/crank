@@ -1,16 +1,13 @@
 import { ChatInputCommandInteraction } from 'discord.js';
-import { PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+import { BN } from '@coral-xyz/anchor';
 import {
   BANK_MINT_PROGRAM_ID, BANK_MINT, CRANK_MINT,
   TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
   getBankConfigPDA, deriveATA, formatAmount,
-  buildSetupTx, buildPriorityFeeIxs, signAndSend, signAndSendLegacy, withUserLock,
+  buildSetupTx, signAndSendLegacy, withUserLock,
 } from '@crankbot/core-sdk';
 import { formatError } from '../formatter';
 import type { BotContext } from '../index';
-
-// burn_and_mint discriminator from bank-mint IDL
-const BURN_AND_MINT_DISC = Buffer.from([203, 142, 66, 81, 199, 170, 67, 130]);
 
 export async function handleBurn(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
   const userId = `discord:${interaction.user.id}`;
@@ -25,67 +22,55 @@ export async function handleBurn(interaction: ChatInputCommandInteraction, ctx: 
     return;
   }
 
-  // CRANK has 6 decimals
   const amount = BigInt(Math.round(amountFloat * 1e6));
+  const vaultPda = ctx.walletService.getVaultPda(userId);
+  if (!vaultPda) {
+    await interaction.reply({ content: 'No vault found. Run `/start` first.', ephemeral: true });
+    return;
+  }
 
   await interaction.deferReply({ ephemeral: false });
-
   const lockKey = `${userId}:burn`;
+  const bot = ctx.botKeypair;
 
   try {
     const sig = await withUserLock(lockKey, async () => {
-      const keypair = ctx.walletService.getOrCreate(userId);
-      const user = keypair.publicKey;
-
-      // CRANK is Token-2022, BANK is SPL Token
       const crankTokenProgram = TOKEN_2022_PROGRAM_ID;
       const bankTokenProgram = TOKEN_PROGRAM_ID;
 
-      const userCrankAta = deriveATA(CRANK_MINT, user, crankTokenProgram, false);
-      const userBankAta = deriveATA(BANK_MINT, user, bankTokenProgram, false);
+      // ATAs owned by the vault PDA
+      const vaultCrankAta = deriveATA(CRANK_MINT, vaultPda, crankTokenProgram, true);
+      const vaultBankAta = deriveATA(BANK_MINT, vaultPda, bankTokenProgram, true);
       const [bankConfig] = getBankConfigPDA();
 
-      // Ensure user's BANK ATA exists
+      // Ensure vault's BANK ATA exists (bot pays)
       const setupTx = await buildSetupTx(
-        ctx.connection, user,
-        [{ ata: userBankAta, owner: user, mint: BANK_MINT, tokenProgram: bankTokenProgram }],
+        ctx.connection, bot.publicKey,
+        [{ ata: vaultBankAta, owner: vaultPda, mint: BANK_MINT, tokenProgram: bankTokenProgram }],
         []
       );
-
       if (setupTx) {
-        await signAndSendLegacy(setupTx, keypair, ctx.connection);
+        await signAndSendLegacy(setupTx, bot, ctx.connection);
       }
 
-      // Build burn_and_mint instruction
-      const data = Buffer.alloc(8 + 8);
-      BURN_AND_MINT_DISC.copy(data, 0);
-      data.writeBigUInt64LE(amount, 8);
-
-      const ix = new TransactionInstruction({
-        programId: BANK_MINT_PROGRAM_ID,
-        keys: [
-          { pubkey: user, isSigner: true, isWritable: true },
-          { pubkey: bankConfig, isSigner: false, isWritable: true },
-          { pubkey: CRANK_MINT, isSigner: false, isWritable: true },
-          { pubkey: BANK_MINT, isSigner: false, isWritable: true },
-          { pubkey: userCrankAta, isSigner: false, isWritable: true },
-          { pubkey: userBankAta, isSigner: false, isWritable: true },
-          { pubkey: crankTokenProgram, isSigner: false, isWritable: false },
-          { pubkey: bankTokenProgram, isSigner: false, isWritable: false },
-        ],
-        data,
-      });
-
-      const priorityIxs = await buildPriorityFeeIxs(ctx.connection);
-      const { blockhash, lastValidBlockHeight } = await ctx.connection.getLatestBlockhash();
-      const msg = new TransactionMessage({
-        payerKey: user,
-        recentBlockhash: blockhash,
-        instructions: [...priorityIxs, ix],
-      }).compileToV0Message();
-      const vtx = new VersionedTransaction(msg);
-
-      return await signAndSend(vtx, keypair, ctx.connection, blockhash, lastValidBlockHeight);
+      // Call vault_burn_and_mint via the core program (CPI to bank-mint)
+      return await ctx.coreProgram.methods
+        .vaultBurnAndMint(new BN(amount.toString()))
+        .accounts({
+          caller: bot.publicKey,
+          config: ctx.configPDA,
+          userVault: vaultPda,
+          bankConfig,
+          crankMint: CRANK_MINT,
+          bankMint: BANK_MINT,
+          vaultCrankAta,
+          vaultBankAta,
+          crankTokenProgram,
+          bankTokenProgram,
+          bankMintProgram: BANK_MINT_PROGRAM_ID,
+        })
+        .signers([bot])
+        .rpc();
     });
 
     const humanAmount = formatAmount(amount, 6);

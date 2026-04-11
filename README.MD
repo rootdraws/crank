@@ -37,6 +37,10 @@ Set your range as a single-sided LP. If price moves through your range, Crank's 
 
 Zero fee on deposit. 0.3% on converted output only. LP fees can be claimed anytime at zero cost.
 
+### Non-Custodial PDA Vaults
+
+User funds live in on-chain program-derived accounts (PDAs), not bot-held keypairs. Server compromise cannot steal funds — withdrawals are enforced to the user's registered wallet by PDA seed derivation. The bot is a stateless operator.
+
 ### Permissionless Harvesting
 
 Every step in the revenue pipeline is permissionless. Harvest, close, sweep, distribute — all crankable by anyone. The system is resilient without our infrastructure.
@@ -117,9 +121,11 @@ npm run bot
 ## Testing
 
 ```bash
-npm test                               # Unit tests (bin detection, queue dedup, contiguity)
-npx tsx scripts/fee-dashboard.ts       # Fee pipeline snapshot
+npm test                               # Unit tests (65 tests: bin detection, Merkle proofs, share computation)
+curl http://localhost:8080/api/fees    # Live fee pipeline snapshot (rover + bridge vault + distributor WSOL)
 npx tsx scripts/preflight-check.ts     # Verify all programs + PDAs on-chain
+npx tsx scripts/test-epoch.ts --dry-run --min-lamports 1000000  # Epoch dry-run (no on-chain action)
+npx tsx scripts/test-epoch.ts --min-lamports 1000000            # Epoch live E2E test
 ```
 
 ## Deployment
@@ -130,20 +136,29 @@ npx tsx scripts/preflight-check.ts     # Verify all programs + PDAs on-chain
 
 ## Security
 
+Adversarial security audit completed 2026-04-01 (`audit.md`). 53 findings, 33 remediated in-session.
+
 **On-chain:**
 - All harvests, sweeps, and distributions are permissionless. Anyone can crank them if the bot goes stale — no fund lock-up.
 - Fee split (40/40/20) is hardcoded in the program. Cannot be changed without a program upgrade.
+- All arithmetic uses `checked_*` operations. `clippy::integer_arithmetic` deny enforced at crate level in bin-farm.
 - Programs can be upgraded (upgrade authority held by deployer). Keypair separation to cold wallet (Ledger) planned.
 
-**Custody:**
-- User wallets are AES-256-GCM encrypted at rest. Encryption key stored separately from the wallet database.
-- Withdraw address auto-locked to the first wallet that deposits SOL. Once set, funds can only go to that wallet.
-- Wallet database backed up every minute to off-server object storage. Daily full-server snapshots.
+**Custody (PDA Vaults — shipped 2026-04-08):**
+- No custodial keypairs. User funds live in UserVault PDAs: `[b"user_vault", owner_wallet]`.
+- Withdraw destination = vault.owner (PDA seed), immutable. Server compromise cannot redirect withdrawals.
+- Bot is a stateless operator. DB loss = inconvenience (re-register), NOT fund loss.
+- All user-facing operations reimburse bot gas from vault via on-chain `deduct_gas`.
+- Wallet metadata DB backed up every minute to off-server object storage. Daily full-server snapshots.
 
 **Infrastructure:**
 - SSH key-only authentication, fail2ban, UFW firewall, automatic security updates.
-- API rate-limited (10 req/s per IP). WebSocket connections capped (2 per IP).
-- Health endpoint (`/api/health`) with automated alerting on gRPC disconnect, low balance, and keeper failures.
+- Bot runs as `root` (service user migration planned). SSH key-only, no password auth.
+- API rate-limited (10 req/s per IP). Bearer token auth on all endpoints except `/api/health`.
+- WebSocket connections capped (2 per IP via nginx, 100 total server-side).
+- Priority fees capped at 500K micro-lamports/CU (prevents RPC fee inflation attacks).
+- Health endpoint (`/api/health`) with automated alerting on gRPC disconnect, low balance, keeper failures, and process death.
+- npm dependencies pinned to exact versions. No caret ranges.
 
 ## Dependencies
 

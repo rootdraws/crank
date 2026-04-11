@@ -13,7 +13,7 @@ export const BIN_FARM_PROGRAM_ID          = new PublicKey('8FJyoK7UKhYB8qd8187oV
 export const BANK_MINT_PROGRAM_ID         = new PublicKey('FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk');
 export const GAUGE_VOTER_PROGRAM_ID       = new PublicKey('DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA');
 export const MERKLE_DISTRIBUTOR_PROGRAM_ID = new PublicKey('DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV');
-export const PEGGED_BRIDGE_PROGRAM_ID     = new PublicKey('7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN');
+export const EPOCH_VAULT_PROGRAM_ID       = new PublicKey('7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN');
 export const METEORA_DLMM_PROGRAM_ID      = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 
 // ─── Token Programs ────────────────────────────────────────────────────────

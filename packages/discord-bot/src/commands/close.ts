@@ -192,8 +192,9 @@ export async function handleClose(interaction: ChatInputCommandInteraction, ctx:
 // ─── Shared close logic ───────────────────────────────────────────────────
 
 async function closePosition(userId: string, position: any, ctx: BotContext): Promise<string> {
-  const keypair = ctx.walletService.getOrCreate(userId);
-  const user = keypair.publicKey;
+  const vaultPda = ctx.walletService.getVaultPda(userId);
+  if (!vaultPda) throw new Error('No vault found — run /start first');
+  const bot = ctx.botKeypair;
 
   const cpi = await resolveMeteoraCPIAccounts(
     ctx.connection, position.lb_pair, position.min_bin_id, position.max_bin_id
@@ -202,73 +203,66 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
   const meteoraPosition = new PublicKey(position.meteora_position);
   const [configPDA] = getConfigPDA();
   const [positionPDA] = getPositionPDA(meteoraPosition);
-  const [vaultPDA] = getVaultPDA(meteoraPosition);
+  const [posVaultPDA] = getVaultPDA(meteoraPosition);
   const [roverAuth] = getRoverAuthorityPDA();
 
-  const vaultTokenX = deriveATA(cpi.tokenXMint, vaultPDA, cpi.tokenXProgramId, true);
-  const vaultTokenY = deriveATA(cpi.tokenYMint, vaultPDA, cpi.tokenYProgramId, true);
-  const userTokenX = deriveATA(cpi.tokenXMint, user, cpi.tokenXProgramId, false);
-  const userTokenY = deriveATA(cpi.tokenYMint, user, cpi.tokenYProgramId, false);
+  const vaultTokenX = deriveATA(cpi.tokenXMint, posVaultPDA, cpi.tokenXProgramId, true);
+  const vaultTokenY = deriveATA(cpi.tokenYMint, posVaultPDA, cpi.tokenYProgramId, true);
+  // user_token_x/y = vault PDA's ATAs (tokens go to vault, user withdraws later)
+  const userTokenX = deriveATA(cpi.tokenXMint, vaultPda, cpi.tokenXProgramId, true);
+  const userTokenY = deriveATA(cpi.tokenYMint, vaultPda, cpi.tokenYProgramId, true);
   const roverFeeTokenX = deriveATA(cpi.tokenXMint, roverAuth, cpi.tokenXProgramId, true);
   const roverFeeTokenY = deriveATA(cpi.tokenYMint, roverAuth, cpi.tokenYProgramId, true);
 
   const setupTx = await buildSetupTx(
-    ctx.connection, user,
+    ctx.connection, bot.publicKey,
     [
-      { ata: userTokenX, owner: user, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
-      { ata: userTokenY, owner: user, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+      { ata: userTokenX, owner: vaultPda, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+      { ata: userTokenY, owner: vaultPda, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
       { ata: roverFeeTokenX, owner: roverAuth, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
       { ata: roverFeeTokenY, owner: roverAuth, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
     ]
   );
 
   if (setupTx) {
-    await signAndSendLegacy(setupTx, keypair, ctx.connection);
+    await signAndSendLegacy(setupTx, bot, ctx.connection);
   }
 
-  const closeIx = await getUserCloseInstructionAsync({
-    user: asSigner(user),
-    position: address(positionPDA.toBase58()),
-    vault: address(vaultPDA.toBase58()),
-    meteoraPosition: address(meteoraPosition.toBase58()),
-    lbPair: address(cpi.lbPair.toBase58()),
-    binArrayBitmapExt: address(cpi.binArrayBitmapExt.toBase58()),
-    binArrayLower: address(cpi.binArrayLower.toBase58()),
-    binArrayUpper: address(cpi.binArrayUpper.toBase58()),
-    reserveX: address(cpi.reserveX.toBase58()),
-    reserveY: address(cpi.reserveY.toBase58()),
-    tokenXMint: address(cpi.tokenXMint.toBase58()),
-    tokenYMint: address(cpi.tokenYMint.toBase58()),
-    eventAuthority: address(cpi.eventAuthority.toBase58()),
-    dlmmProgram: address(cpi.dlmmProgram.toBase58()),
-    vaultTokenX: address(vaultTokenX.toBase58()),
-    vaultTokenY: address(vaultTokenY.toBase58()),
-    userTokenX: address(userTokenX.toBase58()),
-    userTokenY: address(userTokenY.toBase58()),
-    roverFeeTokenX: address(roverFeeTokenX.toBase58()),
-    roverFeeTokenY: address(roverFeeTokenY.toBase58()),
-    tokenXProgram: address(cpi.tokenXProgramId.toBase58()),
-    tokenYProgram: address(cpi.tokenYProgramId.toBase58()),
-    memoProgram: address(SPL_MEMO_PROGRAM_ID.toBase58()),
-  });
+  // Use user_close with bot as caller (dual-caller pattern)
+  const sig = await ctx.coreProgram.methods
+    .userClose()
+    .accounts({
+      caller: bot.publicKey,
+      config: configPDA,
+      userVault: vaultPda,
+      position: positionPDA,
+      vault: posVaultPDA,
+      meteoraPosition,
+      lbPair: cpi.lbPair,
+      binArrayBitmapExt: cpi.binArrayBitmapExt,
+      binArrayLower: cpi.binArrayLower,
+      binArrayUpper: cpi.binArrayUpper,
+      reserveX: cpi.reserveX,
+      reserveY: cpi.reserveY,
+      tokenXMint: cpi.tokenXMint,
+      tokenYMint: cpi.tokenYMint,
+      eventAuthority: cpi.eventAuthority,
+      dlmmProgram: cpi.dlmmProgram,
+      vaultTokenX,
+      vaultTokenY,
+      userTokenX,
+      userTokenY,
+      roverAuthority: roverAuth,
+      roverFeeTokenX,
+      roverFeeTokenY,
+      tokenXProgram: cpi.tokenXProgramId,
+      tokenYProgram: cpi.tokenYProgramId,
+      memoProgram: SPL_MEMO_PROGRAM_ID,
+      systemProgram: new PublicKey('11111111111111111111111111111111'),
+    })
+    .signers([bot])
+    .rpc();
 
-  const closeWeb3Ix = kitIxToWeb3(closeIx);
-
-  if (!cpi.binArrayBitmapExt.equals(cpi.dlmmProgram)) {
-    const bmIdx = closeWeb3Ix.keys.findIndex(k => k.pubkey.equals(cpi.binArrayBitmapExt));
-    if (bmIdx >= 0) closeWeb3Ix.keys[bmIdx].isWritable = true;
-  }
-
-  const priorityIxs = await buildPriorityFeeIxs(ctx.connection);
-  const { blockhash, lastValidBlockHeight } = await ctx.connection.getLatestBlockhash();
-  const msg = new TransactionMessage({
-    payerKey: user,
-    recentBlockhash: blockhash,
-    instructions: [...priorityIxs, closeWeb3Ix],
-  }).compileToV0Message();
-  const vtx = new VersionedTransaction(msg);
-
-  const sig = await signAndSend(vtx, keypair, ctx.connection, blockhash, lastValidBlockHeight);
   ctx.walletService.closePosition(position.position_pda);
   return sig;
 }

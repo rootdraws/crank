@@ -44,8 +44,9 @@ export function getUserCloseDiscriminatorBytes() {
 
 export type UserCloseInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
-  TAccountUser extends string | AccountMeta<string> = string,
+  TAccountCaller extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
+  TAccountUserVault extends string | AccountMeta<string> = string,
   TAccountPosition extends string | AccountMeta<string> = string,
   TAccountVault extends string | AccountMeta<string> = string,
   TAccountMeteoraPosition extends string | AccountMeta<string> = string,
@@ -76,12 +77,16 @@ export type UserCloseInstruction<
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
-      TAccountUser extends string
-        ? WritableSignerAccount<TAccountUser> & AccountSignerMeta<TAccountUser>
-        : TAccountUser,
+      TAccountCaller extends string
+        ? WritableSignerAccount<TAccountCaller> &
+            AccountSignerMeta<TAccountCaller>
+        : TAccountCaller,
       TAccountConfig extends string
         ? WritableAccount<TAccountConfig>
         : TAccountConfig,
+      TAccountUserVault extends string
+        ? WritableAccount<TAccountUserVault>
+        : TAccountUserVault,
       TAccountPosition extends string
         ? WritableAccount<TAccountPosition>
         : TAccountPosition,
@@ -186,8 +191,9 @@ export function getUserCloseInstructionDataCodec(): FixedSizeCodec<
 }
 
 export type UserCloseAsyncInput<
-  TAccountUser extends string = string,
+  TAccountCaller extends string = string,
   TAccountConfig extends string = string,
+  TAccountUserVault extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
   TAccountMeteoraPosition extends string = string,
@@ -213,8 +219,11 @@ export type UserCloseAsyncInput<
   TAccountMemoProgram extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
-  user: TransactionSigner<TAccountUser>;
+  /** Caller: authorized bot or vault owner (real wallet) */
+  caller: TransactionSigner<TAccountCaller>;
   config?: Address<TAccountConfig>;
+  /** UserVault PDA — authorization checked in handler body (dual-caller) */
+  userVault: Address<TAccountUserVault>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
@@ -242,8 +251,9 @@ export type UserCloseAsyncInput<
 };
 
 export async function getUserCloseInstructionAsync<
-  TAccountUser extends string,
+  TAccountCaller extends string,
   TAccountConfig extends string,
+  TAccountUserVault extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
   TAccountMeteoraPosition extends string,
@@ -271,8 +281,9 @@ export async function getUserCloseInstructionAsync<
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
   input: UserCloseAsyncInput<
-    TAccountUser,
+    TAccountCaller,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
     TAccountMeteoraPosition,
@@ -302,8 +313,9 @@ export async function getUserCloseInstructionAsync<
 ): Promise<
   UserCloseInstruction<
     TProgramAddress,
-    TAccountUser,
+    TAccountCaller,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
     TAccountMeteoraPosition,
@@ -335,8 +347,9 @@ export async function getUserCloseInstructionAsync<
 
   // Original accounts.
   const originalAccounts = {
-    user: { value: input.user ?? null, isWritable: true },
+    caller: { value: input.caller ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: true },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
@@ -400,8 +413,9 @@ export async function getUserCloseInstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.user),
+      getAccountMeta(accounts.caller),
       getAccountMeta(accounts.config),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
       getAccountMeta(accounts.meteoraPosition),
@@ -431,8 +445,9 @@ export async function getUserCloseInstructionAsync<
     programAddress,
   } as UserCloseInstruction<
     TProgramAddress,
-    TAccountUser,
+    TAccountCaller,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
     TAccountMeteoraPosition,
@@ -461,8 +476,9 @@ export async function getUserCloseInstructionAsync<
 }
 
 export type UserCloseInput<
-  TAccountUser extends string = string,
+  TAccountCaller extends string = string,
   TAccountConfig extends string = string,
+  TAccountUserVault extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
   TAccountMeteoraPosition extends string = string,
@@ -488,8 +504,11 @@ export type UserCloseInput<
   TAccountMemoProgram extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
-  user: TransactionSigner<TAccountUser>;
+  /** Caller: authorized bot or vault owner (real wallet) */
+  caller: TransactionSigner<TAccountCaller>;
   config: Address<TAccountConfig>;
+  /** UserVault PDA — authorization checked in handler body (dual-caller) */
+  userVault: Address<TAccountUserVault>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
@@ -517,8 +536,9 @@ export type UserCloseInput<
 };
 
 export function getUserCloseInstruction<
-  TAccountUser extends string,
+  TAccountCaller extends string,
   TAccountConfig extends string,
+  TAccountUserVault extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
   TAccountMeteoraPosition extends string,
@@ -546,8 +566,9 @@ export function getUserCloseInstruction<
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
   input: UserCloseInput<
-    TAccountUser,
+    TAccountCaller,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
     TAccountMeteoraPosition,
@@ -576,8 +597,9 @@ export function getUserCloseInstruction<
   config?: { programAddress?: TProgramAddress }
 ): UserCloseInstruction<
   TProgramAddress,
-  TAccountUser,
+  TAccountCaller,
   TAccountConfig,
+  TAccountUserVault,
   TAccountPosition,
   TAccountVault,
   TAccountMeteoraPosition,
@@ -608,8 +630,9 @@ export function getUserCloseInstruction<
 
   // Original accounts.
   const originalAccounts = {
-    user: { value: input.user ?? null, isWritable: true },
+    caller: { value: input.caller ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: true },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
@@ -652,8 +675,9 @@ export function getUserCloseInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.user),
+      getAccountMeta(accounts.caller),
       getAccountMeta(accounts.config),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
       getAccountMeta(accounts.meteoraPosition),
@@ -683,8 +707,9 @@ export function getUserCloseInstruction<
     programAddress,
   } as UserCloseInstruction<
     TProgramAddress,
-    TAccountUser,
+    TAccountCaller,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
     TAccountMeteoraPosition,
@@ -718,32 +743,35 @@ export type ParsedUserCloseInstruction<
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    user: TAccountMetas[0];
+    /** Caller: authorized bot or vault owner (real wallet) */
+    caller: TAccountMetas[0];
     config: TAccountMetas[1];
-    position: TAccountMetas[2];
-    vault: TAccountMetas[3];
-    meteoraPosition: TAccountMetas[4];
-    lbPair: TAccountMetas[5];
-    binArrayBitmapExt: TAccountMetas[6];
-    binArrayLower: TAccountMetas[7];
-    binArrayUpper: TAccountMetas[8];
-    reserveX: TAccountMetas[9];
-    reserveY: TAccountMetas[10];
-    tokenXMint: TAccountMetas[11];
-    tokenYMint: TAccountMetas[12];
-    eventAuthority: TAccountMetas[13];
-    dlmmProgram: TAccountMetas[14];
-    vaultTokenX: TAccountMetas[15];
-    vaultTokenY: TAccountMetas[16];
-    userTokenX: TAccountMetas[17];
-    userTokenY: TAccountMetas[18];
-    roverAuthority: TAccountMetas[19];
-    roverFeeTokenX: TAccountMetas[20];
-    roverFeeTokenY: TAccountMetas[21];
-    tokenXProgram: TAccountMetas[22];
-    tokenYProgram: TAccountMetas[23];
-    memoProgram: TAccountMetas[24];
-    systemProgram: TAccountMetas[25];
+    /** UserVault PDA — authorization checked in handler body (dual-caller) */
+    userVault: TAccountMetas[2];
+    position: TAccountMetas[3];
+    vault: TAccountMetas[4];
+    meteoraPosition: TAccountMetas[5];
+    lbPair: TAccountMetas[6];
+    binArrayBitmapExt: TAccountMetas[7];
+    binArrayLower: TAccountMetas[8];
+    binArrayUpper: TAccountMetas[9];
+    reserveX: TAccountMetas[10];
+    reserveY: TAccountMetas[11];
+    tokenXMint: TAccountMetas[12];
+    tokenYMint: TAccountMetas[13];
+    eventAuthority: TAccountMetas[14];
+    dlmmProgram: TAccountMetas[15];
+    vaultTokenX: TAccountMetas[16];
+    vaultTokenY: TAccountMetas[17];
+    userTokenX: TAccountMetas[18];
+    userTokenY: TAccountMetas[19];
+    roverAuthority: TAccountMetas[20];
+    roverFeeTokenX: TAccountMetas[21];
+    roverFeeTokenY: TAccountMetas[22];
+    tokenXProgram: TAccountMetas[23];
+    tokenYProgram: TAccountMetas[24];
+    memoProgram: TAccountMetas[25];
+    systemProgram: TAccountMetas[26];
   };
   data: UserCloseInstructionData;
 };
@@ -756,7 +784,7 @@ export function parseUserCloseInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedUserCloseInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 26) {
+  if (instruction.accounts.length < 27) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -769,8 +797,9 @@ export function parseUserCloseInstruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
-      user: getNextAccount(),
+      caller: getNextAccount(),
       config: getNextAccount(),
+      userVault: getNextAccount(),
       position: getNextAccount(),
       vault: getNextAccount(),
       meteoraPosition: getNextAccount(),

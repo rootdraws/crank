@@ -8,7 +8,9 @@
 //
 // Claims are cumulative: each root represents total lifetime entitlements.
 // The program tracks how much each user has already claimed and pays the delta.
-// Auto-claimed daily by the keeper (user pays gas from custody wallet).
+// Auto-claimed daily by the keeper. Bot fronts tx fees; the claim is bundled
+// with bin-farm's unwrap_wsol_in_vault in a single tx, whose deduct_gas
+// reimburses the bot from the user's vault PDA.
 
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
@@ -97,7 +99,8 @@ pub mod merkle_distributor {
     }
 
     /// Claim accumulated rewards. Anyone can call on behalf of the claimant
-    /// (bot auto-claims for custody wallets using user's SOL for tx fee).
+    /// (bot auto-claims for user vault PDAs; bot pays tx fee, reimbursed via
+    /// deduct_gas on the bundled bin-farm unwrap_wsol_in_vault instruction).
     ///
     /// `cumulative_amount` is the total lifetime entitlement from the current tree.
     /// The program pays out `cumulative_amount - already_claimed`.
@@ -199,7 +202,14 @@ pub mod merkle_distributor {
 
     /// Update the distribution mint and vault ATA. Authority-gated.
     /// Authority-gated. The new vault must be an ATA owned by the distributor PDA.
+    /// Old vault must be drained first to prevent stranding funds.
     pub fn update_mint(ctx: Context<UpdateMint>) -> Result<()> {
+        // Ensure old vault is empty before switching (prevents stranded funds)
+        require!(
+            ctx.accounts.old_vault.amount == 0,
+            DistributorError::VaultNotDrained
+        );
+
         let dist = &mut ctx.accounts.distributor;
         dist.mint = ctx.accounts.new_mint.key();
         dist.vault = ctx.accounts.new_vault.key();
@@ -353,6 +363,13 @@ pub struct UpdateMint<'info> {
 
     pub authority: Signer<'info>,
 
+    /// Current vault — must be drained (amount == 0) before mint can be changed.
+    #[account(
+        constraint = old_vault.key() == distributor.vault @ DistributorError::VaultMismatch,
+        token::authority = distributor,
+    )]
+    pub old_vault: InterfaceAccount<'info, TokenAccount>,
+
     pub new_mint: InterfaceAccount<'info, Mint>,
 
     /// New vault ATA owned by the distributor PDA, denominated in new_mint.
@@ -438,4 +455,6 @@ pub enum DistributorError {
     VaultMismatch,
     #[msg("No pending authority transfer")]
     NoPendingAuthority,
+    #[msg("Old vault must be drained before updating mint")]
+    VaultNotDrained,
 }

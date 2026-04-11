@@ -59,7 +59,7 @@ export function getPositionDiscriminatorBytes() {
 
 export type Position = {
   discriminator: ReadonlyUint8Array;
-  owner: Address;
+  userVault: Address;
   lbPair: Address;
   meteoraPosition: Address;
   side: Side;
@@ -72,7 +72,7 @@ export type Position = {
 };
 
 export type PositionArgs = {
-  owner: Address;
+  userVault: Address;
   lbPair: Address;
   meteoraPosition: Address;
   side: SideArgs;
@@ -88,7 +88,7 @@ export function getPositionEncoder(): FixedSizeEncoder<PositionArgs> {
   return transformEncoder(
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
-      ['owner', getAddressEncoder()],
+      ['userVault', getAddressEncoder()],
       ['lbPair', getAddressEncoder()],
       ['meteoraPosition', getAddressEncoder()],
       ['side', getSideEncoder()],
@@ -106,7 +106,7 @@ export function getPositionEncoder(): FixedSizeEncoder<PositionArgs> {
 export function getPositionDecoder(): FixedSizeDecoder<Position> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
-    ['owner', getAddressDecoder()],
+    ['userVault', getAddressDecoder()],
     ['lbPair', getAddressDecoder()],
     ['meteoraPosition', getAddressDecoder()],
     ['side', getSideDecoder()],

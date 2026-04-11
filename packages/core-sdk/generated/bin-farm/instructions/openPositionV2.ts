@@ -61,7 +61,8 @@ export function getOpenPositionV2DiscriminatorBytes() {
 
 export type OpenPositionV2Instruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
-  TAccountUser extends string | AccountMeta<string> = string,
+  TAccountBot extends string | AccountMeta<string> = string,
+  TAccountUserVault extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountLbPair extends string | AccountMeta<string> = string,
   TAccountPositionCounter extends string | AccountMeta<string> = string,
@@ -71,7 +72,7 @@ export type OpenPositionV2Instruction<
   TAccountReserveY extends string | AccountMeta<string> = string,
   TAccountPosition extends string | AccountMeta<string> = string,
   TAccountVault extends string | AccountMeta<string> = string,
-  TAccountUserTokenAccount extends string | AccountMeta<string> = string,
+  TAccountUserVaultDepositAta extends string | AccountMeta<string> = string,
   TAccountVaultTokenX extends string | AccountMeta<string> = string,
   TAccountVaultTokenY extends string | AccountMeta<string> = string,
   TAccountTokenXProgram extends string | AccountMeta<string> = string,
@@ -89,9 +90,12 @@ export type OpenPositionV2Instruction<
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
-      TAccountUser extends string
-        ? WritableSignerAccount<TAccountUser> & AccountSignerMeta<TAccountUser>
-        : TAccountUser,
+      TAccountBot extends string
+        ? WritableSignerAccount<TAccountBot> & AccountSignerMeta<TAccountBot>
+        : TAccountBot,
+      TAccountUserVault extends string
+        ? ReadonlyAccount<TAccountUserVault>
+        : TAccountUserVault,
       TAccountConfig extends string
         ? WritableAccount<TAccountConfig>
         : TAccountConfig,
@@ -119,9 +123,9 @@ export type OpenPositionV2Instruction<
       TAccountVault extends string
         ? WritableAccount<TAccountVault>
         : TAccountVault,
-      TAccountUserTokenAccount extends string
-        ? WritableAccount<TAccountUserTokenAccount>
-        : TAccountUserTokenAccount,
+      TAccountUserVaultDepositAta extends string
+        ? WritableAccount<TAccountUserVaultDepositAta>
+        : TAccountUserVaultDepositAta,
       TAccountVaultTokenX extends string
         ? WritableAccount<TAccountVaultTokenX>
         : TAccountVaultTokenX,
@@ -212,7 +216,8 @@ export function getOpenPositionV2InstructionDataCodec(): FixedSizeCodec<
 }
 
 export type OpenPositionV2AsyncInput<
-  TAccountUser extends string = string,
+  TAccountBot extends string = string,
+  TAccountUserVault extends string = string,
   TAccountConfig extends string = string,
   TAccountLbPair extends string = string,
   TAccountPositionCounter extends string = string,
@@ -222,7 +227,7 @@ export type OpenPositionV2AsyncInput<
   TAccountReserveY extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
-  TAccountUserTokenAccount extends string = string,
+  TAccountUserVaultDepositAta extends string = string,
   TAccountVaultTokenX extends string = string,
   TAccountVaultTokenY extends string = string,
   TAccountTokenXProgram extends string = string,
@@ -235,7 +240,8 @@ export type OpenPositionV2AsyncInput<
   TAccountTokenXMint extends string = string,
   TAccountTokenYMint extends string = string,
 > = {
-  user: TransactionSigner<TAccountUser>;
+  bot: TransactionSigner<TAccountBot>;
+  userVault: Address<TAccountUserVault>;
   config?: Address<TAccountConfig>;
   lbPair: Address<TAccountLbPair>;
   positionCounter?: Address<TAccountPositionCounter>;
@@ -245,7 +251,7 @@ export type OpenPositionV2AsyncInput<
   reserveY: Address<TAccountReserveY>;
   position?: Address<TAccountPosition>;
   vault?: Address<TAccountVault>;
-  userTokenAccount: Address<TAccountUserTokenAccount>;
+  userVaultDepositAta: Address<TAccountUserVaultDepositAta>;
   vaultTokenX: Address<TAccountVaultTokenX>;
   vaultTokenY: Address<TAccountVaultTokenY>;
   tokenXProgram: Address<TAccountTokenXProgram>;
@@ -265,7 +271,8 @@ export type OpenPositionV2AsyncInput<
 };
 
 export async function getOpenPositionV2InstructionAsync<
-  TAccountUser extends string,
+  TAccountBot extends string,
+  TAccountUserVault extends string,
   TAccountConfig extends string,
   TAccountLbPair extends string,
   TAccountPositionCounter extends string,
@@ -275,7 +282,7 @@ export async function getOpenPositionV2InstructionAsync<
   TAccountReserveY extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
-  TAccountUserTokenAccount extends string,
+  TAccountUserVaultDepositAta extends string,
   TAccountVaultTokenX extends string,
   TAccountVaultTokenY extends string,
   TAccountTokenXProgram extends string,
@@ -290,7 +297,8 @@ export async function getOpenPositionV2InstructionAsync<
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
   input: OpenPositionV2AsyncInput<
-    TAccountUser,
+    TAccountBot,
+    TAccountUserVault,
     TAccountConfig,
     TAccountLbPair,
     TAccountPositionCounter,
@@ -300,7 +308,7 @@ export async function getOpenPositionV2InstructionAsync<
     TAccountReserveY,
     TAccountPosition,
     TAccountVault,
-    TAccountUserTokenAccount,
+    TAccountUserVaultDepositAta,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
     TAccountTokenXProgram,
@@ -317,7 +325,8 @@ export async function getOpenPositionV2InstructionAsync<
 ): Promise<
   OpenPositionV2Instruction<
     TProgramAddress,
-    TAccountUser,
+    TAccountBot,
+    TAccountUserVault,
     TAccountConfig,
     TAccountLbPair,
     TAccountPositionCounter,
@@ -327,7 +336,7 @@ export async function getOpenPositionV2InstructionAsync<
     TAccountReserveY,
     TAccountPosition,
     TAccountVault,
-    TAccountUserTokenAccount,
+    TAccountUserVaultDepositAta,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
     TAccountTokenXProgram,
@@ -346,7 +355,8 @@ export async function getOpenPositionV2InstructionAsync<
 
   // Original accounts.
   const originalAccounts = {
-    user: { value: input.user ?? null, isWritable: true },
+    bot: { value: input.bot ?? null, isWritable: true },
+    userVault: { value: input.userVault ?? null, isWritable: false },
     config: { value: input.config ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
     positionCounter: { value: input.positionCounter ?? null, isWritable: true },
@@ -359,8 +369,8 @@ export async function getOpenPositionV2InstructionAsync<
     reserveY: { value: input.reserveY ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: true },
-    userTokenAccount: {
-      value: input.userTokenAccount ?? null,
+    userVaultDepositAta: {
+      value: input.userVaultDepositAta ?? null,
       isWritable: true,
     },
     vaultTokenX: { value: input.vaultTokenX ?? null, isWritable: true },
@@ -399,7 +409,7 @@ export async function getOpenPositionV2InstructionAsync<
         getBytesEncoder().encode(
           new Uint8Array([112, 111, 115, 95, 99, 111, 117, 110, 116, 101, 114])
         ),
-        getAddressEncoder().encode(expectAddress(accounts.user.value)),
+        getAddressEncoder().encode(expectAddress(accounts.userVault.value)),
         getAddressEncoder().encode(expectAddress(accounts.lbPair.value)),
       ],
     });
@@ -436,7 +446,8 @@ export async function getOpenPositionV2InstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.user),
+      getAccountMeta(accounts.bot),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.lbPair),
       getAccountMeta(accounts.positionCounter),
@@ -446,7 +457,7 @@ export async function getOpenPositionV2InstructionAsync<
       getAccountMeta(accounts.reserveY),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
-      getAccountMeta(accounts.userTokenAccount),
+      getAccountMeta(accounts.userVaultDepositAta),
       getAccountMeta(accounts.vaultTokenX),
       getAccountMeta(accounts.vaultTokenY),
       getAccountMeta(accounts.tokenXProgram),
@@ -465,7 +476,8 @@ export async function getOpenPositionV2InstructionAsync<
     programAddress,
   } as OpenPositionV2Instruction<
     TProgramAddress,
-    TAccountUser,
+    TAccountBot,
+    TAccountUserVault,
     TAccountConfig,
     TAccountLbPair,
     TAccountPositionCounter,
@@ -475,7 +487,7 @@ export async function getOpenPositionV2InstructionAsync<
     TAccountReserveY,
     TAccountPosition,
     TAccountVault,
-    TAccountUserTokenAccount,
+    TAccountUserVaultDepositAta,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
     TAccountTokenXProgram,
@@ -491,7 +503,8 @@ export async function getOpenPositionV2InstructionAsync<
 }
 
 export type OpenPositionV2Input<
-  TAccountUser extends string = string,
+  TAccountBot extends string = string,
+  TAccountUserVault extends string = string,
   TAccountConfig extends string = string,
   TAccountLbPair extends string = string,
   TAccountPositionCounter extends string = string,
@@ -501,7 +514,7 @@ export type OpenPositionV2Input<
   TAccountReserveY extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
-  TAccountUserTokenAccount extends string = string,
+  TAccountUserVaultDepositAta extends string = string,
   TAccountVaultTokenX extends string = string,
   TAccountVaultTokenY extends string = string,
   TAccountTokenXProgram extends string = string,
@@ -514,7 +527,8 @@ export type OpenPositionV2Input<
   TAccountTokenXMint extends string = string,
   TAccountTokenYMint extends string = string,
 > = {
-  user: TransactionSigner<TAccountUser>;
+  bot: TransactionSigner<TAccountBot>;
+  userVault: Address<TAccountUserVault>;
   config: Address<TAccountConfig>;
   lbPair: Address<TAccountLbPair>;
   positionCounter: Address<TAccountPositionCounter>;
@@ -524,7 +538,7 @@ export type OpenPositionV2Input<
   reserveY: Address<TAccountReserveY>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
-  userTokenAccount: Address<TAccountUserTokenAccount>;
+  userVaultDepositAta: Address<TAccountUserVaultDepositAta>;
   vaultTokenX: Address<TAccountVaultTokenX>;
   vaultTokenY: Address<TAccountVaultTokenY>;
   tokenXProgram: Address<TAccountTokenXProgram>;
@@ -544,7 +558,8 @@ export type OpenPositionV2Input<
 };
 
 export function getOpenPositionV2Instruction<
-  TAccountUser extends string,
+  TAccountBot extends string,
+  TAccountUserVault extends string,
   TAccountConfig extends string,
   TAccountLbPair extends string,
   TAccountPositionCounter extends string,
@@ -554,7 +569,7 @@ export function getOpenPositionV2Instruction<
   TAccountReserveY extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
-  TAccountUserTokenAccount extends string,
+  TAccountUserVaultDepositAta extends string,
   TAccountVaultTokenX extends string,
   TAccountVaultTokenY extends string,
   TAccountTokenXProgram extends string,
@@ -569,7 +584,8 @@ export function getOpenPositionV2Instruction<
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
   input: OpenPositionV2Input<
-    TAccountUser,
+    TAccountBot,
+    TAccountUserVault,
     TAccountConfig,
     TAccountLbPair,
     TAccountPositionCounter,
@@ -579,7 +595,7 @@ export function getOpenPositionV2Instruction<
     TAccountReserveY,
     TAccountPosition,
     TAccountVault,
-    TAccountUserTokenAccount,
+    TAccountUserVaultDepositAta,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
     TAccountTokenXProgram,
@@ -595,7 +611,8 @@ export function getOpenPositionV2Instruction<
   config?: { programAddress?: TProgramAddress }
 ): OpenPositionV2Instruction<
   TProgramAddress,
-  TAccountUser,
+  TAccountBot,
+  TAccountUserVault,
   TAccountConfig,
   TAccountLbPair,
   TAccountPositionCounter,
@@ -605,7 +622,7 @@ export function getOpenPositionV2Instruction<
   TAccountReserveY,
   TAccountPosition,
   TAccountVault,
-  TAccountUserTokenAccount,
+  TAccountUserVaultDepositAta,
   TAccountVaultTokenX,
   TAccountVaultTokenY,
   TAccountTokenXProgram,
@@ -623,7 +640,8 @@ export function getOpenPositionV2Instruction<
 
   // Original accounts.
   const originalAccounts = {
-    user: { value: input.user ?? null, isWritable: true },
+    bot: { value: input.bot ?? null, isWritable: true },
+    userVault: { value: input.userVault ?? null, isWritable: false },
     config: { value: input.config ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
     positionCounter: { value: input.positionCounter ?? null, isWritable: true },
@@ -636,8 +654,8 @@ export function getOpenPositionV2Instruction<
     reserveY: { value: input.reserveY ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: true },
-    userTokenAccount: {
-      value: input.userTokenAccount ?? null,
+    userVaultDepositAta: {
+      value: input.userVaultDepositAta ?? null,
       isWritable: true,
     },
     vaultTokenX: { value: input.vaultTokenX ?? null, isWritable: true },
@@ -669,7 +687,8 @@ export function getOpenPositionV2Instruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.user),
+      getAccountMeta(accounts.bot),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.lbPair),
       getAccountMeta(accounts.positionCounter),
@@ -679,7 +698,7 @@ export function getOpenPositionV2Instruction<
       getAccountMeta(accounts.reserveY),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
-      getAccountMeta(accounts.userTokenAccount),
+      getAccountMeta(accounts.userVaultDepositAta),
       getAccountMeta(accounts.vaultTokenX),
       getAccountMeta(accounts.vaultTokenY),
       getAccountMeta(accounts.tokenXProgram),
@@ -698,7 +717,8 @@ export function getOpenPositionV2Instruction<
     programAddress,
   } as OpenPositionV2Instruction<
     TProgramAddress,
-    TAccountUser,
+    TAccountBot,
+    TAccountUserVault,
     TAccountConfig,
     TAccountLbPair,
     TAccountPositionCounter,
@@ -708,7 +728,7 @@ export function getOpenPositionV2Instruction<
     TAccountReserveY,
     TAccountPosition,
     TAccountVault,
-    TAccountUserTokenAccount,
+    TAccountUserVaultDepositAta,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
     TAccountTokenXProgram,
@@ -729,28 +749,29 @@ export type ParsedOpenPositionV2Instruction<
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    user: TAccountMetas[0];
-    config: TAccountMetas[1];
-    lbPair: TAccountMetas[2];
-    positionCounter: TAccountMetas[3];
-    meteoraPosition: TAccountMetas[4];
-    binArrayBitmapExt: TAccountMetas[5];
-    reserveX: TAccountMetas[6];
-    reserveY: TAccountMetas[7];
-    position: TAccountMetas[8];
-    vault: TAccountMetas[9];
-    userTokenAccount: TAccountMetas[10];
-    vaultTokenX: TAccountMetas[11];
-    vaultTokenY: TAccountMetas[12];
-    tokenXProgram: TAccountMetas[13];
-    tokenYProgram: TAccountMetas[14];
-    systemProgram: TAccountMetas[15];
-    binArrayLower: TAccountMetas[16];
-    binArrayUpper: TAccountMetas[17];
-    eventAuthority: TAccountMetas[18];
-    dlmmProgram: TAccountMetas[19];
-    tokenXMint: TAccountMetas[20];
-    tokenYMint: TAccountMetas[21];
+    bot: TAccountMetas[0];
+    userVault: TAccountMetas[1];
+    config: TAccountMetas[2];
+    lbPair: TAccountMetas[3];
+    positionCounter: TAccountMetas[4];
+    meteoraPosition: TAccountMetas[5];
+    binArrayBitmapExt: TAccountMetas[6];
+    reserveX: TAccountMetas[7];
+    reserveY: TAccountMetas[8];
+    position: TAccountMetas[9];
+    vault: TAccountMetas[10];
+    userVaultDepositAta: TAccountMetas[11];
+    vaultTokenX: TAccountMetas[12];
+    vaultTokenY: TAccountMetas[13];
+    tokenXProgram: TAccountMetas[14];
+    tokenYProgram: TAccountMetas[15];
+    systemProgram: TAccountMetas[16];
+    binArrayLower: TAccountMetas[17];
+    binArrayUpper: TAccountMetas[18];
+    eventAuthority: TAccountMetas[19];
+    dlmmProgram: TAccountMetas[20];
+    tokenXMint: TAccountMetas[21];
+    tokenYMint: TAccountMetas[22];
   };
   data: OpenPositionV2InstructionData;
 };
@@ -763,7 +784,7 @@ export function parseOpenPositionV2Instruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedOpenPositionV2Instruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 22) {
+  if (instruction.accounts.length < 23) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -776,7 +797,8 @@ export function parseOpenPositionV2Instruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
-      user: getNextAccount(),
+      bot: getNextAccount(),
+      userVault: getNextAccount(),
       config: getNextAccount(),
       lbPair: getNextAccount(),
       positionCounter: getNextAccount(),
@@ -786,7 +808,7 @@ export function parseOpenPositionV2Instruction<
       reserveY: getNextAccount(),
       position: getNextAccount(),
       vault: getNextAccount(),
-      userTokenAccount: getNextAccount(),
+      userVaultDepositAta: getNextAccount(),
       vaultTokenX: getNextAccount(),
       vaultTokenY: getNextAccount(),
       tokenXProgram: getNextAccount(),

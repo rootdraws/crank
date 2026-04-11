@@ -1,9 +1,11 @@
 /**
  * discord-bot/src/notifier.ts
  *
- * Two outputs for every protocol event:
- * 1. DM to the position owner (private)
- * 2. Post to the feed channel (public — the protocol's heartbeat)
+ * Two destinations:
+ * 1. Feed channel (public — protocol heartbeat for users: harvests, closes, epoch success)
+ * 2. Ops channel (private — bot health alerts: gRPC down, low balance, keeper failures, divergence)
+ *
+ * Each protocol event also DMs the position owner directly.
  */
 
 import { Client, TextChannel } from 'discord.js';
@@ -12,6 +14,7 @@ import { formatHarvestDM, formatClosedDM, formatFeedHarvested, formatFeedClosed 
 
 export class DiscordNotifier {
   private feedChannel: TextChannel | null = null;
+  private opsChannel: TextChannel | null = null;
 
   constructor(
     private client: Client,
@@ -19,6 +22,7 @@ export class DiscordNotifier {
   ) {
     this.client.on('ready', () => {
       this.resolveFeedChannel();
+      this.resolveOpsChannel();
     });
   }
 
@@ -37,6 +41,21 @@ export class DiscordNotifier {
     }
   }
 
+  private async resolveOpsChannel(): Promise<void> {
+    const channelId = process.env.DISCORD_OPS_CHANNEL_ID;
+    if (!channelId) return;
+
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (channel?.isTextBased() && 'send' in channel) {
+        this.opsChannel = channel as TextChannel;
+        console.log(`[notifier] Ops channel resolved: #${(channel as TextChannel).name}`);
+      }
+    } catch (e: any) {
+      console.warn(`[notifier] Failed to resolve ops channel ${channelId}: ${e.message}`);
+    }
+  }
+
   async onHarvestExecuted(data: {
     positionPDA: string;
     lbPair: string;
@@ -49,13 +68,20 @@ export class DiscordNotifier {
     totalHarvested?: string;
     txSig?: string;
   }): Promise<void> {
-    const userId = this.walletService.getUserIdForOwner(data.owner);
+    const userId = this.walletService.getUserIdForVault(data.owner);
+
+    // amount_out is whichever side is nonzero (the converted output).
+    // Note: BigInt('0') is 0n but '0' is truthy, so nullish-coalesce on strings
+    // would always pick tokenXAmount even when zero. Use bigint comparison.
+    const xAmt = BigInt(data.tokenXAmount ?? '0');
+    const yAmt = BigInt(data.tokenYAmount ?? '0');
+    const amountOutRaw = xAmt > yAmt ? xAmt : yAmt;
 
     this.walletService.saveHarvest({
       positionPda: data.positionPDA,
-      walletPubkey: data.owner,
+      vaultPda: data.owner,
       lbPair: data.lbPair,
-      amountOut: BigInt(data.tokenXAmount ?? data.tokenYAmount ?? '0'),
+      amountOut: amountOutRaw,
       feeTaken: BigInt(data.feeAmount ?? '0'),
       txSig: data.txSig ?? '',
       slot: 0,
@@ -108,7 +134,7 @@ export class DiscordNotifier {
     side: 'Buy' | 'Sell';
     txSig?: string;
   }): Promise<void> {
-    const userId = this.walletService.getUserIdForOwner(data.owner);
+    const userId = this.walletService.getUserIdForVault(data.owner);
 
     this.walletService.closePosition(data.positionPDA);
 
@@ -146,15 +172,11 @@ export class DiscordNotifier {
   }
 
   /**
-   * Called after new_epoch completes. For each user in the Merkle tree:
-   * - If they have SOL for gas: auto-claim using their custody keypair, DM confirmation
-   * - If they're dry: DM them to deposit SOL or /claim manually
-   *
-   * Wired from keeper after crankNewEpoch() succeeds.
-   * Requires: IPFS tree data (leaves with wallet, cumulative_amount, proof)
-   *           + Connection for submitting claim txs
-   *
-   * TODO: implement when epoch-computer lands
+   * Called after new_epoch completes. Auto-claim itself is handled by
+   * epoch-computer in the keeper's daily sequence — bot fronts the tx fee
+   * and is reimbursed from each user's vault PDA via deduct_gas on the
+   * bundled unwrap_wsol_in_vault. This stub is a placeholder for future
+   * per-user DM notifications after distribution lands.
    */
   async onEpochComplete(data: {
     epoch: number;
@@ -168,6 +190,10 @@ export class DiscordNotifier {
 
   async postToFeed(text: string): Promise<void> {
     await this.sendToFeed(text);
+  }
+
+  async postToOps(text: string): Promise<void> {
+    await this.sendToOps(text);
   }
 
   private async sendDM(discordUserId: string, text: string): Promise<void> {
@@ -185,6 +211,17 @@ export class DiscordNotifier {
       await this.feedChannel.send({ content: text, flags: 1 << 2 });
     } catch (e: any) {
       console.warn(`[notifier] Failed to post to feed: ${e.message}`);
+    }
+  }
+
+  private async sendToOps(text: string): Promise<void> {
+    // Ops channel is optional — if not configured, silently drop the alert.
+    // (Logs still go to pm2 via the alerter, so nothing is lost.)
+    if (!this.opsChannel) return;
+    try {
+      await this.opsChannel.send({ content: text, flags: 1 << 2 });
+    } catch (e: any) {
+      console.warn(`[notifier] Failed to post to ops: ${e.message}`);
     }
   }
 }

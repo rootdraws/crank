@@ -25,6 +25,7 @@ import {
   type ParsedClaimFeesInstruction,
   type ParsedClosePositionInstruction,
   type ParsedCloseRoverTokenAccountInstruction,
+  type ParsedCreateVaultInstruction,
   type ParsedHarvestBinsInstruction,
   type ParsedInitializeInstruction,
   type ParsedInitializeRoverInstruction,
@@ -39,10 +40,17 @@ import {
   type ParsedSweepRoverInstruction,
   type ParsedTransferAuthorityInstruction,
   type ParsedUnpauseInstruction,
+  type ParsedUnwrapWsolInVaultInstruction,
   type ParsedUpdateBotInstruction,
+  type ParsedUpdateGasLamportsInstruction,
   type ParsedUpdateKeeperTipBpsInstruction,
   type ParsedUpdatePrioritySlotsInstruction,
   type ParsedUserCloseInstruction,
+  type ParsedVaultBurnAndMintInstruction,
+  type ParsedVaultVoteInstruction,
+  type ParsedWithdrawSolInstruction,
+  type ParsedWithdrawTokenInstruction,
+  type ParsedWrapSolInVaultInstruction,
 } from '../instructions';
 
 export const BIN_FARM_PROGRAM_ADDRESS =
@@ -53,6 +61,7 @@ export enum BinFarmAccount {
   Position,
   PositionCounter,
   RoverAuthority,
+  UserVault,
   Vault,
 }
 
@@ -108,6 +117,17 @@ export function identifyBinFarmAccount(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([23, 76, 96, 159, 210, 10, 5, 22])
+      ),
+      0
+    )
+  ) {
+    return BinFarmAccount.UserVault;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([211, 8, 232, 43, 2, 152, 117, 119])
       ),
       0
@@ -132,6 +152,7 @@ export enum BinFarmInstruction {
   ClaimFees,
   ClosePosition,
   CloseRoverTokenAccount,
+  CreateVault,
   HarvestBins,
   Initialize,
   InitializeRover,
@@ -146,10 +167,17 @@ export enum BinFarmInstruction {
   SweepRover,
   TransferAuthority,
   Unpause,
+  UnwrapWsolInVault,
   UpdateBot,
+  UpdateGasLamports,
   UpdateKeeperTipBps,
   UpdatePrioritySlots,
   UserClose,
+  VaultBurnAndMint,
+  VaultVote,
+  WithdrawSol,
+  WithdrawToken,
+  WrapSolInVault,
 }
 
 export function identifyBinFarmInstruction(
@@ -276,6 +304,17 @@ export function identifyBinFarmInstruction(
     )
   ) {
     return BinFarmInstruction.CloseRoverTokenAccount;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([29, 237, 247, 208, 193, 82, 54, 135])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.CreateVault;
   }
   if (
     containsBytes(
@@ -435,12 +474,34 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([190, 241, 246, 59, 88, 255, 211, 53])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.UnwrapWsolInVault;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([72, 160, 124, 173, 234, 179, 108, 203])
       ),
       0
     )
   ) {
     return BinFarmInstruction.UpdateBot;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([115, 122, 48, 61, 209, 23, 155, 227])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.UpdateGasLamports;
   }
   if (
     containsBytes(
@@ -474,6 +535,61 @@ export function identifyBinFarmInstruction(
     )
   ) {
     return BinFarmInstruction.UserClose;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([166, 113, 37, 160, 70, 112, 253, 159])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.VaultBurnAndMint;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([238, 243, 209, 135, 30, 54, 178, 226])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.VaultVote;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([145, 131, 74, 136, 65, 137, 42, 38])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.WithdrawSol;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([136, 235, 181, 5, 101, 109, 57, 81])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.WithdrawToken;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([178, 209, 149, 140, 92, 202, 99, 167])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.WrapSolInVault;
   }
   throw new Error(
     'The provided instruction could not be identified as a binFarm instruction.'
@@ -517,6 +633,9 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.CloseRoverTokenAccount;
     } & ParsedCloseRoverTokenAccountInstruction<TProgram>)
   | ({
+      instructionType: BinFarmInstruction.CreateVault;
+    } & ParsedCreateVaultInstruction<TProgram>)
+  | ({
       instructionType: BinFarmInstruction.HarvestBins;
     } & ParsedHarvestBinsInstruction<TProgram>)
   | ({
@@ -559,8 +678,14 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.Unpause;
     } & ParsedUnpauseInstruction<TProgram>)
   | ({
+      instructionType: BinFarmInstruction.UnwrapWsolInVault;
+    } & ParsedUnwrapWsolInVaultInstruction<TProgram>)
+  | ({
       instructionType: BinFarmInstruction.UpdateBot;
     } & ParsedUpdateBotInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.UpdateGasLamports;
+    } & ParsedUpdateGasLamportsInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.UpdateKeeperTipBps;
     } & ParsedUpdateKeeperTipBpsInstruction<TProgram>)
@@ -569,4 +694,19 @@ export type ParsedBinFarmInstruction<
     } & ParsedUpdatePrioritySlotsInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.UserClose;
-    } & ParsedUserCloseInstruction<TProgram>);
+    } & ParsedUserCloseInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.VaultBurnAndMint;
+    } & ParsedVaultBurnAndMintInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.VaultVote;
+    } & ParsedVaultVoteInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.WithdrawSol;
+    } & ParsedWithdrawSolInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.WithdrawToken;
+    } & ParsedWithdrawTokenInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.WrapSolInVault;
+    } & ParsedWrapSolInVaultInstruction<TProgram>);

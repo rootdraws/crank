@@ -1,6 +1,6 @@
 # crank.money — GTM Strategy
 
-> Post-Discord bot launch. Updated 2026-03-29.
+> Post-Discord bot launch. Updated 2026-04-08.
 
 ---
 
@@ -11,7 +11,7 @@ Yield-bearing ranged limit orders via chat bot. Not swaps — DLMM positions tha
 - **0.3% fee on converted output only** (competitors charge 0.5–1% on every swap)
 - **80% revenue share** — SOL distributed daily to users via Merkle (competitors share 0%)
 - **Permissionless everything** — no fund lock-up, anyone can crank
-- **Custody without wallet connection** — users never expose their main wallet
+- **Non-custodial PDA vaults** — user funds on-chain, server compromise can't steal. No wallet connection needed.
 
 Competitors (Trojan, Bonkbot, Banana Gun, Maestro, GMGN, Bloom, MEVX, BankrBot) are swap bots. We're a managed LP product in a chat interface. Different category.
 
@@ -24,7 +24,7 @@ HawkFi is the closest competitor (high-frequency DLMM automation) but has no tok
 These must land before GTM outreach converts to retention:
 
 ### 1. Epoch-Computer — End-to-End Test
-The 80% revenue share is the headline pitch. The epoch-computer code exists (`bot/epoch-computer.ts`) but has never run a real epoch. Needs end-to-end test to verify drain → WSOL → Merkle → auto-claim. **This is the #1 blocker.**
+The 80% revenue share is the headline pitch. The epoch-computer code exists (`bot/epoch-computer.ts`) and has been hardened (2026-04-08): BN precision fix, dynamic rent, harvest logging, claim throttle, 27 unit tests (Merkle proof verification passes), epoch-miss alerting wired into keeper, standalone test script (`scripts/test-epoch.ts`). **Needs live E2E test on mainnet after bin-farm deploy. This is the #1 blocker.**
 
 ### 2. Token Metadata
 $BANK has zero metadata. Looks like a scam token in Phantom/Solflare. Anyone you onboard will see this immediately. Register Metaplex metadata, host logo on Arweave.
@@ -35,7 +35,7 @@ Clean documentation, working socials, crank art everywhere. The product needs to
 ### 4. Analytics Dashboard (Discord Channel)
 Before pitching to anyone, have real numbers to show. Add a `#crank-stats` channel to the Discord that posts:
 
-- **User count** — total custody wallets created (from `walletService`)
+- **User count** — total vault PDAs created (from `walletService`)
 - **Daily active users** — unique users who ran a command in the last 24h
 - **Daily volume** — USD value of positions opened + closed
 - **Harvests today** — count + total value harvested
@@ -290,6 +290,8 @@ subnet intelligence layer and protocol engineering.
 
 ## Competitor Landscape
 
+### Swap Bots (different category — they swap, we LP)
+
 | Bot | Type | Fee | Rev Share | Unique Angle |
 |-----|------|-----|-----------|--------------|
 | Trojan | Swap bot | ~0.5-1% | 0% | Speed, UX |
@@ -297,14 +299,23 @@ subnet intelligence layer and protocol engineering.
 | Banana Gun | Swap bot | ~0.5-1% | Token buyback | Sniper, MEV |
 | Maestro | Swap bot | ~1% | 0% | Multi-chain |
 | GMGN | Swap/analytics | Varies | 0% | Smart money tracking |
-| Bloom | Swap bot | TBD | TBD | New entrant |
-| MEVX | Swap bot | TBD | TBD | MEV-focused |
 | BankrBot | Text-based trading | TBD | TBD | X post execution, agent CLI, Hyperliquid |
-| HawkFi | DLMM automation | TBD | TBD | High-frequency LP, Fabriq partnership |
-| lpAgent | DLMM tooling/API | TBD | TBD | API for vibe-coded LP bots |
-| **crank.money** | **Managed DLMM** | **0.3% on output** | **80% (40/40/20)** | **Ranged limit orders, LP fees while waiting, $BANK governance, SOL revenue share** |
 
-Key differentiator: everyone else is a swap bot. We're a managed LP product with a revenue-share flywheel.
+### LP Automation (same category — direct competitors)
+
+| Player | Status | Traction | Model | What They Don't Do |
+|--------|--------|----------|-------|--------------------|
+| **MetEngine** | C3 accelerator, 2nd Place DeFi Breakout ($20K) | $26M vol, 2K users, $400K fees | Copy-LP via Telegram (mirror top wallets, 5 sizing strategies) | No community treasury, no Merkle distro, no B2B |
+| **HawkFi** | Live, rebranding from Hawksight | $50M TVL, $9.4M all-time fees, $5.8B vol | Vault-based auto-rebalance (Meteora DLMM + Orca CLMM) | No community treasury, no Merkle distro, no B2B |
+| **LP Agent** | Live on The Grid | Unknown | AI chatbot for pool discovery + rebalancing | No community dimension, no distribution |
+| **Maiker.fun** | Early access (The Grid) | Unknown | Concentrated liquidity vaults | Vault model, individual deposits |
+| **crank.money** | **Live, hackathon mode** | **Production bot, 5 on-chain programs** | **Community LP-as-a-Service + Merkle fee distribution** | **The only one doing B2B community treasury LP** |
+
+### Colosseum Hackathon Context (Copilot deep dive, 2026-04-07)
+- 10+ LP automation projects across Breakout and Cypherpunk hackathons — ALL B2C individual LP tools
+- MetEngine is the benchmark: $26M vol + C3 accelerator. To compete, need working epoch distributions or community traction.
+- Zero projects do community LP-as-a-Service with Merkle distribution. The segment is open.
+- 55 yield aggregators indexed on The Grid for Solana. Crowded for individual LP, open for community LP.
 
 ---
 
@@ -351,15 +362,22 @@ Same data, available to any user in the Discord.
 
 ---
 
-## Action Priority (What to Do First)
+## Action Priority (Hackathon Sequence — April 2026)
 
-1. **Ship epoch-computer** — flywheel must turn before pitching revenue share
-2. **Register token metadata** — $BANK must look legit in wallets
-3. **Build analytics** — `#crank-stats` channel + `/stats` command
-4. **Execute GSD launch plan** — first community, prove the playbook
-5. **Record demo video** — one shoot, three cuts (Mert/angel, GSD/community, general)
-6. **DM the warm leads** — Mert, Eno, Simon, Shek, Tamar, Sepherim (in that order)
-7. **LP Army partnership** — partner page + content series
-8. **Superteam + Luminaries** — grants + distribution
-9. **MonkeDAO incubator application** — submit
-10. **Dexter/x402 integration** — SDK eval + demo for BranchM
+**Phase A — Ship quietly (first half of hackathon):**
+1. ~~**PDA vault migration**~~ — **DONE (2026-04-08).** Non-custodial vaults, 8 new instructions, gas model, all commands updated.
+2. **Epoch E2E test** — code hardened + 27 unit tests + test script ready. Run `scripts/test-epoch.ts` after bin-farm deploy.
+3. **$BANK metadata** — register Metaplex metadata so token stops looking like a scam
+4. **Web rebrand** — reposition as "community-first market making tool"
+
+**Phase B — Go public (second half of hackathon):**
+5. **Activate @libraryofCrank** — turn on the CRM X agent, start tribal engagement
+6. **LP Army demos** — AlekssRG (rated 10), satsmonkes, cryptattttone. They understand DLMM, they're warm.
+7. **Record demo video** — "how this tool benefits your community"
+8. **Build analytics** — `#crank-stats` channel + `/stats` command (show real numbers)
+
+**Post-hackathon:**
+9. **DM warm leads** — Mert, Eno, Simon, Shek, Tamar, Sepherim
+10. **LP Army partnership** — partner page + content series
+11. **Superteam + Luminaries** — grants + distribution
+12. **Dexter/x402 integration** — SDK eval + demo for BranchM

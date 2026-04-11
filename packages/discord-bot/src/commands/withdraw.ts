@@ -1,5 +1,6 @@
 import { ChatInputCommandInteraction } from 'discord.js';
 import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import { BN } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token';
 import {
   signAndSendLegacy,
@@ -19,20 +20,26 @@ const TOKEN_META: Record<string, { decimals: number; program: PublicKey }> = {
 export async function handleWithdraw(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
   const userId = `discord:${interaction.user.id}`;
 
-  const lockedAddr = await tryLockDepositor(ctx.connection, ctx.walletService, userId);
-  if (!lockedAddr) {
+  const vaultPda = ctx.walletService.getVaultPda(userId);
+  if (!vaultPda) {
     await interaction.reply({
-      content: 'No withdraw address detected.\nDeposit SOL from your personal wallet first — that wallet becomes your withdraw address.',
+      content: 'No vault found. Run `/start wallet:<your-solana-address>` first.',
       ephemeral: true,
     });
     return;
   }
 
+  const ownerWallet = ctx.walletService.getOwnerWallet(userId);
+  if (!ownerWallet) {
+    await interaction.reply({ content: 'Vault has no owner wallet set.', ephemeral: true });
+    return;
+  }
+
   const input = interaction.options.getString('amount')?.trim() ?? '';
-  const destPubkey = new PublicKey(lockedAddr);
+  const destPubkey = ownerWallet;
+  const lockedAddr = ownerWallet.toBase58();
   const destShort = `${lockedAddr.slice(0, 4)}...${lockedAddr.slice(-4)}`;
-  const keypair = ctx.walletService.getOrCreate(userId);
-  const user = keypair.publicKey;
+  const user = vaultPda; // vault PDA is the "account" that holds funds
 
   // Bare /withdraw — show balances + withdraw wallet + example
   if (!input) {
@@ -73,14 +80,17 @@ export async function handleWithdraw(interaction: ChatInputCommandInteraction, c
   await interaction.deferReply({ ephemeral: true });
 
   try {
+    const bot = ctx.botKeypair;
+
     if (tokenSymbol === 'SOL') {
       let lamports: bigint;
 
       if (amountStr === 'all') {
         const balance = await ctx.connection.getBalance(user);
-        const reserve = 10_000_000n;
+        // Reserve rent-exempt minimum for vault PDA (~0.001 SOL)
+        const reserve = 1_000_000n;
         lamports = BigInt(balance) - reserve;
-        if (lamports <= 0n) throw new Error('insufficient SOL (need to keep ~0.01 for rent)');
+        if (lamports <= 0n) throw new Error('insufficient SOL in vault');
       } else {
         const amount = parseFloat(amountStr);
         if (isNaN(amount) || amount <= 0) {
@@ -90,10 +100,31 @@ export async function handleWithdraw(interaction: ChatInputCommandInteraction, c
         lamports = BigInt(Math.round(amount * 1e9));
       }
 
-      const tx = new Transaction().add(
-        SystemProgram.transfer({ fromPubkey: user, toPubkey: destPubkey, lamports })
-      );
-      const sig = await signAndSendLegacy(tx, keypair, ctx.connection);
+      // Unwrap any WSOL in vault first (from harvests/claims) so it's available as native SOL
+      try {
+        const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, vaultPda, true, TOKEN_PROGRAM_ID);
+        const wsolInfo = await ctx.connection.getAccountInfo(wsolAta);
+        if (wsolInfo) {
+          await ctx.coreProgram.methods
+            .unwrapWsolInVault()
+            .accounts({ caller: bot.publicKey, config: ctx.configPDA, userVault: vaultPda, vaultWsolAta: wsolAta, tokenProgram: TOKEN_PROGRAM_ID })
+            .signers([bot])
+            .rpc();
+        }
+      } catch { /* ATA might be empty or already closed */ }
+
+      // Call on-chain withdraw_sol (bot signs, program enforces destination = vault.owner)
+      const sig = await ctx.coreProgram.methods
+        .withdrawSol(new BN(lamports.toString()))
+        .accounts({
+          caller: bot.publicKey,
+          config: ctx.configPDA,
+          userVault: vaultPda,
+          owner: destPubkey,
+        })
+        .signers([bot])
+        .rpc();
+
       await interaction.editReply(`Sent ${Number(lamports) / 1e9} SOL to ${destShort}\n<https://solscan.io/tx/${sig}>`);
     } else {
       const mintAddr = Object.entries(KNOWN_TOKENS).find(([, sym]) => sym === tokenSymbol)?.[0];
@@ -116,7 +147,8 @@ export async function handleWithdraw(interaction: ChatInputCommandInteraction, c
         decimals = Buffer.from(mintAccount.data).readUInt8(44);
       }
 
-      const sourceAta = getAssociatedTokenAddressSync(mint, user, false, tokenProgram);
+      const sourceAta = getAssociatedTokenAddressSync(mint, user, true, tokenProgram);
+      const destAta = getAssociatedTokenAddressSync(mint, destPubkey, false, tokenProgram);
 
       let rawAmount: bigint;
       if (amountStr === 'all') {
@@ -133,28 +165,27 @@ export async function handleWithdraw(interaction: ChatInputCommandInteraction, c
         rawAmount = BigInt(Math.round(amount * Math.pow(10, decimals)));
       }
 
-      const destAta = getAssociatedTokenAddressSync(mint, destPubkey, false, tokenProgram);
+      // Create destination ATA (bot pays)
+      const setupTx = new Transaction().add(
+        createAssociatedTokenAccountIdempotentInstruction(bot.publicKey, destAta, destPubkey, mint, tokenProgram)
+      );
+      await signAndSendLegacy(setupTx, bot, ctx.connection);
 
-      const tx = new Transaction();
-      tx.add(createAssociatedTokenAccountIdempotentInstruction(user, destAta, destPubkey, mint, tokenProgram));
+      // Call on-chain withdraw_token (bot signs, program transfers via vault PDA)
+      const sig = await ctx.coreProgram.methods
+        .withdrawToken(new BN(rawAmount.toString()))
+        .accounts({
+          caller: bot.publicKey,
+          config: ctx.configPDA,
+          userVault: vaultPda,
+          tokenMint: mint,
+          vaultTokenAccount: sourceAta,
+          ownerTokenAccount: destAta,
+          tokenProgram,
+        })
+        .signers([bot])
+        .rpc();
 
-      const transferData = Buffer.alloc(10);
-      transferData[0] = 12;
-      transferData.writeBigUInt64LE(rawAmount, 1);
-      transferData.writeUInt8(decimals, 9);
-
-      tx.add({
-        programId: tokenProgram,
-        keys: [
-          { pubkey: sourceAta, isSigner: false, isWritable: true },
-          { pubkey: mint, isSigner: false, isWritable: false },
-          { pubkey: destAta, isSigner: false, isWritable: true },
-          { pubkey: user, isSigner: true, isWritable: false },
-        ],
-        data: transferData,
-      });
-
-      const sig = await signAndSendLegacy(tx, keypair, ctx.connection);
       const humanAmount = Number(rawAmount) / Math.pow(10, decimals);
       await interaction.editReply(`Sent ${humanAmount} ${tokenSymbol} to ${destShort}\n<https://solscan.io/tx/${sig}>`);
     }

@@ -1,83 +1,52 @@
 /**
  * core-sdk/wallet-service.ts
  *
- * Custodial keypair management for CrankBot.
+ * User vault mapping + position/vote/harvest tracking for CrankBot.
  * Platform-agnostic — works with Discord, Telegram, or any chat platform.
  *
- * Uses a JSON file store instead of SQLite to avoid native compilation deps.
- * Adequate for bot-scale usage (<10k users). Swap to SQLite on Linux for production.
- *
- * SECURITY REQUIREMENTS:
- * - WALLET_ENCRYPTION_KEY must be 32 bytes (64 hex chars), stored in secrets manager
- * - Never log the encryption key or raw secret keys
- * - In production: key should come from KMS, not env var directly
- * - The bidirectional lookup (owner_pubkey -> user_id) is CRITICAL
- *   for routing harvest notifications back to users
+ * PDA VAULT ARCHITECTURE:
+ * - No custodial keypairs. User funds live on-chain in UserVault PDAs.
+ * - This service maps user_id → owner_wallet → vault_pda.
+ * - DB loss = inconvenience (re-link), NOT fund loss.
+ * - The bot is a stateless operator that reads on-chain state.
  */
 
-import { Keypair, PublicKey } from '@solana/web3.js';
-import * as crypto from 'crypto';
+import { PublicKey } from '@solana/web3.js';
 import * as path from 'path';
 import * as fs from 'fs';
-
-// ─── Encryption ────────────────────────────────────────────────────────────
-
-const ALGO = 'aes-256-gcm';
-const KEY_LEN = 32;
-const IV_LEN  = 12;
-const TAG_LEN = 16;
-
-function getEncryptionKey(): Buffer {
-  const raw = process.env.WALLET_ENCRYPTION_KEY;
-  if (!raw) throw new Error('WALLET_ENCRYPTION_KEY not set');
-  const key = Buffer.from(raw, 'hex');
-  if (key.length !== KEY_LEN) {
-    throw new Error(`WALLET_ENCRYPTION_KEY must be ${KEY_LEN * 2} hex chars (${KEY_LEN} bytes)`);
-  }
-  return key;
-}
-
-function encrypt(plaintext: Buffer): string {
-  const key = getEncryptionKey();
-  const iv = crypto.randomBytes(IV_LEN);
-  const cipher = crypto.createCipheriv(ALGO, key, iv);
-  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, encrypted]).toString('hex');
-}
-
-function decrypt(ciphertext: string): Buffer {
-  const key = getEncryptionKey();
-  const data = Buffer.from(ciphertext, 'hex');
-  const iv  = data.subarray(0, IV_LEN);
-  const tag = data.subarray(IV_LEN, IV_LEN + TAG_LEN);
-  const enc = data.subarray(IV_LEN + TAG_LEN);
-  const decipher = crypto.createDecipheriv(ALGO, key, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(enc), decipher.final()]);
-}
+import { getUserVaultPDA } from './pda';
 
 // ─── JSON File Store ───────────────────────────────────────────────────────
 
+interface UserRecord {
+  user_id: string;
+  owner_wallet: string;      // User's real Solana wallet (PDA seed)
+  vault_pda: string;         // Derived: getUserVaultPDA(owner_wallet)
+  created_at: number;
+}
+
 interface StoreData {
-  users: Record<string, { user_id: string; wallet_pubkey: string; encrypted_keypair: string; created_at: number; withdraw_address?: string }>;
-  pubkeyIndex: Record<string, string>;
+  users: Record<string, UserRecord>;
+  /** Reverse lookup: vault_pda → user_id (for harvest routing) */
+  vaultIndex: Record<string, string>;
+  /** Reverse lookup: owner_wallet → user_id */
+  ownerIndex: Record<string, string>;
   positions: Record<string, {
-    position_pda: string; user_id: string; wallet_pubkey: string;
+    position_pda: string; user_id: string; vault_pda: string;
     lb_pair: string; meteora_position: string; side: string;
     min_bin_id: number; max_bin_id: number; initial_amount: string;
     status: string; created_at: number;
   }>;
-  votes: Record<string, { wallet_pubkey: string; pool_address: string; allocation_pct: number; updated_at: number }>;
+  votes: Record<string, { vault_pda: string; pool_address: string; allocation_pct: number; updated_at: number }>;
   harvests: Array<{
-    position_pda: string; wallet_pubkey: string; lb_pair: string;
+    position_pda: string; vault_pda: string; lb_pair: string;
     amount_out: string; fee_taken: string; tx_sig: string;
     epoch: number; slot: number; created_at: number;
   }>;
 }
 
 function emptyStore(): StoreData {
-  return { users: {}, pubkeyIndex: {}, positions: {}, votes: {}, harvests: [] };
+  return { users: {}, vaultIndex: {}, ownerIndex: {}, positions: {}, votes: {}, harvests: [] };
 }
 
 // ─── WalletService ─────────────────────────────────────────────────────────
@@ -96,12 +65,20 @@ export class WalletService {
     this.filePath = finalPath;
 
     const dir = path.dirname(this.filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
     if (fs.existsSync(this.filePath)) {
       this.data = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
-      if (!this.data.pubkeyIndex) this.data.pubkeyIndex = {};
+      // Migration: ensure new index fields exist
+      if (!this.data.vaultIndex) this.data.vaultIndex = {};
+      if (!this.data.ownerIndex) this.data.ownerIndex = {};
       if (!this.data.harvests) this.data.harvests = [];
+      // Backfill indexes from users (migration from old format)
+      if (!this.data.users) this.data.users = {};
+      for (const u of Object.values(this.data.users)) {
+        if (u.vault_pda) this.data.vaultIndex[u.vault_pda] = u.user_id;
+        if (u.owner_wallet) this.data.ownerIndex[u.owner_wallet] = u.user_id;
+      }
     } else {
       this.data = emptyStore();
     }
@@ -116,59 +93,102 @@ export class WalletService {
   private flush(): void {
     if (!this.dirty) return;
     this.dirty = false;
-    fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2));
+    fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
   }
 
-  // ─── User / Keypair Management ───────────────────────────────────────────
+  // ─── User / Vault Registration ──────────────────────────────────────────
 
-  getOrCreate(userId: string): Keypair {
+  /**
+   * Register a user with their real Solana wallet. Derives and stores
+   * the vault PDA. Returns the vault PDA address (deposit target).
+   * Idempotent — returns existing vault if already registered.
+   */
+  registerUser(userId: string, ownerWallet: PublicKey): { vaultPda: PublicKey; isNew: boolean } {
     const existing = this.data.users[userId];
     if (existing) {
-      return this.decryptKeypair(existing.encrypted_keypair);
+      return { vaultPda: new PublicKey(existing.vault_pda), isNew: false };
     }
 
-    const keypair = Keypair.generate();
-    const encryptedKeypair = this.encryptKeypair(keypair);
-    const pubkey = keypair.publicKey.toBase58();
+    const [vaultPda] = getUserVaultPDA(ownerWallet);
+    const vaultStr = vaultPda.toBase58();
+    const ownerStr = ownerWallet.toBase58();
 
     this.data.users[userId] = {
       user_id: userId,
-      wallet_pubkey: pubkey,
-      encrypted_keypair: encryptedKeypair,
+      owner_wallet: ownerStr,
+      vault_pda: vaultStr,
       created_at: Date.now(),
     };
-    this.data.pubkeyIndex[pubkey] = userId;
+    this.data.vaultIndex[vaultStr] = userId;
+    this.data.ownerIndex[ownerStr] = userId;
     this.markDirty();
+    // Flush immediately on registration (like old keypair creation sync flush)
+    this.dirty = false;
+    fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
 
-    return keypair;
+    return { vaultPda, isNew: true };
   }
 
-  getDepositAddress(userId: string): string {
-    return this.getOrCreate(userId).publicKey.toBase58();
+  /**
+   * Get vault PDA for a user. Returns undefined if not registered.
+   */
+  getVaultPda(userId: string): PublicKey | undefined {
+    const user = this.data.users[userId];
+    return user ? new PublicKey(user.vault_pda) : undefined;
   }
 
+  /**
+   * Get the user's real wallet (owner). Used for display and event routing.
+   */
+  getOwnerWallet(userId: string): PublicKey | undefined {
+    const user = this.data.users[userId];
+    return user ? new PublicKey(user.owner_wallet) : undefined;
+  }
+
+  /**
+   * Get the deposit address (= vault PDA). User sends SOL/tokens here.
+   */
+  getDepositAddress(userId: string): string | undefined {
+    return this.data.users[userId]?.vault_pda;
+  }
+
+  /**
+   * Reverse lookup: vault PDA → user_id (for harvest event routing)
+   */
+  getUserIdForVault(vaultPda: string): string | undefined {
+    return this.data.vaultIndex[vaultPda];
+  }
+
+  /**
+   * Reverse lookup: owner wallet → user_id
+   * Also checks old pubkeyIndex for migration compatibility.
+   */
   getUserIdForOwner(ownerPubkey: string): string | undefined {
-    return this.data.pubkeyIndex[ownerPubkey];
+    return this.data.ownerIndex[ownerPubkey]
+      || (this.data as any).pubkeyIndex?.[ownerPubkey];
   }
 
-  getUserPublicKey(userId: string): PublicKey | undefined {
-    const user = this.data.users[userId];
-    return user ? new PublicKey(user.wallet_pubkey) : undefined;
+  /**
+   * Check if user is registered
+   */
+  isRegistered(userId: string): boolean {
+    return !!this.data.users[userId];
   }
 
-  // ─── Withdraw Address Lock ──────────────────────────────────────────────
-
-  setWithdrawAddress(userId: string, address: string): { ok: boolean; error?: string } {
-    const user = this.data.users[userId];
-    if (!user) return { ok: false, error: 'no wallet found — run /start first' };
-    if (user.withdraw_address) return { ok: false, error: 'withdraw address already set — cannot be changed' };
-    user.withdraw_address = address;
-    this.markDirty();
-    return { ok: true };
+  /**
+   * Get all registered users. Used by epoch-computer for Merkle tree.
+   */
+  getAllUsers(): UserRecord[] {
+    return Object.values(this.data.users);
   }
+
+  // ─── Withdraw Address ──────────────────────────────────────────────────
+  // In PDA vault architecture, the withdraw address is the owner wallet
+  // (baked into the PDA seed, immutable). These methods exist for
+  // compatibility but just return the owner wallet.
 
   getWithdrawAddress(userId: string): string | undefined {
-    return this.data.users[userId]?.withdraw_address;
+    return this.data.users[userId]?.owner_wallet;
   }
 
   // ─── Position Tracking ───────────────────────────────────────────────────
@@ -176,7 +196,7 @@ export class WalletService {
   savePosition(params: {
     positionPda: string;
     userId: string;
-    walletPubkey: string;
+    vaultPda: string;
     lbPair: string;
     meteoraPosition: string;
     side: 'Buy' | 'Sell';
@@ -187,7 +207,7 @@ export class WalletService {
     this.data.positions[params.positionPda] = {
       position_pda: params.positionPda,
       user_id: params.userId,
-      wallet_pubkey: params.walletPubkey,
+      vault_pda: params.vaultPda,
       lb_pair: params.lbPair,
       meteora_position: params.meteoraPosition,
       side: params.side,
@@ -225,23 +245,23 @@ export class WalletService {
 
   // ─── Vote Storage ────────────────────────────────────────────────────────
 
-  setVotes(walletPubkey: string, allocations: Record<string, number>): void {
+  setVotes(vaultPda: string, allocations: Record<string, number>): void {
     const total = Object.values(allocations).reduce((sum, pct) => sum + pct, 0);
     if (Math.abs(total - 100) > 1) {
       throw new Error(`Vote allocations must sum to 100, got ${total}`);
     }
 
-    // Remove old votes for this wallet
+    // Remove old votes for this vault
     for (const key of Object.keys(this.data.votes)) {
-      if (key.startsWith(walletPubkey + ':')) {
+      if (key.startsWith(vaultPda + ':')) {
         delete this.data.votes[key];
       }
     }
 
     const now = Date.now();
     for (const [pool, pct] of Object.entries(allocations)) {
-      this.data.votes[`${walletPubkey}:${pool}`] = {
-        wallet_pubkey: walletPubkey,
+      this.data.votes[`${vaultPda}:${pool}`] = {
+        vault_pda: vaultPda,
         pool_address: pool,
         allocation_pct: pct,
         updated_at: now,
@@ -250,17 +270,17 @@ export class WalletService {
     this.markDirty();
   }
 
-  getVotes(walletPubkey: string): Record<string, number> {
+  getVotes(vaultPda: string): Record<string, number> {
     const result: Record<string, number> = {};
     for (const v of Object.values(this.data.votes)) {
-      if (v.wallet_pubkey === walletPubkey) {
+      if (v.vault_pda === vaultPda) {
         result[v.pool_address] = v.allocation_pct;
       }
     }
     return result;
   }
 
-  getAllVotes(): { wallet_pubkey: string; pool_address: string; allocation_pct: number }[] {
+  getAllVotes(): { vault_pda: string; pool_address: string; allocation_pct: number }[] {
     return Object.values(this.data.votes);
   }
 
@@ -278,7 +298,7 @@ export class WalletService {
 
   saveHarvest(params: {
     positionPda: string;
-    walletPubkey: string;
+    vaultPda: string;
     lbPair: string;
     amountOut: bigint;
     feeTaken: bigint;
@@ -288,7 +308,7 @@ export class WalletService {
   }): void {
     this.data.harvests.push({
       position_pda: params.positionPda,
-      wallet_pubkey: params.walletPubkey,
+      vault_pda: params.vaultPda,
       lb_pair: params.lbPair,
       amount_out: params.amountOut.toString(),
       fee_taken: params.feeTaken.toString(),
@@ -300,15 +320,17 @@ export class WalletService {
     this.markDirty();
   }
 
-  // ─── Encryption Helpers ──────────────────────────────────────────────────
-
-  private encryptKeypair(keypair: Keypair): string {
-    return encrypt(Buffer.from(keypair.secretKey));
-  }
-
-  private decryptKeypair(encrypted: string): Keypair {
-    const secretKey = decrypt(encrypted);
-    return Keypair.fromSecretKey(secretKey);
+  /**
+   * Get total fees by vault PDA (for epoch-computer Merkle share computation)
+   */
+  getFeeTotalByVault(vaultPda: string): bigint {
+    let total = 0n;
+    for (const h of this.data.harvests) {
+      if (h.vault_pda === vaultPda) {
+        total += BigInt(h.fee_taken);
+      }
+    }
+    return total;
   }
 
   close(): void {

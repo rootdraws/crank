@@ -283,6 +283,10 @@ export class PriceSyncer extends EventEmitter {
     const direction: 'buy' | 'sell' = jupiterPrice > meteoraPrice ? 'buy' : 'sell';
     state.lastDirection = direction;
 
+    // 5. Below threshold — done (quietly; stats still updated above for /api/syncer)
+    if (divergencePct < this.config.divergenceThresholdPct) return;
+
+    // Only log when divergence is actionable (at or above threshold)
     logger.info({
       pool: pool.label,
       divergencePct: +divergencePct.toFixed(2),
@@ -290,10 +294,7 @@ export class PriceSyncer extends EventEmitter {
       jupiterPrice: +jupiterPrice.toFixed(10),
       activeId,
       direction,
-    }, `[syncer] Price check`);
-
-    // 5. Below threshold — done
-    if (divergencePct < this.config.divergenceThresholdPct) return;
+    }, `[syncer] Price check — above threshold`);
 
     // 6. Compute swap amount — linear scale with divergence
     const divergenceRatio = Math.min(1, (divergencePct - this.config.divergenceThresholdPct) / this.config.divergenceThresholdPct);
@@ -366,11 +367,6 @@ export class PriceSyncer extends EventEmitter {
       expectedProfitLamports,
     });
 
-    // Alert on very large divergences
-    if (divergencePct > this.config.divergenceThresholdPct * 3) {
-      alertLargeDivergence(pool.label, divergencePct);
-    }
-
     if (netProfit < this.config.minProfitLamports) {
       logger.info({
         pool: pool.label,
@@ -381,6 +377,12 @@ export class PriceSyncer extends EventEmitter {
       }, '[syncer] Below min profit — skipping swap');
       return;
     }
+
+    // Alert ONLY when there's an actual arb opportunity the bot would take.
+    // Pure Meteora-vs-Jupiter price drift (e.g. when an LP pulls liquidity)
+    // produces divergence with no profitable swap path — silent by design.
+    // Ops channel + 5min per-pool cooldown bounds noise.
+    alertLargeDivergence(pool.label, divergencePct, this.config.divergenceThresholdPct);
 
     // 10. Dry run check
     if (this.config.dryRun) {

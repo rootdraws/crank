@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$SCRIPT_DIR/../.env" ] && source "$SCRIPT_DIR/../.env"
 
 DROPLET_IP="${1:-${DROPLET_IP:?Set DROPLET_IP env var or pass as argument}}"
-REMOTE_DIR="/root/crank-money"
-REMOTE_USER="root"
+REMOTE_USER="${DEPLOY_USER:-root}"
+REMOTE_DIR="$([ "$REMOTE_USER" = "root" ] && echo "/root" || echo "/home/$REMOTE_USER")/crank-money"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519_deploy}"
 
 REMOTE="$REMOTE_USER@$DROPLET_IP"

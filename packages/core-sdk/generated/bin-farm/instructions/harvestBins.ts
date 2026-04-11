@@ -54,6 +54,7 @@ export type HarvestBinsInstruction<
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountPosition extends string | AccountMeta<string> = string,
   TAccountVault extends string | AccountMeta<string> = string,
+  TAccountUserVault extends string | AccountMeta<string> = string,
   TAccountOwner extends string | AccountMeta<string> = string,
   TAccountMeteoraPosition extends string | AccountMeta<string> = string,
   TAccountLbPair extends string | AccountMeta<string> = string,
@@ -93,6 +94,9 @@ export type HarvestBinsInstruction<
       TAccountVault extends string
         ? ReadonlyAccount<TAccountVault>
         : TAccountVault,
+      TAccountUserVault extends string
+        ? WritableAccount<TAccountUserVault>
+        : TAccountUserVault,
       TAccountOwner extends string
         ? WritableAccount<TAccountOwner>
         : TAccountOwner,
@@ -202,6 +206,7 @@ export type HarvestBinsAsyncInput<
   TAccountConfig extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
+  TAccountUserVault extends string = string,
   TAccountOwner extends string = string,
   TAccountMeteoraPosition extends string = string,
   TAccountLbPair extends string = string,
@@ -229,6 +234,8 @@ export type HarvestBinsAsyncInput<
   config?: Address<TAccountConfig>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
+  /** UserVault PDA — receives harvested tokens, gas deducted from here */
+  userVault: Address<TAccountUserVault>;
   owner: Address<TAccountOwner>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
   lbPair: Address<TAccountLbPair>;
@@ -259,6 +266,7 @@ export async function getHarvestBinsInstructionAsync<
   TAccountConfig extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
+  TAccountUserVault extends string,
   TAccountOwner extends string,
   TAccountMeteoraPosition extends string,
   TAccountLbPair extends string,
@@ -288,6 +296,7 @@ export async function getHarvestBinsInstructionAsync<
     TAccountConfig,
     TAccountPosition,
     TAccountVault,
+    TAccountUserVault,
     TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
@@ -319,6 +328,7 @@ export async function getHarvestBinsInstructionAsync<
     TAccountConfig,
     TAccountPosition,
     TAccountVault,
+    TAccountUserVault,
     TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
@@ -352,6 +362,7 @@ export async function getHarvestBinsInstructionAsync<
     config: { value: input.config ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: false },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     owner: { value: input.owner ?? null, isWritable: true },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
@@ -416,6 +427,7 @@ export async function getHarvestBinsInstructionAsync<
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.owner),
       getAccountMeta(accounts.meteoraPosition),
       getAccountMeta(accounts.lbPair),
@@ -449,6 +461,7 @@ export async function getHarvestBinsInstructionAsync<
     TAccountConfig,
     TAccountPosition,
     TAccountVault,
+    TAccountUserVault,
     TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
@@ -479,6 +492,7 @@ export type HarvestBinsInput<
   TAccountConfig extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
+  TAccountUserVault extends string = string,
   TAccountOwner extends string = string,
   TAccountMeteoraPosition extends string = string,
   TAccountLbPair extends string = string,
@@ -506,6 +520,8 @@ export type HarvestBinsInput<
   config: Address<TAccountConfig>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
+  /** UserVault PDA — receives harvested tokens, gas deducted from here */
+  userVault: Address<TAccountUserVault>;
   owner: Address<TAccountOwner>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
   lbPair: Address<TAccountLbPair>;
@@ -536,6 +552,7 @@ export function getHarvestBinsInstruction<
   TAccountConfig extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
+  TAccountUserVault extends string,
   TAccountOwner extends string,
   TAccountMeteoraPosition extends string,
   TAccountLbPair extends string,
@@ -565,6 +582,7 @@ export function getHarvestBinsInstruction<
     TAccountConfig,
     TAccountPosition,
     TAccountVault,
+    TAccountUserVault,
     TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
@@ -595,6 +613,7 @@ export function getHarvestBinsInstruction<
   TAccountConfig,
   TAccountPosition,
   TAccountVault,
+  TAccountUserVault,
   TAccountOwner,
   TAccountMeteoraPosition,
   TAccountLbPair,
@@ -627,6 +646,7 @@ export function getHarvestBinsInstruction<
     config: { value: input.config ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: false },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     owner: { value: input.owner ?? null, isWritable: true },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
@@ -668,6 +688,7 @@ export function getHarvestBinsInstruction<
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.owner),
       getAccountMeta(accounts.meteoraPosition),
       getAccountMeta(accounts.lbPair),
@@ -701,6 +722,7 @@ export function getHarvestBinsInstruction<
     TAccountConfig,
     TAccountPosition,
     TAccountVault,
+    TAccountUserVault,
     TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
@@ -736,28 +758,30 @@ export type ParsedHarvestBinsInstruction<
     config: TAccountMetas[1];
     position: TAccountMetas[2];
     vault: TAccountMetas[3];
-    owner: TAccountMetas[4];
-    meteoraPosition: TAccountMetas[5];
-    lbPair: TAccountMetas[6];
-    binArrayBitmapExt: TAccountMetas[7];
-    binArrayLower: TAccountMetas[8];
-    binArrayUpper: TAccountMetas[9];
-    reserveX: TAccountMetas[10];
-    reserveY: TAccountMetas[11];
-    tokenXMint: TAccountMetas[12];
-    tokenYMint: TAccountMetas[13];
-    eventAuthority: TAccountMetas[14];
-    dlmmProgram: TAccountMetas[15];
-    vaultTokenX: TAccountMetas[16];
-    vaultTokenY: TAccountMetas[17];
-    ownerTokenX: TAccountMetas[18];
-    ownerTokenY: TAccountMetas[19];
-    roverAuthority: TAccountMetas[20];
-    roverFeeTokenX: TAccountMetas[21];
-    roverFeeTokenY: TAccountMetas[22];
-    tokenXProgram: TAccountMetas[23];
-    tokenYProgram: TAccountMetas[24];
-    memoProgram: TAccountMetas[25];
+    /** UserVault PDA — receives harvested tokens, gas deducted from here */
+    userVault: TAccountMetas[4];
+    owner: TAccountMetas[5];
+    meteoraPosition: TAccountMetas[6];
+    lbPair: TAccountMetas[7];
+    binArrayBitmapExt: TAccountMetas[8];
+    binArrayLower: TAccountMetas[9];
+    binArrayUpper: TAccountMetas[10];
+    reserveX: TAccountMetas[11];
+    reserveY: TAccountMetas[12];
+    tokenXMint: TAccountMetas[13];
+    tokenYMint: TAccountMetas[14];
+    eventAuthority: TAccountMetas[15];
+    dlmmProgram: TAccountMetas[16];
+    vaultTokenX: TAccountMetas[17];
+    vaultTokenY: TAccountMetas[18];
+    ownerTokenX: TAccountMetas[19];
+    ownerTokenY: TAccountMetas[20];
+    roverAuthority: TAccountMetas[21];
+    roverFeeTokenX: TAccountMetas[22];
+    roverFeeTokenY: TAccountMetas[23];
+    tokenXProgram: TAccountMetas[24];
+    tokenYProgram: TAccountMetas[25];
+    memoProgram: TAccountMetas[26];
   };
   data: HarvestBinsInstructionData;
 };
@@ -770,7 +794,7 @@ export function parseHarvestBinsInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedHarvestBinsInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 26) {
+  if (instruction.accounts.length < 27) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -787,6 +811,7 @@ export function parseHarvestBinsInstruction<
       config: getNextAccount(),
       position: getNextAccount(),
       vault: getNextAccount(),
+      userVault: getNextAccount(),
       owner: getNextAccount(),
       meteoraPosition: getNextAccount(),
       lbPair: getNextAccount(),

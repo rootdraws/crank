@@ -48,9 +48,9 @@ export type ClosePositionInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
   TAccountBot extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
+  TAccountUserVault extends string | AccountMeta<string> = string,
   TAccountPosition extends string | AccountMeta<string> = string,
   TAccountVault extends string | AccountMeta<string> = string,
-  TAccountOwner extends string | AccountMeta<string> = string,
   TAccountMeteoraPosition extends string | AccountMeta<string> = string,
   TAccountLbPair extends string | AccountMeta<string> = string,
   TAccountBinArrayBitmapExt extends string | AccountMeta<string> = string,
@@ -85,15 +85,15 @@ export type ClosePositionInstruction<
       TAccountConfig extends string
         ? WritableAccount<TAccountConfig>
         : TAccountConfig,
+      TAccountUserVault extends string
+        ? WritableAccount<TAccountUserVault>
+        : TAccountUserVault,
       TAccountPosition extends string
         ? WritableAccount<TAccountPosition>
         : TAccountPosition,
       TAccountVault extends string
         ? WritableAccount<TAccountVault>
         : TAccountVault,
-      TAccountOwner extends string
-        ? WritableAccount<TAccountOwner>
-        : TAccountOwner,
       TAccountMeteoraPosition extends string
         ? WritableAccount<TAccountMeteoraPosition>
         : TAccountMeteoraPosition,
@@ -196,9 +196,9 @@ export function getClosePositionInstructionDataCodec(): FixedSizeCodec<
 export type ClosePositionAsyncInput<
   TAccountBot extends string = string,
   TAccountConfig extends string = string,
+  TAccountUserVault extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
-  TAccountOwner extends string = string,
   TAccountMeteoraPosition extends string = string,
   TAccountLbPair extends string = string,
   TAccountBinArrayBitmapExt extends string = string,
@@ -224,9 +224,10 @@ export type ClosePositionAsyncInput<
 > = {
   bot: TransactionSigner<TAccountBot>;
   config?: Address<TAccountConfig>;
+  /** UserVault PDA — receives rent on close + gas deduction source */
+  userVault: Address<TAccountUserVault>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
-  owner: Address<TAccountOwner>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
   lbPair: Address<TAccountLbPair>;
   binArrayBitmapExt: Address<TAccountBinArrayBitmapExt>;
@@ -254,9 +255,9 @@ export type ClosePositionAsyncInput<
 export async function getClosePositionInstructionAsync<
   TAccountBot extends string,
   TAccountConfig extends string,
+  TAccountUserVault extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
-  TAccountOwner extends string,
   TAccountMeteoraPosition extends string,
   TAccountLbPair extends string,
   TAccountBinArrayBitmapExt extends string,
@@ -284,9 +285,9 @@ export async function getClosePositionInstructionAsync<
   input: ClosePositionAsyncInput<
     TAccountBot,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
-    TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
     TAccountBinArrayBitmapExt,
@@ -316,9 +317,9 @@ export async function getClosePositionInstructionAsync<
     TProgramAddress,
     TAccountBot,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
-    TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
     TAccountBinArrayBitmapExt,
@@ -350,9 +351,9 @@ export async function getClosePositionInstructionAsync<
   const originalAccounts = {
     bot: { value: input.bot ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: true },
-    owner: { value: input.owner ?? null, isWritable: true },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
     binArrayBitmapExt: {
@@ -416,9 +417,9 @@ export async function getClosePositionInstructionAsync<
     accounts: [
       getAccountMeta(accounts.bot),
       getAccountMeta(accounts.config),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
-      getAccountMeta(accounts.owner),
       getAccountMeta(accounts.meteoraPosition),
       getAccountMeta(accounts.lbPair),
       getAccountMeta(accounts.binArrayBitmapExt),
@@ -448,9 +449,9 @@ export async function getClosePositionInstructionAsync<
     TProgramAddress,
     TAccountBot,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
-    TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
     TAccountBinArrayBitmapExt,
@@ -479,9 +480,9 @@ export async function getClosePositionInstructionAsync<
 export type ClosePositionInput<
   TAccountBot extends string = string,
   TAccountConfig extends string = string,
+  TAccountUserVault extends string = string,
   TAccountPosition extends string = string,
   TAccountVault extends string = string,
-  TAccountOwner extends string = string,
   TAccountMeteoraPosition extends string = string,
   TAccountLbPair extends string = string,
   TAccountBinArrayBitmapExt extends string = string,
@@ -507,9 +508,10 @@ export type ClosePositionInput<
 > = {
   bot: TransactionSigner<TAccountBot>;
   config: Address<TAccountConfig>;
+  /** UserVault PDA — receives rent on close + gas deduction source */
+  userVault: Address<TAccountUserVault>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
-  owner: Address<TAccountOwner>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
   lbPair: Address<TAccountLbPair>;
   binArrayBitmapExt: Address<TAccountBinArrayBitmapExt>;
@@ -537,9 +539,9 @@ export type ClosePositionInput<
 export function getClosePositionInstruction<
   TAccountBot extends string,
   TAccountConfig extends string,
+  TAccountUserVault extends string,
   TAccountPosition extends string,
   TAccountVault extends string,
-  TAccountOwner extends string,
   TAccountMeteoraPosition extends string,
   TAccountLbPair extends string,
   TAccountBinArrayBitmapExt extends string,
@@ -567,9 +569,9 @@ export function getClosePositionInstruction<
   input: ClosePositionInput<
     TAccountBot,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
-    TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
     TAccountBinArrayBitmapExt,
@@ -598,9 +600,9 @@ export function getClosePositionInstruction<
   TProgramAddress,
   TAccountBot,
   TAccountConfig,
+  TAccountUserVault,
   TAccountPosition,
   TAccountVault,
-  TAccountOwner,
   TAccountMeteoraPosition,
   TAccountLbPair,
   TAccountBinArrayBitmapExt,
@@ -631,9 +633,9 @@ export function getClosePositionInstruction<
   const originalAccounts = {
     bot: { value: input.bot ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
     vault: { value: input.vault ?? null, isWritable: true },
-    owner: { value: input.owner ?? null, isWritable: true },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
     binArrayBitmapExt: {
@@ -676,9 +678,9 @@ export function getClosePositionInstruction<
     accounts: [
       getAccountMeta(accounts.bot),
       getAccountMeta(accounts.config),
+      getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.position),
       getAccountMeta(accounts.vault),
-      getAccountMeta(accounts.owner),
       getAccountMeta(accounts.meteoraPosition),
       getAccountMeta(accounts.lbPair),
       getAccountMeta(accounts.binArrayBitmapExt),
@@ -708,9 +710,9 @@ export function getClosePositionInstruction<
     TProgramAddress,
     TAccountBot,
     TAccountConfig,
+    TAccountUserVault,
     TAccountPosition,
     TAccountVault,
-    TAccountOwner,
     TAccountMeteoraPosition,
     TAccountLbPair,
     TAccountBinArrayBitmapExt,
@@ -744,9 +746,10 @@ export type ParsedClosePositionInstruction<
   accounts: {
     bot: TAccountMetas[0];
     config: TAccountMetas[1];
-    position: TAccountMetas[2];
-    vault: TAccountMetas[3];
-    owner: TAccountMetas[4];
+    /** UserVault PDA — receives rent on close + gas deduction source */
+    userVault: TAccountMetas[2];
+    position: TAccountMetas[3];
+    vault: TAccountMetas[4];
     meteoraPosition: TAccountMetas[5];
     lbPair: TAccountMetas[6];
     binArrayBitmapExt: TAccountMetas[7];
@@ -796,9 +799,9 @@ export function parseClosePositionInstruction<
     accounts: {
       bot: getNextAccount(),
       config: getNextAccount(),
+      userVault: getNextAccount(),
       position: getNextAccount(),
       vault: getNextAccount(),
-      owner: getNextAccount(),
       meteoraPosition: getNextAccount(),
       lbPair: getNextAccount(),
       binArrayBitmapExt: getNextAccount(),

@@ -35,6 +35,7 @@ import { Program } from '@coral-xyz/anchor';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { logger } from './logger';
+import { getDLMM } from './meteora-accounts';
 
 // ═══ TYPES ═══
 
@@ -111,6 +112,9 @@ export interface LbPairInfo {
   tokenYProgramFlag: number;
 }
 
+// Anchor discriminator for bin-farm Position account: sha256('account:Position')[0..8]
+const BIN_FARM_POSITION_DISCRIMINATOR = Buffer.from([170, 188, 143, 228, 122, 64, 247, 208]);
+
 // Byte offsets — verified from Meteora DLMM IDL + 3 live mainnet LbPair accounts
 const LBPAIR_EXPECTED_SIZE       = 904;
 const OFFSET_ACTIVE_ID           = 76;   // i32
@@ -176,12 +180,6 @@ const CACHE_PATH = process.env.CACHE_PATH || './positions-cache.json';
 // Attacker creating thousands of 1-bin positions bloats registry and safety poll.
 // Minimum 2 bins required for a position to be monitored (default).
 const MIN_POSITION_BINS = parseInt(process.env.MIN_POSITION_BINS || '2');
-// Validate parsed lamport values are within safe integer range
-const MIN_POSITION_VALUE_LAMPORTS = (() => {
-  const val = parseInt(process.env.MIN_POSITION_VALUE_LAMPORTS || '100000000');
-  if (!Number.isSafeInteger(val)) { logger.warn(`MIN_POSITION_VALUE_LAMPORTS exceeds safe integer range: ${val}`); }
-  return val;
-})(); // 0.1 SOL default
 
 export class GeyserSubscriber extends EventEmitter {
   private connection: Connection;
@@ -247,15 +245,9 @@ export class GeyserSubscriber extends EventEmitter {
         continue;
       }
 
-      const initialAmount = (data.initialAmount as any)?.toNumber?.() ?? Number(data.initialAmount ?? 0);
-      if (initialAmount > 0 && initialAmount < MIN_POSITION_VALUE_LAMPORTS) {
-        skippedDust++;
-        continue;
-      }
-
       const info: PositionInfo = {
         positionPDA: pos.publicKey.toBase58(),
-        owner: data.owner,
+        owner: data.userVault ?? data.owner, // userVault (v2 IDL) or owner (legacy)
         lbPair: data.lbPair,
         meteoraPosition: data.meteoraPosition,
         side: data.side.buy ? 'Buy' : 'Sell',
@@ -471,6 +463,11 @@ export class GeyserSubscriber extends EventEmitter {
 
   // ─── POSITION PDA CHANGE HANDLING ───
 
+  /** Check if raw account data has the bin-farm Position discriminator. */
+  private isBinFarmPosition(data: Buffer): boolean {
+    return data.length >= 8 && data.subarray(0, 8).equals(BIN_FARM_POSITION_DISCRIMINATOR);
+  }
+
   handlePositionUpdate(positionPDA: string, data: Buffer | null): void {
     if (data === null || data.length === 0) {
       // Position closed / account deleted
@@ -625,12 +622,12 @@ export class GeyserSubscriber extends EventEmitter {
           if (this.positionsByPool.has(pubkey)) {
             // This is an lb_pair account update
             this.handleLbPairUpdate(pubkey, data);
-          } else if (data.length >= 200) {
-            // Log unrouted large account updates for debugging
-            logger.info(`[geyser] unrouted account update: ${pubkey.slice(0,8)} size=${data.length} watched=${this.positionsByPool.has(pubkey)}`);
+          } else if (this.isBinFarmPosition(data)) {
+            // Validated bin-farm Position account — route to position handler
             this.handlePositionUpdate(pubkey, data);
           } else {
-            this.handlePositionUpdate(pubkey, data);
+            // Unknown account — ignore (prevents registry rebuild storms from
+            // random gRPC updates that happen to be large)
           }
         }
       });
@@ -759,6 +756,46 @@ export class GeyserSubscriber extends EventEmitter {
 
   // ─── LIFECYCLE ───
 
+  /**
+   * Validate hardcoded byte offsets against a live pool parsed by the DLMM SDK.
+   * Runs once at startup. If offsets have drifted (Meteora upgrade), log a
+   * critical warning — the bot will still start but operator should investigate.
+   */
+  private async validateByteOffsets(): Promise<void> {
+    const poolKeys = [...this.positionsByPool.keys()];
+    if (poolKeys.length === 0) return;
+
+    const testPool = poolKeys[0];
+    try {
+      // Use shared DLMM helper (static import at top of file) — dynamic import
+      // of @meteora-ag/dlmm was failing with an ESM interop error on `BN`
+      // re-exports at runtime.
+      const dlmm = await getDLMM(this.connection, new PublicKey(testPool));
+      const sdkActiveId = dlmm.lbPair.activeId;
+      const sdkBinStep = dlmm.lbPair.binStep;
+      const sdkTokenXMint = dlmm.lbPair.tokenXMint.toBase58();
+      const sdkTokenYMint = dlmm.lbPair.tokenYMint.toBase58();
+
+      const accountInfo = await this.connection.getAccountInfo(new PublicKey(testPool));
+      if (!accountInfo) return;
+      const parsed = parseLbPairData(accountInfo.data as Buffer);
+
+      const mismatches: string[] = [];
+      if (parsed.activeId !== sdkActiveId) mismatches.push(`activeId: byte=${parsed.activeId} sdk=${sdkActiveId}`);
+      if (parsed.binStep !== sdkBinStep) mismatches.push(`binStep: byte=${parsed.binStep} sdk=${sdkBinStep}`);
+      if (parsed.tokenXMint.toBase58() !== sdkTokenXMint) mismatches.push(`tokenXMint mismatch`);
+      if (parsed.tokenYMint.toBase58() !== sdkTokenYMint) mismatches.push(`tokenYMint mismatch`);
+
+      if (mismatches.length > 0) {
+        logger.error(`[geyser] BYTE OFFSET MISMATCH on ${testPool.slice(0, 8)}: ${mismatches.join(', ')}. Meteora layout may have changed!`);
+      } else {
+        logger.info(`[geyser] Byte offset validation passed (pool ${testPool.slice(0, 8)}, activeId=${sdkActiveId}, binStep=${sdkBinStep})`);
+      }
+    } catch (e: any) {
+      logger.warn(`[geyser] Byte offset validation skipped: ${e.message?.slice(0, 80)}`);
+    }
+  }
+
   async start(): Promise<void> {
     // Try loading from cache first for faster startup, then full sync
     const cached = this.loadCache();
@@ -767,6 +804,9 @@ export class GeyserSubscriber extends EventEmitter {
     } else {
       await this.buildRegistry();
     }
+
+    // Validate hardcoded byte offsets against SDK on first startup
+    await this.validateByteOffsets();
 
     // Retry initial gRPC connection instead of crashing on transient failure.
     // Post-connect disconnects already use handleDisconnect() with exponential backoff.

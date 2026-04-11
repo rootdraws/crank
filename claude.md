@@ -4,7 +4,9 @@
 
 crank.money wraps Meteora DLMM positions on Solana. Set your range as a single-sided LP — **sell the rips** or **buy the dips**. If price moves through your range, Crank's Harvester pulls each bin the moment it converts.
 
-Performance fee on converted output only (0.3%). `sweep_rover` splits **40/40/20**: 80% to bridge_vault (SOL holding tank for daily distribution), 20% to `Config.bot` (operations). Hardcoded on-chain. Revenue distribution via daily Merkle tree — epoch-computer drains vault, wraps WSOL, funds distributor, auto-claims to user custody wallets. BANK holders vote on pool weights via gauge-voter.
+Performance fee on converted output only (0.3%). `sweep_rover` splits **40/40/20**: 80% to bridge_vault (SOL holding tank for daily distribution), 20% to `Config.bot` (operations). Hardcoded on-chain. Revenue distribution via daily Merkle tree — epoch-computer drains vault, wraps WSOL, funds distributor, auto-claims to user vault PDAs. BANK holders vote on pool weights via gauge-voter.
+
+**PDA vault architecture (shipped 2026-04-08):** No custodial keypairs. Each user gets a UserVault PDA seeded by their real Solana wallet: `[b"user_vault", owner_wallet]`. Funds live on-chain in the vault PDA. Bot is a stateless operator — server wipe loses zero user funds. Withdrawals enforced to vault.owner by PDA seed derivation. All user-facing operations reimburse bot gas from vault via `deduct_gas`.
 
 **Interface:** Discord bot (Telegram adapter planned). Users type `/buy GSD 900kmc to 1.1mmc SOL 10` — bot maps tickers to curated pools, converts mcap/price to bin ranges, routes to best DLMM pool by bin step, opens positions. Community doc pages per subdomain (e.g. `gsd.crank.money`).
 
@@ -21,37 +23,41 @@ Five active on-chain programs:
 ## Key instructions
 
 ```
-open_position_v2(pool, amount, min_bin, max_bin, side, max_active_bin_slippage)
-  → No fee. 100% deposited. Side derived on-chain from active_id.
+--- User Vault Operations (bin-farm) ---
+create_vault(owner)           → Creates UserVault PDA. Anyone can pay rent. PDA seed = owner wallet.
+wrap_sol_in_vault(amount)     → Debit vault lamports → credit WSOL ATA + sync_native. For SOL buys.
+unwrap_wsol_in_vault()        → Close vault WSOL ATA → lamports to vault PDA. After harvest/claim.
+withdraw_sol(amount)          → Vault PDA lamports → owner wallet. Rent-exempt guard.
+withdraw_token(amount)        → Vault ATA → owner ATA. Vault PDA signs.
+vault_burn_and_mint(amount)   → CPI to bank-mint: burn CRANK from vault → mint BANK to vault.
+vault_vote(allocations)       → CPI to gauge-voter: vote with vault's BANK holdings.
+update_gas_lamports(amount)   → Admin sets per-operation gas reimbursement.
 
-harvest_bins(bin_ids: Vec<i32>)
+--- Position Operations (bin-farm) ---
+open_position_v2(pool, amount, min_bin, max_bin, side, slippage)
+  → Bot signs, tokens from vault ATA → Meteora. Side derived on-chain. deduct_gas.
+
+harvest_bins(bin_ids)
   → Fees → rover_authority → sweep_rover → 40/40/20.
-  → Remainder → owner. Permissionless fallback.
+  → Remainder → vault ATAs (not external wallet). deduct_gas.
 
 close_position() / user_close()
-  → Same fee mechanic. Meteora position closed, rent refunded.
+  → Same fee mechanic. Tokens → vault ATAs. Rent → vault PDA. deduct_gas.
 
-sweep_rover()
-  → Permissionless. SOL → 80% bridge_vault + 20% Config.bot.
-  → (trader_dest now also points to bridge_vault)
+claim_fees()
+  → LP trading fees → vault ATAs (no protocol fee). deduct_gas.
 
-burn_and_mint(amount)  [bank_mint]
-  → Burn $CRANK, mint $BANK 1:1. Supply cap enforced.
+--- Protocol Operations ---
+sweep_rover()               → Permissionless. SOL → 80% bridge_vault + 20% Config.bot.
+open_fee_rover()            → Recycle token fees into DLMM positions.
+close_rover_token_account() → Unwrap WSOL on rover_authority.
 
-vote(desired_allocations)  [gauge_voter]
-  → Blend global pool weights. No per-user state.
-
-add_pool(lb_pair)  [gauge_voter]
-  → Admin curates tradeable pools.
-
-new_epoch(root, ipfs_cid, amount)  [merkle_distributor]
-  → Bot uploads Merkle root + funds vault. Daily.
-
-claim(index, cumulative_amount, proof)  [merkle_distributor]
-  → Claim accumulated SOL (WSOL). Auto-claimed by keeper daily.
-
-drain_vault(amount)  [epoch_vault]
-  → Authority drains SOL from bridge_vault for distribution.
+--- External Programs ---
+burn_and_mint(amount)       [bank_mint] → Burn $CRANK, mint $BANK 1:1.
+vote(allocations)           [gauge_voter] → Blend global pool weights.
+new_epoch(root, cid, amount) [merkle_distributor] → Bot uploads Merkle root + funds vault.
+claim(index, amount, proof) [merkle_distributor] → Auto-claimed by keeper. WSOL → vault ATA.
+drain_vault(amount)         [epoch_vault] → Authority drains SOL for distribution.
 ```
 
 ## Bin detection logic
@@ -92,27 +98,37 @@ bot/
   alerter.ts                     — Discord feed channel alerts (gRPC, low balance, keeper failures, sync)
   price-syncer.ts                — Price divergence detection + arb bot (disabled, pending direct Meteora swap)
   bot.test.ts                    — Unit tests (vitest): bin detection, byte parsing, dedup
+  epoch-computer.test.ts         — Unit tests (vitest): Merkle proof verification, share computation, hashing (27 tests)
   ecosystem.config.cjs           — PM2 config (512MB, auto-restart)
   idl/                           — Anchor IDL JSON files (bin_farm, merkle_distributor, epoch_vault, etc.)
   claude-bot.md                  — Bot folder context doc
 
 public/                          — On-chain referenced assets only
   crank-token.png                — $CRANK token logo
-  pegged-logo.png                — $PEGGED token logo
-  pegged-metadata.json           — $PEGGED off-chain metadata JSON
+  crank-metadata.json             — $CRANK off-chain metadata JSON
 
 scripts/
   deploy.sh                      — Rsync + npm install + PM2 restart + health check (pre-deploy wallet DB backup)
   setup-droplet.sh               — One-time server provisioning (fail2ban, unattended-upgrades, SSH hardening, PM2 log rotation)
-  rotate-encryption-key.ts       — Wallet encryption key rotation (decrypt/re-encrypt all custody keypairs)
   backup-wallet-db.sh            — Per-minute wallet DB backup to DO Spaces (cron)
-  fee-dashboard.ts               — Query fee pipeline checkpoints
   preflight-check.ts             — Verify all programs + PDAs on-chain
-  generate-clients.mjs           — Codama client generation from IDL
+  generate-clients.mjs           — Codama client generation from IDL (bin-farm + epoch-vault)
   recycle-fee-rover.ts           — Manual fee rover opener
-  update-pegged-metadata.ts      — Set $PEGGED logo/URI on-chain
-  close-wsol.ts                  — Close WSOL ATA + return SOL for a custody wallet
-  reclaim-atas.ts                — Close empty token accounts + reclaim rent
+  close-all-positions.ts         — Force-close all user positions (bot-signed, vault architecture)
+  force-close-position.ts        — Debug close with high CU + simulation (bot-signed, vault architecture)
+  close-wsol.ts                  — Vault WSOL diagnostic (shows balance, suggests /withdraw)
+  reclaim-atas.ts                — Vault ATA diagnostic (lists empty ATAs for rent reclaim)
+  test-epoch.ts                  — Standalone epoch trigger (--dry-run, --min-lamports) for E2E testing
+
+tools/
+  depth.ts                       — DLMM order book depth chart (ASCII, market cap bands)
+  protocol-lp/                   — Protocol LP automation (harvest sell rips → BidAsk buy re-entry)
+    index.ts                     — Orchestrator, poll loop, ProtocolLP class
+    harvester.ts                 — Position discovery, safe bin detection, removeLiquidity
+    deployer.ts                  — BidAsk buy position creation via DLMM SDK
+    config.ts                    — Environment loading + validation
+    state.ts                     — Persistent state (data/protocol-lp-state.json)
+    health.ts                    — HTTP health endpoint for PM2
 
 packages/
   core-sdk/                      — Shared SDK for chat bot
@@ -124,8 +140,8 @@ packages/
     range-parser.ts              — Price/mcap/pct range parsing + command string parser
     pool-router.ts               — Multi-pool routing with auto-split, quoteTokenUsdPrice conversion
     price-source.ts              — DexScreener price fetching with 10s per-mint cache
-    wallet-service.ts            — Custodial keypair mgmt (AES-256-GCM), position/vote/harvest tracking, withdraw address lock
-    signer.ts                    — Custodial tx signing (keypair-based)
+    wallet-service.ts            — User vault PDA mapping + position/vote/harvest tracking (no keypairs, no encryption)
+    signer.ts                    — Bot-only tx signing (no user keypairs)
     meteora.ts                   — Meteora pool resolution helpers
     transactions.ts              — Transaction building utilities
   discord-bot/                   — Discord slash command bot
@@ -136,7 +152,7 @@ packages/
     src/deploy-commands.ts       — Register slash commands with Discord API
     src/commands/                 — 12 handlers: start, balance, deposit, buy, sell,
                                    positions, close, withdraw, pools, vote, burn, help
-    src/deposit-detect.ts        — Auto-lock first SOL depositor as withdraw address
+    src/deposit-detect.ts        — Returns owner wallet (PDA seed enforcement replaces deposit-based locking)
 
 deploy/nginx/
   bot.crank.money.conf           — Production nginx (SSL + WebSocket + CORS + rate limiting)
@@ -154,8 +170,11 @@ todo.md                          — Living task list
 | PDA | Seeds | Program |
 |-----|-------|---------|
 | Config | `[b"config"]` | bin-farm |
+| **UserVault** | `[b"user_vault", owner_wallet.key()]` | bin-farm |
+| PositionCounter | `[b"pos_counter", user_vault.key(), lb_pair.key()]` | bin-farm |
+| MeteorPosition | `[b"meteora_pos", user_vault.key(), lb_pair.key(), count]` | bin-farm |
 | Position | `[b"position", meteora_position.key()]` | bin-farm |
-| Vault | `[b"vault", meteora_position.key()]` | bin-farm |
+| Vault (per-position) | `[b"vault", meteora_position.key()]` | bin-farm |
 | RoverAuthority | `[b"rover_authority"]` | bin-farm |
 | BankConfig | `[b"bank_config"]` | bank-mint |
 | GaugeConfig | `[b"gauge_config"]` | gauge-voter |
@@ -222,7 +241,36 @@ node scripts/generate-clients.mjs         # Codama TypeScript clients
 
 **Run bot:** `npm run bot` (tsx, loads env from `bot/.env`).
 
-**Testing:** `npx vitest run` (unit tests), `npx tsx scripts/fee-dashboard.ts` (fee pipeline snapshot).
+**Testing:** `npx vitest run` (65 unit tests — bin detection, Merkle proofs, share computation), `curl http://localhost:8080/api/fees` (live fee pipeline snapshot: rover + bridge vault + distributor WSOL), `npx tsx scripts/test-epoch.ts --dry-run` (epoch dry-run).
+
+## Tools
+
+### `npm run depth <TICKER>` — Order Book Depth Chart
+
+Reads all DLMM bin liquidity for a pool and renders an ASCII depth chart showing buy/sell pressure by market cap band. Sell-side bars grow rightward from the top, buy-side bars grow rightward from the bottom, centered on current price.
+
+```bash
+npm run depth CRANK                    # Default: 10 bands, auto-sized ($5k for small mcap)
+npm run depth CRANK -- --bands 15      # More bands per side
+npm run depth CRANK -- --band-size 10k # Override band size
+npm run depth SOL -- --pool sol-usdc-1 # Specific pool (price-mode)
+npm run depth CRANK -- --bins 300      # Override bin fetch count per side
+```
+
+Shows per-band: SOL to clear, USD equivalent, cumulative from current price outward (↓ sell, ↑ buy). Reads pool config from `curator.json`, SOL/USD from Pyth, bin data from `@meteora-ag/dlmm` SDK. Requires `RPC_URL` in `bot/.env`.
+
+### `npm run protocol-lp` — Protocol LP Automation
+
+Headless bot that manages protocol-owned DLMM liquidity. Harvests SOL from converted sell-side bins, accumulates until threshold (2 SOL default), then deploys as BidAsk buy positions 70 bins below active price. Creates a floor — heavier liquidity at lower bins.
+
+```bash
+DRY_RUN=true npm run protocol-lp     # Logs what it would do, no transactions
+DRY_RUN=false npm run protocol-lp    # Live mode
+```
+
+Config via `tools/protocol-lp/.env` (falls back to `bot/.env` for RPC_URL). Requires `KEYPAIR_PATH` pointing to the LP wallet. Health endpoint on `:8081/health`. PM2 config at `tools/protocol-lp/ecosystem.config.cjs`. Separate droplet from crank-harvester.
+
+**Files:** `tools/protocol-lp/` — `index.ts` (orchestrator), `harvester.ts` (bin detection + removeLiquidity), `deployer.ts` (BidAsk buy re-entry), `config.ts`, `state.ts`, `health.ts`.
 
 ## Implementation notes
 
@@ -232,13 +280,15 @@ node scripts/generate-clients.mjs         # Codama TypeScript clients
 
 **Fee rover CU budget: 1M.** `open_fee_rover` uses 1M compute units (BidAskImBalanced across 69 bins). All other operations stay at 400K.
 
+**Fee rover threshold is value-based, not raw-unit.** `keeper.ts crankOpenFeeRovers` computes USD value of each token balance via `fetchDexScreenerPrice(mint)` and only opens a rover if `valueUsd >= MIN_FEE_ROVER_USD` (default $10, env-tunable). Bin width is adaptive: `width = clamp(valueUsd / FEE_ROVER_BIN_USD, 5, 70)` with `FEE_ROVER_BIN_USD` default $0.50. Dust below the USD floor accumulates silently in `rover_authority` ATAs. The legacy `MIN_FEE_ROVER_VALUE` env var is retired.
+
 **`bitmap_ext` is NOT `#[account(mut)]`.** DLMM program ID placeholder is executable and can't be writable. CPI module uses `bitmap_meta()` helper.
 
 **All Meteora CPI is V2.** No V1 code remains.
 
 **Token-2022 fully supported.** All 14 outbound transfers use `transfer_checked` from `token_interface`. Decimals read at byte offset 44.
 
-**Mcap-to-bin conversion for non-USD quote pools.** `rangeInputToPrice()` returns USD prices (`mcap / supply`). `priceToBin()` expects DLMM-native prices. For SOL-quoted pools (CRANK/SOL), `routeCommand()` divides by `quoteTokenUsdPrice` (fetched from DexScreener) to convert USD → SOL-denominated before bin calculation. Without this, bins land on the wrong side of `activeId` and the on-chain program picks the wrong token program.
+**Mcap-to-bin conversion for non-USD quote pools.** For pools with `displayMode: 'mc'`, plain numbers and `k`/`m`/`b` suffixes are treated as mcap (e.g. `24k` = 24,000 mcap). `rangeInputToPrice()` converts to USD price (`mcap / supply`). `priceToBin()` expects DLMM-native prices. For SOL-quoted pools (CRANK/SOL), `routeCommand()` divides by `quoteTokenUsdPrice` (fetched from DexScreener) to convert USD → SOL-denominated before bin calculation. Without this, bins land on the wrong side of `activeId` and the on-chain program picks the wrong token program.
 
 **Setup tx CU budget: 800K for bin array init.** Meteora `initializeBinArray` on wide-step pools (binStep 80) exceeds the default 200K CU limit. `buildSetupTx()` auto-detects DLMM instructions and bumps to 800K.
 
@@ -248,11 +298,11 @@ node scripts/generate-clients.mjs         # Codama TypeScript clients
 
 **`binIdToBinArrayIndex` uses `Math.trunc` not `Math.floor`.** For negative bin IDs, `Math.floor` rounds toward negative infinity but Meteora's SDK truncates toward zero then subtracts 1 if remainder is non-zero. The off-by-one caused bin array PDAs to mismatch what the on-chain program expected. Fixed in `pda.ts`.
 
-**Gas offloading (two-signer).** Harvest executor uses two signers: `botKeypair` signs as the `bot` account (authorized bot path — no keeper tip, no remaining_accounts), `userKeypair` is fee payer (user pays gas). Falls back to bot-only if owner isn't a custody user. Previous approach (user-as-sole-signer) was broken — on-chain saw `bot != config.bot` → permissionless path → MissingKeeperAta error.
+**Gas model (vault reimburses bot).** Bot is sole tx signer + fee payer. After each user-facing instruction, `deduct_gas()` transfers `config.gas_lamports` from the user's vault PDA to the bot. 9 instructions have gas deduction: open_position_v2, harvest_bins, close_position, user_close, claim_fees, withdraw_sol, withdraw_token, wrap_sol_in_vault, unwrap_wsol_in_vault. Protocol operations (sweep_rover, fee rovers, epoch claims bundled with unwrap) are funded by the 20% operations split.
 
-**Harvest enrichment via `getTransaction`.** After harvest/close, executor calls `getTransaction(txSig)` and reads `preTokenBalances`/`postTokenBalances` from the confirmed transaction metadata. Computes deltas per owner per mint. No timing issues (data comes from the validator, not stale RPC reads).
+**Harvest enrichment via `getTransaction`.** After harvest/close, executor calls `getTransaction(txSig)` and reads `preTokenBalances`/`postTokenBalances` from the confirmed transaction metadata. Computes deltas per owner per mint. Retries up to 3 times with 2s delay — RPC indexing can lag behind confirmation.
 
-**WSOL auto-unwrap.** `/balance` closes any WSOL ATA before displaying (user pays). Executor also unwraps WSOL after harvest/close using the user's keypair. `/buy` appends a close WSOL ATA instruction to the open_position tx and auto-unwraps on failure.
+**WSOL auto-unwrap via `unwrap_wsol_in_vault`.** On-chain instruction closes the vault's WSOL ATA → lamports return to vault PDA. Called automatically by harvest-executor after harvest/close that produces WSOL. Also called by `/withdraw SOL` before extracting native lamports. Epoch claims bundle `claim()` + `unwrap_wsol_in_vault()` in a single tx.
 
 **SOL price from Pyth oracle.** `fetchDexScreenerPrice(SOL_MINT)` uses Pyth Hermes API (`hermes.pyth.network`) instead of DexScreener. Eliminates FOGO contamination where DexScreener labels FOGO pairs with `baseToken.address = SOL mint` but returns FOGO's price ($0.01) instead of SOL's ($81). For non-SOL tokens, DexScreener is used with stablecoin-pair preference + symbol consensus filtering.
 
@@ -260,7 +310,7 @@ node scripts/generate-clients.mjs         # Codama TypeScript clients
 
 **Safety poll interval: 30 seconds.** Fallback for pools with low gRPC activity (e.g. CRANK/SOL where arb bots fire in bursts). Primary detection is still gRPC sub-second for active pools.
 
-**Sell command auto-resolves quote token.** `/sell CRANK 25kmc to 30kmc 4000000 CRANK` detects token==quote and resolves actual quote from pool registry.
+**Sell command auto-resolves quote token.** `/sell CRANK 25k to 35k 4000000 CRANK` detects token==quote and resolves actual quote from pool registry.
 
 **`/withdraw` dashboard + execute.** Bare `/withdraw` shows balances + withdraw wallet + examples. `/withdraw SOL .5` or `/withdraw CRANK all` executes. No address param — sends to auto-detected deposit wallet.
 
@@ -348,36 +398,33 @@ Add `mint_address: 'SYMBOL'`. Used by `/balance` and `/withdraw` for display. Wi
 
 **NEVER print secrets in chat.** Generate keys directly on the server via SSH. Pipe output into files, don't read it back. Discord tokens, encryption keys, private keys — none of these should appear in conversation.
 
-**NEVER deploy without verifying `data/` is excluded from rsync.** The wallet DB (`data/crankbot.json`) contains encrypted custodial keypairs. Deletion = permanent fund loss.
+**NEVER deploy without verifying `data/` is excluded from rsync.** The wallet DB (`data/crankbot.json`) contains vault PDA mappings and position tracking. Loss = inconvenience (users re-register), NOT fund loss — all funds are on-chain in vault PDAs.
 
-**Custody wallet architecture:** Each Discord user gets an AES-256-GCM encrypted keypair stored in `data/crankbot.json`. Encryption key backed up to `/root/.keys/wallet.key` (chmod 600) + password manager. Wallet DB backed up per-minute to DO Spaces (`s3://crank-backups`). Withdraw address auto-locked to the first wallet that deposits SOL (detected from tx history, write-once).
+**PDA vault architecture (replaced custodial keypairs 2026-04-08):** Each user gets a UserVault PDA seeded by their real Solana wallet. No encrypted keypairs. No encryption keys. Bot is a stateless operator. Withdraw address = `vault.owner` (baked into PDA seed, immutable). Wallet DB backed up per-minute to DO Spaces (`s3://crank-backups`) as convenience — not a security-critical backup.
 
-## Current state (2026-04-01)
+## Current state (2026-04-08)
 
+- **PDA vault migration complete** — No custodial keypairs. UserVault PDAs hold all user funds on-chain. Bot is stateless operator. 8 new instructions: create_vault, withdraw_sol, withdraw_token, wrap_sol_in_vault, unwrap_wsol_in_vault, vault_burn_and_mint, vault_vote, update_gas_lamports. Position.owner → Position.user_vault. Config.gas_lamports added. SBF binary built, IDL + Codama regenerated.
+- **Gas model: vault reimburses bot** — 9 instructions call deduct_gas (open, harvest, both closes, claim_fees, both withdraws, wrap, unwrap). Protocol ops eat costs from 20%.
+- **Epoch-computer hardened + test infra** — Exported internals for testing. Configurable `minEpochLamports`. BN precision fix (was losing precision via Number()). Dynamic rent-exempt. Harvest skip logging. 500ms claim throttle. `lastEpochTimestamp` for miss detection. Return type `EpochResult { ran, epoch, amountSol, userCount }`. Manual test script (`scripts/test-epoch.ts` with `--dry-run` and `--min-lamports`). 27 unit tests (`bot/epoch-computer.test.ts`). Epoch alerting (`alertEpochMiss` + `alertEpochSuccess` wired into keeper). Still needs live E2E test.
+- **Epoch claim bundles claim + unwrap** — Single tx: merkle-distributor claim + bin-farm unwrap_wsol_in_vault. Vault pays via deduct_gas on the unwrap.
 - **Discord bot live** — `crankbot#8555`, 12 slash commands, feed channel `#crank-feed`
 - **Harvester running** — gRPC connected, daily keeper sequence (5 steps), relay on :8080
 - **Droplet** — s-2vcpu-4gb NYC1, 1GB swap, fail2ban, SSH key-only, UFW, nginx rate limiting
-- **$PEGGED killed** — all holdings unstaked, ATAs closed, code gutted. Revenue distributed as SOL.
-- **epoch-vault program deployed** — (was pegged-bridge, same ID). `drain_vault` instruction live.
-- **merkle-distributor upgraded** — `update_mint` added, mint set to WSOL on-chain.
-- **trader_dest = bridge_vault** — both 80% fee shares accumulate in one PDA.
-- **epoch-computer built** — `bot/epoch-computer.ts`, wired into keeper daily sequence. Needs end-to-end test.
-- **Withdraw address auto-detection** — first SOL depositor locked as withdraw wallet (`deposit-detect.ts`)
-- **`/withdraw` dashboard** — bare shows balances + withdraw wallet + examples
-- **`/close` dashboard** — bare shows positions with IDs, `/close all` rage quits
-- **Gas offloading live** — two-signer: bot=authorized bot, user=fee payer
-- **WSOL auto-unwrap** — `/balance` unwraps, executor unwraps after harvest/close
+- **All 5 programs on mainnet** — bin-farm needs upgrade deploy for PDA vaults
 - **Price syncer deployed (disabled)** — detection works, swap execution needs direct Meteora DLMM instructions
-- **SOL price from Pyth** — `fetchDexScreenerPrice(SOL)` uses Pyth Hermes, not DexScreener. Eliminates FOGO contamination.
-- **DexScreener hardened** — stablecoin pair preference + symbol consensus filter for non-SOL tokens
+- **SOL price from Pyth** — eliminates FOGO contamination
+- **Gauge-voter pool gauges live** — SOL and CRANK PoolGauge PDAs created on-chain
 
 ## Known issues
 
-- **Epoch-computer untested** — code exists in `bot/epoch-computer.ts` but has never run a real epoch. Needs `@noble/hashes` for correct keccak256 (currently falls back to sha3-256 which won't match on-chain). Needs end-to-end test with real SOL.
+- **bin-farm program upgrade not yet deployed** — PDA vault code built + IDL generated, but `anchor upgrade` to mainnet not yet executed. Must force-close all existing positions first, then deploy.
+- **Epoch-computer never run live** — Code hardened + 27 unit tests pass (Merkle proof verification, share computation). Test script ready (`scripts/test-epoch.ts`). Needs live E2E test on mainnet after bin-farm deploy.
 - **Token-2022 transfer hooks unsupported** — V2 CPI but hook extra accounts not resolved. Defense-in-depth guards reject hook-bearing tokens.
-- **No arb on CRANK/SOL DLMM pool** — price syncer detection works but swap execution needs direct Meteora DLMM instructions.
-- **Keypair separation pending** — single keypair controls everything. Needs fresh Ledger for cold admin.
 - **$BANK metadata missing** — no logo, no URI, looks like scam token in wallets.
+- **Keypair separation still relevant** — PDA vaults solve user-side trust, but bot keypair still holds all program authorities. Cold wallet for admin keys still needed.
+- **close_vault instruction missing** — Users can't reclaim vault PDA rent yet. Deferred to post-hackathon.
+- **No arb on CRANK/SOL DLMM pool** — price syncer detection works but swap execution needs direct Meteora DLMM instructions.
 
 ## Program audit notes (reviewed 2026-04-01)
 
@@ -393,10 +440,71 @@ Add `mint_address: 'SYMBOL'`. Used by `/balance` and `/withdraw` for display. Wi
 
 **Cross-program note:** Both `revenue_dest` AND `trader_dest` now point to `bridge_vault` (`B9gTfe...`). sweep_rover sends 40% + 40% = 80% to the same account. This is fine — the lamport additions are sequential in the same instruction, no race condition. The remaining 20% goes to `Config.bot`.
 
+## Security audit (2026-04-01)
+
+Full adversarial audit completed. Report: `audit.md` at repo root. 53 findings, **33 remediated** in the same session.
+
+**What was fixed (code in repo, no deploy needed):**
+- Keccak256 hash (was sha3-256 — Merkle proofs would have failed)
+- Priority fee cap (500K micro-lamports/CU in executor + keeper)
+- Epoch crash recovery (staged progress file, resume on restart)
+- Relay auth (Bearer token on `/api/*`, set `RELAY_AUTH_TOKEN` to activate)
+- WebSocket connection limit (100 max)
+- Sybil-resistant epochs (equal distribution fallback removed)
+- Silent catch blocks → warn-level logging
+- Wallet DB permissions (0o600), sync flush on creation
+- ~~Secret key buffer zeroing~~ **REVERTED** — `Keypair.fromSecretKey` in web3.js 1.98.x shares the buffer, `fill(0)` destroyed live keypairs
+- DexScreener deviation guard (>50% spike rejected)
+- Pyth staleness check (60s max age)
+- Withdraw address lock (largest depositor, not first)
+- gRPC routing (bin-farm discriminator check)
+- Keeper 20hr cooldown (prevents midnight double-fire)
+- nginx: localhost removed from CORS, security headers added (HSTS, X-Frame-Options, etc.)
+- PM2: tsx direct (not npx), kill_timeout=10s, min_uptime=10s, death alerting
+- npm deps pinned to exact versions
+- Error messages sanitized (no raw logs to Discord users)
+- Certbot email registration
+- Key rotation: auto-updates .env, verifies before write, cleans old backups
+- Byte offset startup validation (SDK cross-check)
+- BigInt-native amount conversion in /buy
+
+**What needs server action to activate (code is ready):**
+- `RELAY_AUTH_TOKEN` in bot/.env (relay auth)
+- `/root/.keys/backup.key` (backup encryption)
+- ~~Re-provision droplet or manual user migration (service user)~~ deferred — deploy script reverted to `root`
+- See `todo.md` "Deploy Audit Fixes" section for exact steps
+
+**What needs program upgrade (code is ready, requires `anchor build` + deploy):**
+- gauge-voter: owner check on remaining_accounts (M-03)
+- bin-farm: total_positions decrement on close (L-03)
+- merkle-distributor: old vault drain check before update_mint (L-04)
+
+**What remains open (20 findings):**
+- C-02: Keypair separation (architecture — needs Ledger)
+- C-03: Encryption key in local .env (operational cleanup)
+- H-01: Token-2022 transfer hooks on-chain guard (program upgrade)
+- H-10: gRPC trust model (inherent to Helius endpoint)
+- M-01, M-02, M-04, L-01, L-02, L-05, L-06: on-chain changes (various)
+- M-09: Jupiter swap validation (code disabled)
+- I-01 through I-08: accepted informational items
+
+## Critical runtime notes
+
+**Anchor methods require BN, not BigInt.** `@coral-xyz/borsh` calls `.toArrayLike()` which exists on `BN` but not native `bigint`. Always use `new BN(amount.toString())` for Anchor method args.
+
+**`getTransaction` lags behind confirmation.** After `.rpc()` confirms, the RPC node may not have indexed the tx data yet. Always retry `getTransaction` (3 attempts, 2s delay).
+
+**PDA vault: no user keypairs anywhere.** `wallet-service.ts` has no encryption, no `getOrCreate()`, no keypair generation. `signer.ts` only takes bot keypair. All user operations go through on-chain vault instructions.
+
+**SBF build requires rustup cargo.** Homebrew cargo doesn't support `+toolchain` syntax. Use: `PATH="$HOME/.cargo/bin:$HOME/.rustup/shims:$PATH" cargo-build-sbf --manifest-path programs/bin-farm/Cargo.toml`
+
 ## Next session priorities
 
-See `todo.md` NEXT SESSION section for detailed resume notes. Key priorities:
+See `todo.md` for detailed resume notes. Key priorities:
 
-1. **Epoch-computer end-to-end test** — install `@noble/hashes`, trigger test epoch, verify full pipeline
-2. **Verify sweep_rover with new trader_dest** — keeper logged `InvalidTraderDest` during transition, should resolve after restart
-3. **Remaining doc cleanup** — claude-bot.md, claude-discord.md, claude-core-sdk.md still have stale PEGGED refs
+1. **Deploy bin-farm + merkle-distributor upgrades to mainnet** — Force-close ~2 existing positions, then `anchor upgrade`. Binaries are built.
+2. **Epoch dry-run** — `npx tsx scripts/test-epoch.ts --dry-run --min-lamports 1000000` — verify share computation + tree.
+3. **Epoch live E2E** — `npx tsx scripts/test-epoch.ts --min-lamports 1000000` — full drain → WSOL → new_epoch → auto-claim.
+4. **Set PINATA_JWT** — SSH to droplet, add to bot/.env. Trees pinned to IPFS.
+5. **Set gas_lamports** — Call `update_gas_lamports()` after deploy.
+6. **$BANK metadata** — Register Metaplex token metadata.

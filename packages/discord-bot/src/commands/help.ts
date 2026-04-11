@@ -9,9 +9,9 @@ export async function handleHelp(interaction: ChatInputCommandInteraction, ctx: 
       '`/start` — create your wallet\n' +
       '`/balance` — show token balances\n' +
       '`/deposit` — show deposit address\n' +
-      '`/buy SOL 84 to 74 1000 USDC` — buy SOL over a range\n' +
-      '`/buy CRANK 45mmc to 22mmc 2 SOL` — buy using mcap\n' +
-      '`/sell SOL 98 to 115 10 SOL` — sell SOL over a range\n' +
+      '`/buy CRANK 15k to 20k 0.5 SOL` — buy the dip\n' +
+      '`/sell CRANK 25k to 35k 4000000 CRANK` — sell the rip\n' +
+      '`/buy SOL 74 to 78 100 USDC` — buy SOL over a range\n' +
       '`/positions` — view open positions\n' +
       '`/close ID` — close a position\n' +
       '`/withdraw SOL 0.5` — withdraw to your deposit wallet\n' +

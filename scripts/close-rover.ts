@@ -89,7 +89,7 @@ async function main() {
     createAssociatedTokenAccountIdempotentInstruction(botKp.publicKey, roverFeeTokenY, roverAuthority, meteora.tokenYMint, meteora.tokenYProgram),
   ];
 
-  const priorityIxs = await buildPriorityFeeIxs(conn);
+  const priorityIxs = await buildPriorityFeeIxs(conn, 1_400_000);
 
   console.log('\nClosing position...');
   const sig = await withRetry(
@@ -132,4 +132,4 @@ async function main() {
 
   console.log(`✓ Closed: https://solscan.io/tx/${sig}`);
 }
-main().catch(e => { console.error(e.message?.slice(0, 300)); process.exit(1); });
+main().catch(e => { console.error(JSON.stringify({msg: e.message, logs: e.logs || e.simulationResponse?.logs || []}, null, 2)); process.exit(1); });

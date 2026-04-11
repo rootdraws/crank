@@ -31,8 +31,9 @@ import { buildMeteoraCPIAccounts, getDLMM, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGR
 import type { HarvestJob, LbPairInfo } from './geyser-subscriber';
 import { logger } from './logger';
 
-// Priority fee floor (micro-lamports per compute unit)
+// Priority fee floor/cap (micro-lamports per compute unit)
 const PRIORITY_FEE_FLOOR = 10_000;
+const PRIORITY_FEE_CAP = 500_000; // 0.2 SOL max at 400K CU
 
 /** Build compute budget instructions with dynamic priority fee */
 async function buildPriorityFeeIxs(connection: Connection): Promise<any[]> {
@@ -42,7 +43,7 @@ async function buildPriorityFeeIxs(connection: Connection): Promise<any[]> {
     if (fees.length > 0) {
       const sorted = fees.map(f => f.prioritizationFee).sort((a, b) => a - b);
       const median = sorted[Math.floor(sorted.length / 2)];
-      microLamports = Math.max(median, PRIORITY_FEE_FLOOR);
+      microLamports = Math.min(Math.max(median, PRIORITY_FEE_FLOOR), PRIORITY_FEE_CAP);
     }
   } catch (e) {
     logger.warn('Failed to fetch priority fees, using floor');
@@ -292,13 +293,11 @@ export class HarvestExecutor extends EventEmitter {
     const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
     const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
-    // Gas offloading: user pays gas, bot signs as authorized bot.
-    // bot account = botKeypair (authorized path, no keeper tip).
-    // fee payer = userKeypair if available (user pays gas), else botKeypair.
-    const userId = this.walletService?.getUserIdForOwner(job.owner.toBase58());
-    const userKeypair = userId ? this.walletService.getOrCreate(userId) : null;
-    const payer = userKeypair?.publicKey ?? this.botKeypair.publicKey;
-    const signers = userKeypair ? [this.botKeypair, userKeypair] : [this.botKeypair];
+    // PDA vault architecture: bot is sole signer. Gas reimbursed on-chain from user vault.
+    // job.owner = UserVault PDA (position.user_vault on-chain).
+    const userId = this.walletService?.getUserIdForVault(job.owner.toBase58());
+    const payer = this.botKeypair.publicKey;
+    const signers = [this.botKeypair];
 
     // Ensure owner + rover ATAs exist (idempotent — no-op if already created)
     const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
@@ -326,7 +325,7 @@ export class HarvestExecutor extends EventEmitter {
           config:             configPDA,
           position:           new PublicKey(job.positionPDA),
           vault:              vaultPda,
-          owner:              job.owner,
+          userVault:          job.owner,  // position.user_vault = UserVault PDA
           meteoraPosition:    meteora.meteoraPosition,
           lbPair:             meteora.lbPair,
           binArrayBitmapExt:  meteora.binArrayBitmapExt,
@@ -355,10 +354,16 @@ export class HarvestExecutor extends EventEmitter {
       `harvest ${key.slice(0, 8)}`
     );
 
-    // Read token deltas from the confirmed transaction (no timing issues)
+    // Read token deltas from the confirmed transaction.
+    // RPC may not have indexed the tx data immediately after confirmation — retry up to 3 times.
     let deltaX = 0n, deltaY = 0n;
     try {
-      const txData = await this.connection.getTransaction(txSig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+      let txData = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        txData = await this.connection.getTransaction(txSig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+        if (txData?.meta) break;
+        await new Promise(r => setTimeout(r, 2000));
+      }
       if (txData?.meta) {
         const ownerKey = job.owner.toBase58();
         const pre = txData.meta.preTokenBalances ?? [];
@@ -373,26 +378,41 @@ export class HarvestExecutor extends EventEmitter {
           if (p.mint === meteora.tokenXMint.toBase58()) deltaX = delta;
           else if (p.mint === meteora.tokenYMint.toBase58()) deltaY = delta;
         }
+      } else {
+        logger.warn(`  [executor] getTransaction returned null after 3 attempts for ${key.slice(0, 8)} (${txSig.slice(0, 12)})`);
       }
-    } catch { /* best-effort */ }
-
-    // Auto-unwrap WSOL after harvest so user sees native SOL
-    if (userKeypair && (meteora.tokenYMint.equals(NATIVE_MINT) || meteora.tokenXMint.equals(NATIVE_MINT))) {
-      try {
-          const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, job.owner, true, TOKEN_PROGRAM_ID);
-          const { Transaction } = await import('@solana/web3.js');
-          const tx = new Transaction().add(
-            createCloseAccountInstruction(wsolAta, job.owner, job.owner, [], TOKEN_PROGRAM_ID)
-          );
-          const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
-          tx.recentBlockhash = blockhash;
-          tx.lastValidBlockHeight = lastValidBlockHeight;
-          tx.feePayer = job.owner;
-          tx.sign(userKeypair);
-          await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-          logger.info(`  [executor] Auto-unwrapped WSOL for ${job.owner.toBase58().slice(0, 8)}`);
-      } catch { /* WSOL ATA may not exist */ }
+    } catch (e: any) {
+      logger.warn(`  [executor] Token delta read failed for ${key.slice(0, 8)}: ${e.message?.slice(0, 80)}`);
     }
+
+    // Auto-unwrap WSOL → native SOL in vault PDA (so /withdraw SOL works immediately)
+    if (meteora.tokenYMint.equals(NATIVE_MINT) || meteora.tokenXMint.equals(NATIVE_MINT)) {
+      try {
+        const [cfgPDA] = coreConfigPDA(this.coreProgramId);
+        const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, job.owner, true, TOKEN_PROGRAM_ID);
+        await this.coreProgram.methods
+          .unwrapWsolInVault()
+          .accounts({
+            caller: this.botKeypair.publicKey,
+            config: cfgPDA,
+            userVault: job.owner,
+            vaultWsolAta: wsolAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([this.botKeypair])
+          .rpc();
+        logger.info(`  [executor] Auto-unwrapped WSOL for vault ${job.owner.toBase58().slice(0, 8)}`);
+      } catch (e: any) {
+        logger.warn(`  [executor] WSOL unwrap failed for vault ${job.owner.toBase58().slice(0, 8)}: ${e.message?.slice(0, 80)}`);
+      }
+    }
+    // On-chain withdraw_sol handles native SOL. WSOL stays in vault ATAs.
+
+    // Compute fee extracted by sweep_rover (0.3% of the converted output).
+    // User received (gross - fee), so fee = gross * 0.003 = amount_out * 3/997.
+    // Only one side is nonzero per harvest (the converted side).
+    const deltaMax = deltaX > deltaY ? deltaX : deltaY;
+    const feeTaken = (deltaMax * 3n) / 997n;
 
     // Structured logging for forensic reconstruction
     logger.info({
@@ -405,6 +425,7 @@ export class HarvestExecutor extends EventEmitter {
       txSig,
       tokenXReceived: deltaX.toString(),
       tokenYReceived: deltaY.toString(),
+      feeTaken: feeTaken.toString(),
     }, `Harvest submitted: ${binIds.length} bins from ${key.slice(0, 8)}`);
     this.lastHarvestTime = Date.now();
     this.totalHarvests++;
@@ -417,6 +438,7 @@ export class HarvestExecutor extends EventEmitter {
       txSig,
       tokenXAmount: deltaX.toString(),
       tokenYAmount: deltaY.toString(),
+      feeAmount: feeTaken.toString(),
     });
   }
 
@@ -445,11 +467,10 @@ export class HarvestExecutor extends EventEmitter {
     const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
     const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
-    // Gas offloading: user pays gas, bot signs as authorized bot.
-    const userId = this.walletService?.getUserIdForOwner(job.owner.toBase58());
-    const userKeypair = userId ? this.walletService.getOrCreate(userId) : null;
-    const payer = userKeypair?.publicKey ?? this.botKeypair.publicKey;
-    const signers = userKeypair ? [this.botKeypair, userKeypair] : [this.botKeypair];
+    // PDA vault architecture: bot is sole signer.
+    const userId = this.walletService?.getUserIdForVault(job.owner.toBase58());
+    const payer = this.botKeypair.publicKey;
+    const signers = [this.botKeypair];
 
     const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
     const createOwnerAtaX = createAssociatedTokenAccountIdempotentInstruction(
@@ -473,9 +494,9 @@ export class HarvestExecutor extends EventEmitter {
         .accounts({
           bot:                this.botKeypair.publicKey,
           config:             configPDA,
+          userVault:          job.owner,  // position.user_vault = UserVault PDA
           position:           new PublicKey(job.positionPDA),
           vault:              vaultPda,
-          owner:              job.owner,
           meteoraPosition:    meteora.meteoraPosition,
           lbPair:             meteora.lbPair,
           binArrayBitmapExt:  meteora.binArrayBitmapExt,
@@ -505,10 +526,15 @@ export class HarvestExecutor extends EventEmitter {
       `close ${key.slice(0, 8)}`
     );
 
-    // Read token deltas from the confirmed transaction
+    // Read token deltas from the confirmed transaction (retry for RPC indexing lag)
     let deltaX = 0n, deltaY = 0n;
     try {
-      const txData = await this.connection.getTransaction(closeSig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+      let txData = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        txData = await this.connection.getTransaction(closeSig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+        if (txData?.meta) break;
+        await new Promise(r => setTimeout(r, 2000));
+      }
       if (txData?.meta) {
         const ownerKey = job.owner.toBase58();
         const pre = txData.meta.preTokenBalances ?? [];
@@ -523,25 +549,33 @@ export class HarvestExecutor extends EventEmitter {
           if (p.mint === meteora.tokenXMint.toBase58()) deltaX = delta;
           else if (p.mint === meteora.tokenYMint.toBase58()) deltaY = delta;
         }
+      } else {
+        logger.warn(`  [executor] getTransaction returned null after 3 attempts for ${key.slice(0, 8)} (${closeSig.slice(0, 12)})`);
       }
-    } catch { /* best-effort */ }
+    } catch (e: any) {
+      logger.warn(`  [executor] Token delta read failed for ${key.slice(0, 8)}: ${e.message?.slice(0, 80)}`);
+    }
 
-    // Auto-unwrap WSOL after close
-    if (userKeypair && (meteora.tokenYMint.equals(NATIVE_MINT) || meteora.tokenXMint.equals(NATIVE_MINT))) {
+    // Auto-unwrap WSOL → native SOL in vault PDA (so /withdraw SOL works immediately)
+    if (meteora.tokenYMint.equals(NATIVE_MINT) || meteora.tokenXMint.equals(NATIVE_MINT)) {
       try {
-          const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, job.owner, true, TOKEN_PROGRAM_ID);
-          const { Transaction } = await import('@solana/web3.js');
-          const tx = new Transaction().add(
-            createCloseAccountInstruction(wsolAta, job.owner, job.owner, [], TOKEN_PROGRAM_ID)
-          );
-          const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
-          tx.recentBlockhash = blockhash;
-          tx.lastValidBlockHeight = lastValidBlockHeight;
-          tx.feePayer = job.owner;
-          tx.sign(userKeypair);
-          await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-          logger.info(`  [executor] Auto-unwrapped WSOL for ${job.owner.toBase58().slice(0, 8)}`);
-      } catch { /* WSOL ATA may not exist */ }
+        const [cfgPDA] = coreConfigPDA(this.coreProgramId);
+        const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, job.owner, true, TOKEN_PROGRAM_ID);
+        await this.coreProgram.methods
+          .unwrapWsolInVault()
+          .accounts({
+            caller: this.botKeypair.publicKey,
+            config: cfgPDA,
+            userVault: job.owner,
+            vaultWsolAta: wsolAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([this.botKeypair])
+          .rpc();
+        logger.info(`  [executor] Auto-unwrapped WSOL for vault ${job.owner.toBase58().slice(0, 8)}`);
+      } catch (e: any) {
+        logger.warn(`  [executor] WSOL unwrap failed for vault ${job.owner.toBase58().slice(0, 8)}: ${e.message?.slice(0, 80)}`);
+      }
     }
 
     logger.info({

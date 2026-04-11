@@ -11,7 +11,7 @@ import {
   BANK_MINT_PROGRAM_ID,
   GAUGE_VOTER_PROGRAM_ID,
   MERKLE_DISTRIBUTOR_PROGRAM_ID,
-  PEGGED_BRIDGE_PROGRAM_ID,
+  EPOCH_VAULT_PROGRAM_ID,
   METEORA_DLMM_PROGRAM_ID,
 } from './constants';
 
@@ -38,9 +38,13 @@ export function getVaultPDA(meteoraPosition: PublicKey): [PublicKey, number] {
   );
 }
 
-export function getPositionCounterPDA(user: PublicKey, lbPair: PublicKey): [PublicKey, number] {
+/**
+ * Seeds use the UserVault PDA key (not the user's real wallet).
+ * Pass the result of getUserVaultPDA(owner)[0] as userVault.
+ */
+export function getPositionCounterPDA(userVault: PublicKey, lbPair: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('pos_counter'), user.toBuffer(), lbPair.toBuffer()],
+    [Buffer.from('pos_counter'), userVault.toBuffer(), lbPair.toBuffer()],
     BIN_FARM_PROGRAM_ID
   );
 }
@@ -48,16 +52,24 @@ export function getPositionCounterPDA(user: PublicKey, lbPair: PublicKey): [Publ
 /**
  * Derive the Meteora position PDA from the CURRENT counter value
  * (before increment). Read position_counter.count first, then call this.
+ * userVault = getUserVaultPDA(owner)[0]
  */
 export function getMeteoraPositionPDA(
-  user: PublicKey,
+  userVault: PublicKey,
   lbPair: PublicKey,
   count: number
 ): [PublicKey, number] {
   const countBuf = Buffer.alloc(8);
   countBuf.writeBigUInt64LE(BigInt(count), 0);
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('meteora_pos'), user.toBuffer(), lbPair.toBuffer(), countBuf],
+    [Buffer.from('meteora_pos'), userVault.toBuffer(), lbPair.toBuffer(), countBuf],
+    BIN_FARM_PROGRAM_ID
+  );
+}
+
+export function getUserVaultPDA(owner: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('user_vault'), owner.toBuffer()],
     BIN_FARM_PROGRAM_ID
   );
 }
@@ -115,14 +127,14 @@ export function getClaimStatusPDA(distributor: PublicKey, claimant: PublicKey): 
 export function getBridgeConfigPDA(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [Buffer.from('bridge_config')],
-    PEGGED_BRIDGE_PROGRAM_ID
+    EPOCH_VAULT_PROGRAM_ID
   );
 }
 
 export function getBridgeVaultPDA(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [Buffer.from('bridge_vault')],
-    PEGGED_BRIDGE_PROGRAM_ID
+    EPOCH_VAULT_PROGRAM_ID
   );
 }
 

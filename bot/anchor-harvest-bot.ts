@@ -77,7 +77,8 @@ function requireEnvPubkey(name: string): PublicKey {
 const CORE_PROGRAM_ID       = requireEnvPubkey('CORE_PROGRAM_ID');
 const DISTRIBUTOR_PROGRAM_ID = requireEnvPubkey('DISTRIBUTOR_PROGRAM_ID');
 
-// PEGGED/bridge programs retired — SOL distributed directly
+// epoch-vault program (formerly pegged-bridge) holds the bridge_vault PDA —
+// 80% of swept fees land here as native SOL, drained daily by drain_vault.
 
 const COMMITMENT: Commitment    = 'confirmed';
 const KEEPER_ACTIVE_INTERVAL_MS = parseInt(process.env.KEEPER_CHECK_INTERVAL_MS || '3600000'); // 1hr during Active
@@ -163,14 +164,35 @@ class HarvestBot {
     const wallet = new Wallet(botKeypair);
     this.provider = new AnchorProvider(this.connection, wallet, { commitment: COMMITMENT });
 
-    process.on('SIGTERM', () => this.shutdown());
-    process.on('SIGINT',  () => this.shutdown());
+    process.on('SIGTERM', () => this.shutdown('SIGTERM'));
+    process.on('SIGINT',  () => this.shutdown('SIGINT'));
+    process.on('uncaughtException', (err) => {
+      logger.error(`Uncaught exception: ${err.message}`);
+      this.shutdown(`uncaughtException: ${err.message}`);
+    });
+    process.on('unhandledRejection', (reason: any) => {
+      logger.error(`Unhandled rejection: ${reason?.message || reason}`);
+      this.shutdown(`unhandledRejection: ${reason?.message || reason}`);
+    });
   }
 
-  private async shutdown() {
+  private async shutdown(reason = 'unknown') {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
-    logger.info('\nShutting down...');
+    logger.info(`\nShutting down (${reason})...`);
+
+    // Fire death alert before anything else (best-effort, non-blocking timeout)
+    if (reason !== 'SIGTERM' && reason !== 'SIGINT') {
+      try {
+        const { alertProcessDeath } = await import('./alerter');
+        await Promise.race([
+          alertProcessDeath(reason),
+          new Promise(r => setTimeout(r, 3000)),
+        ]);
+      } catch (e: any) {
+        logger.warn(`[shutdown] Death alert failed: ${e.message?.slice(0, 80)}`);
+      }
+    }
 
     if (this.keeperTimer) clearTimeout(this.keeperTimer);
     if (this.healthServer) this.healthServer.close();
@@ -242,32 +264,43 @@ class HarvestBot {
     const [distPDA] = PublicKey.findProgramAddressSync(
       [Buffer.from('distributor')], DISTRIBUTOR_PROGRAM_ID
     );
+    const [bridgeVaultPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from('bridge_vault')], this.epochVaultProgram.programId
+    );
     const wsolMint = new PublicKey('So11111111111111111111111111111111111111112');
 
-    const [roverBal, distAcctInfo] = await Promise.all([
+    const { getAssociatedTokenAddressSync: getAta } = await import('@solana/spl-token');
+    const roverWsolAta = getAta(wsolMint, roverPDA, true);
+    const distWsolAta  = getAta(wsolMint, distPDA,  true);
+
+    const [roverSol, bridgeVaultSol, roverWsolInfo, distWsolInfo, distAcctInfo] = await Promise.all([
       this.connection.getBalance(roverPDA),
+      this.connection.getBalance(bridgeVaultPDA),
+      this.connection.getAccountInfo(roverWsolAta),
+      this.connection.getAccountInfo(distWsolAta),
       (this.distributorProgram.account as any).distributor.fetch(distPDA).catch(() => null),
     ]);
 
-    let wsolBal = 0;
-    try {
-      const { getAssociatedTokenAddressSync: getAta } = await import('@solana/spl-token');
-      const ata = getAta(wsolMint, roverPDA, true);
-      const info = await this.connection.getAccountInfo(ata);
-      if (info && info.data.length >= 72) wsolBal = Number(info.data.readBigUInt64LE(64));
-    } catch { /* no WSOL ATA */ }
+    // SPL token account amount is u64 LE at offset 64
+    const parseWsol = (info: { data: Buffer } | null): number =>
+      info && info.data.length >= 72 ? Number(info.data.readBigUInt64LE(64)) : 0;
+
+    const roverWsol = parseWsol(roverWsolInfo);
+    const distWsol  = parseWsol(distWsolInfo);
 
     const distributorState = distAcctInfo ? {
-      currentEpoch: distAcctInfo.currentEpoch?.toString() ?? '0',
-      totalAmountFunded: distAcctInfo.totalAmountFunded?.toString() ?? '0',
+      currentEpoch:       distAcctInfo.currentEpoch?.toString()       ?? '0',
+      totalAmountFunded:  distAcctInfo.totalAmountFunded?.toString()  ?? '0',
       totalAmountClaimed: distAcctInfo.totalAmountClaimed?.toString() ?? '0',
-      paused: distAcctInfo.paused ?? false,
+      paused:             distAcctInfo.paused ?? false,
     } : null;
 
     return {
-      roverAuthority: { address: roverPDA.toBase58(), solBalance: roverBal, wsolBalance: wsolBal },
+      roverAuthority:   { address: roverPDA.toBase58(),        solBalance: roverSol,       wsolBalance: roverWsol },
+      bridgeVault:      { address: bridgeVaultPDA.toBase58(),  solBalance: bridgeVaultSol },
+      distributorVault: { address: distWsolAta.toBase58(),     wsolBalance: distWsol },
       distributorState,
-      totalInPipeline: roverBal + wsolBal,
+      totalInPipeline: roverSol + roverWsol + bridgeVaultSol + distWsol,
       timestamp: Date.now(),
     };
   }
@@ -559,12 +592,15 @@ class HarvestBot {
     if (process.env.DISCORD_TOKEN) {
       try {
         const { DiscordBot } = await import('../packages/discord-bot/src/index');
+        const [configPDA] = PublicKey.findProgramAddressSync([Buffer.from('config')], CORE_PROGRAM_ID);
         const discordBot = new DiscordBot({
           executor: this.executor,
           subscriber: this.subscriber,
           connection: this.connection,
           coreProgram: this.coreProgram,
           coreProgramId: CORE_PROGRAM_ID,
+          botKeypair: this.botKeypair,
+          configPDA,
         });
         this.executor.on('harvestExecuted', (data: any) => {
           discordBot.notifier.onHarvestExecuted(data);
@@ -575,7 +611,10 @@ class HarvestBot {
         await discordBot.start();
         this.executor.setWalletService(discordBot.walletService);
         this.keeper.setWalletService(discordBot.walletService);
-        initAlerter((text) => discordBot.notifier.postToFeed(text));
+        initAlerter({
+          postToFeed: (text) => discordBot.notifier.postToFeed(text),
+          postToOps: (text) => discordBot.notifier.postToOps(text),
+        });
         logger.info('[discord] Bot started');
       } catch (e: any) {
         logger.warn(`[discord] Failed to start: ${e.message}`);

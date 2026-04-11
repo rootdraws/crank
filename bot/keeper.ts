@@ -28,10 +28,13 @@ import {
 } from '@solana/web3.js';
 import { Program } from '@coral-xyz/anchor';
 import { logger } from './logger';
+import { alertEpochMiss, alertEpochSuccess } from './alerter';
 import { buildMeteoraCPIAccounts, getDLMM, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, hasTransferHook } from './meteora-accounts';
+import { fetchDexScreenerPrice } from '../packages/core-sdk/price-source';
 
-// Priority fee floor (micro-lamports per compute unit)
+// Priority fee floor/cap (micro-lamports per compute unit)
 const KEEPER_PRIORITY_FEE_FLOOR = 10_000;
+const KEEPER_PRIORITY_FEE_CAP = 500_000; // 0.2 SOL max at 400K CU
 
 /** Build compute budget instructions with dynamic priority fee */
 async function buildKeeperPriorityIxs(connection: Connection): Promise<any[]> {
@@ -41,7 +44,7 @@ async function buildKeeperPriorityIxs(connection: Connection): Promise<any[]> {
     if (fees.length > 0) {
       const sorted = fees.map((f: any) => f.prioritizationFee).sort((a: number, b: number) => a - b);
       const median = sorted[Math.floor(sorted.length / 2)];
-      microLamports = Math.max(median, KEEPER_PRIORITY_FEE_FLOOR);
+      microLamports = Math.min(Math.max(median, KEEPER_PRIORITY_FEE_FLOOR), KEEPER_PRIORITY_FEE_CAP);
     }
   } catch (e) {
     logger.warn('Failed to fetch priority fees, using floor');
@@ -113,8 +116,9 @@ export class MonkeKeeper {
   private walletService: any;
   private coreProgramId: PublicKey;
   private distributorProgramId: PublicKey;
-  // Track last successful run (UTC day number) for daily gating
+  // Track last successful run (UTC day number + timestamp) for daily gating
   private lastRunDay: number = 0;
+  private lastRunTimestamp: number = 0;
   // Cached priority fee instructions (refreshed per daily sequence)
   private priorityIxs: any[] = [];
   // Optional pool registry from subscriber
@@ -155,12 +159,27 @@ export class MonkeKeeper {
    */
   async runDailySequence(): Promise<string> {
     const ts = new Date().toISOString().slice(0, 19);
-    const today = Math.floor(Date.now() / 86_400_000); // UTC day number
+    const now = Date.now();
+    const today = Math.floor(now / 86_400_000); // UTC day number
 
-    if (today <= this.lastRunDay) {
+    // Gate: same UTC day OR less than 20 hours since last run (prevents double-fire near midnight)
+    const MIN_RUN_INTERVAL_MS = 20 * 60 * 60 * 1000; // 20 hours
+    if (today <= this.lastRunDay || (now - this.lastRunTimestamp) < MIN_RUN_INTERVAL_MS) {
       logger.info(`[keeper] ${ts} Idle — already ran today`);
       return 'Idle';
     }
+
+    // Check for epoch miss (>26 hours since last successful epoch)
+    try {
+      const { loadEpochState } = await import('./epoch-computer');
+      const epochState = loadEpochState();
+      if (epochState.lastEpochTimestamp > 0) {
+        const hoursSince = (now - epochState.lastEpochTimestamp) / (3600 * 1000);
+        if (hoursSince > 26) {
+          await alertEpochMiss(hoursSince);
+        }
+      }
+    } catch { /* epoch state file may not exist yet */ }
 
     {
       logger.info(`[keeper] ${ts} Running daily fee processing sequence`);
@@ -184,6 +203,7 @@ export class MonkeKeeper {
       await this.crankCloseExhaustedRovers();
 
       this.lastRunDay = today;
+      this.lastRunTimestamp = Date.now();
       logger.info(`[keeper] ${ts} Daily sequence complete`);
       return 'Processing';
     }
@@ -307,7 +327,12 @@ export class MonkeKeeper {
       const [configPDA] = coreConfigPDA(this.coreProgramId);
 
       const DIRECT_SWAP_MINTS = (process.env.DIRECT_SWAP_MINTS || '').split(',').filter(Boolean);
-      const MIN_FEE_ROVER_VALUE = parseInt(process.env.MIN_FEE_ROVER_VALUE || '50000000'); // 0.05 SOL default
+      // Value-based threshold (USD). Dust below this accumulates in rover_authority
+      // ATAs instead of burning gas on sub-economic rover deployments.
+      const MIN_FEE_ROVER_USD = parseFloat(process.env.MIN_FEE_ROVER_USD || '10');
+      // Adaptive bin width — one bin per $FEE_ROVER_BIN_USD of token value, clamped
+      // [5, on-chain max]. Smaller rovers get fewer bins → lower gas footprint.
+      const FEE_ROVER_BIN_USD = parseFloat(process.env.FEE_ROVER_BIN_USD || '0.50');
 
       // Fetch all token accounts owned by rover_authority (SPL + Token-2022)
       const [spl, t22] = await Promise.all([
@@ -315,30 +340,6 @@ export class MonkeKeeper {
         this.connection.getParsedTokenAccountsByOwner(roverAuthority, { programId: TOKEN_2022_PROGRAM_ID }),
       ]);
       const allAccounts = [...spl.value, ...t22.value];
-
-      // We need to know which pool each token trades on. Build mint → pool mapping.
-      // Use subscriber's pool registry if available (O(pools) instead of O(positions)).
-      // Falls back to position.all() if getWatchedPools not provided (backward compatible).
-      const mintToPool = new Map<string, PublicKey>();
-      let poolKeys: string[];
-      if (this.getWatchedPools) {
-        poolKeys = this.getWatchedPools();
-      } else {
-        // Fallback: dedupe pools from all positions (original behavior)
-        const positions = await this.coreProgram.account.position.all();
-        const poolSet = new Set<string>();
-        for (const pos of positions) {
-          poolSet.add((pos.account as any).lbPair.toBase58());
-        }
-        poolKeys = [...poolSet];
-      }
-      for (const poolKey of poolKeys) {
-        try {
-          const dlmm = await getDLMM(this.connection, new PublicKey(poolKey));
-          const tokenXMint = dlmm.lbPair.tokenXMint.toBase58();
-          mintToPool.set(tokenXMint, new PublicKey(poolKey));
-        } catch { /* skip */ }
-      }
 
       // Whitelist: only open rovers for mints that appear in curator.json pools.
       // Prevents airdrop spam from burning rent on random DLMM pools.
@@ -376,18 +377,37 @@ export class MonkeKeeper {
           continue;
         }
 
-        const rawAmount = BigInt(parsed.info.tokenAmount.amount);
-        if (rawAmount < BigInt(MIN_FEE_ROVER_VALUE)) continue;
-
-        // Find the pool for this mint
-        const lbPair = mintToPool.get(mintStr);
-        if (!lbPair) {
+        // Find the curator pool config for this mint (source of truth for decimals + lbPair)
+        const poolConfig = curatorPools.find((p: any) => p.mintX === mintStr || p.mintY === mintStr);
+        if (!poolConfig) {
           logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] No known pool for fee token — skipping');
           continue;
         }
+        const decimals = poolConfig.mintX === mintStr ? poolConfig.decimalsX : poolConfig.decimalsY;
+        const lbPair = new PublicKey(poolConfig.address);
+        const rawAmount = BigInt(parsed.info.tokenAmount.amount);
 
-        logger.info({ mint: mintStr.slice(0, 8), balance, pool: lbPair.toBase58().slice(0, 8) },
-          '[keeper] Opening fee rover position');
+        // Value-based threshold: convert raw balance to USD via DexScreener.
+        // Skip conservatively if price is unavailable — better to let dust accumulate
+        // than burn gas recycling an unpriced amount.
+        const priceData = await fetchDexScreenerPrice(mintStr);
+        if (!priceData) {
+          logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] Fee rover skipped — no price data');
+          continue;
+        }
+        const valueUsd = (Number(rawAmount) / 10 ** decimals) * priceData.priceUsd;
+        if (valueUsd < MIN_FEE_ROVER_USD) {
+          logger.info(
+            { mint: mintStr.slice(0, 8), valueUsd: valueUsd.toFixed(2), threshold: MIN_FEE_ROVER_USD },
+            '[keeper] Fee rover below USD floor — accumulating'
+          );
+          continue;
+        }
+
+        logger.info(
+          { mint: mintStr.slice(0, 8), balance, valueUsd: valueUsd.toFixed(2), pool: lbPair.toBase58().slice(0, 8) },
+          '[keeper] Opening fee rover position'
+        );
 
         try {
           const dlmm = await getDLMM(this.connection, lbPair);
@@ -398,8 +418,10 @@ export class MonkeKeeper {
           // Generate new Meteora position keypair
           const meteoraPosition = SolKeypair.generate();
 
-          // Compute bin range (same as on-chain: active_id+1 to +70 max)
-          const width = Math.min(70, Math.max(1, Math.floor(6931 / binStep)));
+          // Adaptive bin width — 1 bin per $FEE_ROVER_BIN_USD of token value, clamped
+          // [5, on-chain max]. Bigger amounts get full depth; dust gets a tight range.
+          const maxWidth = Math.min(70, Math.max(1, Math.floor(6931 / binStep)));
+          const width = Math.max(5, Math.min(maxWidth, Math.floor(valueUsd / FEE_ROVER_BIN_USD)));
           const minBinId = activeId + 1;
           const maxBinId = minBinId + width - 1;
 
@@ -491,13 +513,16 @@ export class MonkeKeeper {
   private async crankEpochDistribution(): Promise<void> {
     try {
       const { runEpoch } = await import('./epoch-computer');
-      await runEpoch({
+      const result = await runEpoch({
         connection: this.connection,
         botKeypair: this.botKeypair,
         walletService: this.walletService,
         epochVaultProgram: this.epochVaultProgram,
         distributorProgram: this.distributorProgram,
       });
+      if (result.ran && result.epoch != null && result.amountSol != null && result.userCount != null) {
+        await alertEpochSuccess(result.epoch, result.amountSol, result.userCount);
+      }
     } catch (e: any) {
       logger.warn(`[keeper] epoch distribution error: ${e.message?.slice(0, 150)}`);
     }
@@ -518,8 +543,10 @@ export class MonkeKeeper {
       const roverAuthorityKey = roverAuthority.toBase58();
 
       const positions = await this.coreProgram.account.position.all();
+      // New PDA-vault Position struct uses userVault (rover positions set it to
+      // rover_authority). Optional chaining in case any legacy struct slips through.
       const roverPositions = positions.filter(
-        (p: any) => (p.account.owner as PublicKey).toBase58() === roverAuthorityKey
+        (p: any) => (p.account.userVault as PublicKey | undefined)?.toBase58() === roverAuthorityKey
       );
 
       if (roverPositions.length === 0) {

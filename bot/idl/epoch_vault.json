@@ -55,6 +55,9 @@
         },
         {
           "name": "bridge_vault",
+          "docs": [
+            "without account init; drain uses System CPI + invoke_signed."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -81,6 +84,10 @@
         {
           "name": "destination",
           "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [

@@ -54,10 +54,23 @@ pub mod epoch_vault {
         let drain_amount = if amount == 0 { available } else { amount.min(available) };
         require!(drain_amount > 0, VaultError::NothingToDrain);
 
-        // Transfer SOL from vault PDA to destination
+        // bridge_vault is system-owned (see Initialize comment), so direct
+        // lamport mutation is rejected by the runtime. Use System::transfer via
+        // invoke_signed with the vault PDA seeds to move SOL out.
         let vault_bump = ctx.accounts.config.vault_bump;
-        **ctx.accounts.bridge_vault.try_borrow_mut_lamports()? -= drain_amount;
-        **ctx.accounts.destination.try_borrow_mut_lamports()? += drain_amount;
+        let signer_seeds: &[&[&[u8]]] = &[&[b"bridge_vault", &[vault_bump]]];
+
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.bridge_vault.to_account_info(),
+                    to: ctx.accounts.destination.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            drain_amount,
+        )?;
 
         // Update stats
         let config = &mut ctx.accounts.config;
@@ -145,13 +158,16 @@ pub struct DrainVault<'info> {
     #[account(mut, seeds = [b"bridge_config"], bump = config.config_bump)]
     pub config: Account<'info, BridgeConfig>,
 
-    /// CHECK: Vault PDA — SOL source
+    /// CHECK: Vault PDA — SOL source. System-owned so sweep_rover can deposit
+    /// without account init; drain uses System CPI + invoke_signed.
     #[account(mut, seeds = [b"bridge_vault"], bump = config.vault_bump)]
     pub bridge_vault: AccountInfo<'info>,
 
     /// CHECK: Destination for drained SOL (typically WSOL ATA or bot wallet for wrapping)
     #[account(mut)]
     pub destination: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]

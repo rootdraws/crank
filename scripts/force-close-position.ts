@@ -1,16 +1,16 @@
 /**
- * force-close-position.ts — Close a specific position with high CU and simulation debug.
- * Usage: npx tsx scripts/force-close-position.ts <wallet_pubkey>
+ * force-close-position.ts — Close a specific user's positions with high CU and simulation debug.
+ * Uses bot-signed user_close (vault architecture).
+ * Usage: npx tsx scripts/force-close-position.ts <discord_user_id>
  */
-import { Connection, PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
-import { address } from '@solana/kit';
-import { getUserCloseInstructionAsync } from '../packages/core-sdk/generated/bin-farm/instructions/userClose';
-import { getPositionPDA, getVaultPDA, getRoverAuthorityPDA } from '../packages/core-sdk/pda';
+import { Connection, Keypair, PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
+import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor';
+import { getConfigPDA, getPositionPDA, getVaultPDA, getRoverAuthorityPDA } from '../packages/core-sdk/pda';
 import { resolveMeteoraCPIAccounts, deriveATA } from '../packages/core-sdk/meteora';
-import { kitIxToWeb3, asSigner } from '../packages/core-sdk/transactions';
 import { WalletService } from '../packages/core-sdk/wallet-service';
 import dotenv from 'dotenv';
 import * as path from 'path';
+import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 const __filename2 = fileURLToPath(import.meta.url);
 const __dirname2 = path.dirname(__filename2);
@@ -19,17 +19,26 @@ dotenv.config({ path: path.join(__dirname2, '../bot/.env') });
 const SPL_MEMO = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 
 async function main() {
-  const walletPubkey = process.argv[2];
-  if (!walletPubkey) { console.error('Usage: npx tsx scripts/force-close-position.ts <wallet>'); process.exit(1); }
+  const userId = process.argv[2];
+  if (!userId) { console.error('Usage: npx tsx scripts/force-close-position.ts <discord_user_id>'); process.exit(1); }
 
   const conn = new Connection(process.env.RPC_URL!, 'confirmed');
-  const ws = new WalletService(path.join(__dirname2, '../data/crankbot.json'), process.env.WALLET_ENCRYPTION_KEY!);
-  const userId = ws.getUserIdForOwner(walletPubkey)!;
-  const kp = ws.getOrCreate(userId);
-  const user = kp.publicKey;
+  const ws = new WalletService(path.join(__dirname2, '../data/crankbot.json'));
+
+  const botKeypair = Keypair.fromSecretKey(
+    Uint8Array.from(JSON.parse(fs.readFileSync(process.env.BOT_KEYPAIR_PATH || '/root/.keys/bot-keypair.json', 'utf-8')))
+  );
+  const [configPDA] = getConfigPDA();
+
+  const vaultPda = ws.getVaultPda(userId);
+  if (!vaultPda) { console.error(`No vault found for user ${userId}`); process.exit(1); }
 
   const positions = ws.getOpenPositions(userId);
   if (positions.length === 0) { console.log('No open positions.'); return; }
+
+  const provider = new AnchorProvider(conn, new Wallet(botKeypair), { commitment: 'confirmed' });
+  const idl = JSON.parse(fs.readFileSync(path.join(__dirname2, '../bot/idl/bin_farm.json'), 'utf-8'));
+  const coreProgram = new Program(idl, provider);
 
   for (const pos of positions) {
     console.log(`\nClosing ${pos.position_pda.slice(0,8)} (${pos.side}, bins ${pos.min_bin_id}..${pos.max_bin_id})...`);
@@ -40,42 +49,57 @@ async function main() {
 
       const met = new PublicKey(pos.meteora_position);
       const [posPDA] = getPositionPDA(met);
-      const [vaultPDA] = getVaultPDA(met);
+      const [posVaultPDA] = getVaultPDA(met);
       const [roverAuth] = getRoverAuthorityPDA();
-      const vTx = deriveATA(cpi.tokenXMint, vaultPDA, cpi.tokenXProgramId, true);
-      const vTy = deriveATA(cpi.tokenYMint, vaultPDA, cpi.tokenYProgramId, true);
-      const uTx = deriveATA(cpi.tokenXMint, user, cpi.tokenXProgramId, false);
-      const uTy = deriveATA(cpi.tokenYMint, user, cpi.tokenYProgramId, false);
+      const vTx = deriveATA(cpi.tokenXMint, posVaultPDA, cpi.tokenXProgramId, true);
+      const vTy = deriveATA(cpi.tokenYMint, posVaultPDA, cpi.tokenYProgramId, true);
+      const uTx = deriveATA(cpi.tokenXMint, vaultPda, cpi.tokenXProgramId, true);
+      const uTy = deriveATA(cpi.tokenYMint, vaultPda, cpi.tokenYProgramId, true);
       const rFx = deriveATA(cpi.tokenXMint, roverAuth, cpi.tokenXProgramId, true);
       const rFy = deriveATA(cpi.tokenYMint, roverAuth, cpi.tokenYProgramId, true);
 
-      const closeIx = await getUserCloseInstructionAsync({
-        user: asSigner(user), position: address(posPDA.toBase58()), vault: address(vaultPDA.toBase58()),
-        meteoraPosition: address(met.toBase58()), lbPair: address(cpi.lbPair.toBase58()),
-        binArrayBitmapExt: address(cpi.binArrayBitmapExt.toBase58()),
-        binArrayLower: address(cpi.binArrayLower.toBase58()), binArrayUpper: address(cpi.binArrayUpper.toBase58()),
-        reserveX: address(cpi.reserveX.toBase58()), reserveY: address(cpi.reserveY.toBase58()),
-        tokenXMint: address(cpi.tokenXMint.toBase58()), tokenYMint: address(cpi.tokenYMint.toBase58()),
-        eventAuthority: address(cpi.eventAuthority.toBase58()), dlmmProgram: address(cpi.dlmmProgram.toBase58()),
-        vaultTokenX: address(vTx.toBase58()), vaultTokenY: address(vTy.toBase58()),
-        userTokenX: address(uTx.toBase58()), userTokenY: address(uTy.toBase58()),
-        roverFeeTokenX: address(rFx.toBase58()), roverFeeTokenY: address(rFy.toBase58()),
-        tokenXProgram: address(cpi.tokenXProgramId.toBase58()), tokenYProgram: address(cpi.tokenYProgramId.toBase58()),
-        memoProgram: address(SPL_MEMO.toBase58()),
-      });
-
-      const ix = kitIxToWeb3(closeIx);
-      if (!cpi.binArrayBitmapExt.equals(cpi.dlmmProgram)) {
-        const i = ix.keys.findIndex(k => k.pubkey.equals(cpi.binArrayBitmapExt));
-        if (i >= 0) ix.keys[i].isWritable = true;
-      }
+      // Build user_close instruction via Anchor methods (bot as caller)
+      const ix = await coreProgram.methods
+        .userClose()
+        .accounts({
+          caller: botKeypair.publicKey,
+          config: configPDA,
+          userVault: vaultPda,
+          position: posPDA,
+          vault: posVaultPDA,
+          meteoraPosition: met,
+          lbPair: cpi.lbPair,
+          binArrayBitmapExt: cpi.binArrayBitmapExt,
+          binArrayLower: cpi.binArrayLower,
+          binArrayUpper: cpi.binArrayUpper,
+          reserveX: cpi.reserveX,
+          reserveY: cpi.reserveY,
+          tokenXMint: cpi.tokenXMint,
+          tokenYMint: cpi.tokenYMint,
+          eventAuthority: cpi.eventAuthority,
+          dlmmProgram: cpi.dlmmProgram,
+          vaultTokenX: vTx,
+          vaultTokenY: vTy,
+          userTokenX: uTx,
+          userTokenY: uTy,
+          roverAuthority: roverAuth,
+          roverFeeTokenX: rFx,
+          roverFeeTokenY: rFy,
+          tokenXProgram: cpi.tokenXProgramId,
+          tokenYProgram: cpi.tokenYProgramId,
+          memoProgram: SPL_MEMO,
+          systemProgram: new PublicKey('11111111111111111111111111111111'),
+        })
+        .instruction();
 
       const cuIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
       const feeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50000 });
       const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
-      const msg = new TransactionMessage({ payerKey: user, recentBlockhash: blockhash, instructions: [cuIx, feeIx, ix] }).compileToV0Message();
+      const msg = new TransactionMessage({
+        payerKey: botKeypair.publicKey, recentBlockhash: blockhash, instructions: [cuIx, feeIx, ix]
+      }).compileToV0Message();
       const vtx = new VersionedTransaction(msg);
-      vtx.sign([kp]);
+      vtx.sign([botKeypair]);
 
       const sim = await conn.simulateTransaction(vtx);
       console.log('  CU used:', sim.value.unitsConsumed);
@@ -84,11 +108,11 @@ async function main() {
         for (const log of (sim.value.logs ?? [])) console.log('  ', log);
       } else {
         const sig = await conn.sendRawTransaction(vtx.serialize(), { skipPreflight: true });
-        console.log(`  ✓ Sent: https://solscan.io/tx/${sig}`);
+        console.log(`  Done: https://solscan.io/tx/${sig}`);
         ws.closePosition(pos.position_pda);
       }
     } catch (e: any) {
-      console.error(`  ✗ Failed: ${e.message?.slice(0, 300)}`);
+      console.error(`  Failed: ${e.message?.slice(0, 300)}`);
     }
   }
   console.log('\nDone.');

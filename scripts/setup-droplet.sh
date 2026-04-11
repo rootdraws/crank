@@ -2,8 +2,10 @@
 set -euo pipefail
 
 DOMAIN="bot.crank.money"
-APP_DIR="/root/crank-money"
-KEYS_DIR="/root/.keys"
+CERTBOT_EMAIL="${CERTBOT_EMAIL:-ops@crank.money}"
+SVC_USER="crankbot"
+APP_DIR="/home/$SVC_USER/crank-money"
+KEYS_DIR="/home/$SVC_USER/.keys"
 
 echo "==> Installing Node.js 20 via NodeSource"
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -43,12 +45,18 @@ ufw allow OpenSSH
 ufw allow 'Nginx Full'
 ufw --force enable
 
+echo "==> Creating service user: $SVC_USER"
+if ! id "$SVC_USER" &>/dev/null; then
+  useradd -r -m -s /bin/bash "$SVC_USER"
+fi
+
 echo "==> Creating application directories"
 mkdir -p "$APP_DIR"
 mkdir -p "$APP_DIR/data"
 chmod 700 "$APP_DIR/data"
 mkdir -p "$KEYS_DIR"
 chmod 700 "$KEYS_DIR"
+chown -R "$SVC_USER:$SVC_USER" "/home/$SVC_USER"
 
 echo "==> Installing nginx site config"
 cp "$APP_DIR/deploy/nginx/$DOMAIN.conf" "/etc/nginx/sites-available/$DOMAIN"
@@ -58,7 +66,7 @@ nginx -t
 systemctl reload nginx
 
 echo "==> Obtaining SSL certificate via Let's Encrypt"
-certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
+certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$CERTBOT_EMAIL"
 
 echo "==> Configuring PM2 log rotation"
 pm2 install pm2-logrotate
@@ -66,12 +74,9 @@ pm2 set pm2-logrotate:max_size 50M
 pm2 set pm2-logrotate:retain 7
 pm2 set pm2-logrotate:compress true
 
-echo "==> Starting bot with PM2"
-cd "$APP_DIR"
-npm install --omit=dev
-pm2 start bot/ecosystem.config.cjs
-pm2 save
-pm2 startup systemd -u root --hp /root | tail -1 | bash
+echo "==> Starting bot with PM2 (as $SVC_USER)"
+su - "$SVC_USER" -c "cd $APP_DIR && npm install --omit=dev && pm2 start bot/ecosystem.config.cjs && pm2 save"
+env PATH="$PATH:/usr/bin" pm2 startup systemd -u "$SVC_USER" --hp "/home/$SVC_USER" | tail -1 | bash
 
 echo ""
 echo "==> Setup complete!"
@@ -80,8 +85,9 @@ echo "    Keys dir: $KEYS_DIR"
 echo "    Domain:   https://$DOMAIN"
 echo ""
 echo "Next steps:"
-echo "  1. Copy bot keypair to $KEYS_DIR/bot-keypair.json (chmod 600)"
+echo "  1. Copy bot keypair to $KEYS_DIR/bot-keypair.json (chmod 600, chown $SVC_USER)"
 echo "  2. Copy bot/.env to the server and set BOT_KEYPAIR_PATH=$KEYS_DIR/bot-keypair.json"
-echo "  3. Run: pm2 restart crank-harvester"
-echo "  4. Verify: curl https://$DOMAIN/api/stats"
-echo "  5. Back up WALLET_ENCRYPTION_KEY offline (password manager / safe deposit box)"
+echo "  3. Run: su - $SVC_USER -c 'pm2 restart crank-harvester'"
+echo "  4. Verify: curl https://$DOMAIN/api/health"
+echo ""
+echo "  Bot runs as user '$SVC_USER' (not root). Use 'su - $SVC_USER' for PM2 commands."
