@@ -140,4 +140,9 @@ Continue conversation. Ship analytics first.
 - [x] **Close shows actual amount returned** — reads `postTokenBalances` from confirmed tx.
 - [x] **Enable token shows deposit address** — tells user where to send tokens after enabling.
 - [x] **Vault minimum lowered** — 0.25 SOL → 0.01 SOL.
-- [x] **Deposit simplified** — one address for everything, no ATA details shown.
+- [x] **`/deposit` killed** — redundant with `/balance`. Redirects to `/balance`.
+- [x] **Harvest executor fixed** — `data.owner` → `data.userVault` (PDA vault field rename), added missing `owner` account to harvestBins.
+- [x] **Safety poll reads fresh activeId** — reads on-chain bytes directly instead of stale DLMM SDK cache (was up to 10min stale).
+- [x] **Amount parser accepts `.5`** — regex required leading digit, now accepts `\d*\.?\d+`.
+- [x] **gRPC datasize filter removed** — was silently breaking Yellowstone v5 subscription (type mismatch). Subscription works without it.
+- [x] **Price syncer confirmed correct** — 6.83% divergence was real (DLMM lagging PumpSwap, no arb bots). Math verified end-to-end.
