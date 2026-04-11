@@ -37,10 +37,6 @@ const commands = [
     .setDescription('Show your wallet balances'),
 
   new SlashCommandBuilder()
-    .setName('deposit')
-    .setDescription('Show your deposit address'),
-
-  new SlashCommandBuilder()
     .setName('buy')
     .setDescription('Open a buy-side DLMM position')
     .addStringOption(opt =>

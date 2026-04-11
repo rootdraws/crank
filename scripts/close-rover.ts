@@ -2,7 +2,7 @@
  * close-rover.ts — Force close a rover position by PDA prefix.
  * Usage: npx tsx scripts/close-rover.ts <pda_prefix>
  */
-import { Connection, PublicKey, Keypair } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair, Transaction } from '@solana/web3.js';
 import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token';
 import * as fs from 'fs';
@@ -92,41 +92,55 @@ async function main() {
   const priorityIxs = await buildPriorityFeeIxs(conn, 1_400_000);
 
   console.log('\nClosing position...');
+  const ix = await program.methods
+    .closePosition()
+    .accounts({
+      bot: botKp.publicKey,
+      config: configPDA,
+      position: target.publicKey,
+      vault: vaultPda,
+      owner,
+      meteoraPosition: meteoraPosKey,
+      lbPair: meteora.lbPair,
+      binArrayBitmapExt: meteora.binArrayBitmapExt,
+      binArrayLower: meteora.binArrayLower,
+      binArrayUpper: meteora.binArrayUpper,
+      reserveX: meteora.reserveX,
+      reserveY: meteora.reserveY,
+      tokenXMint: meteora.tokenXMint,
+      tokenYMint: meteora.tokenYMint,
+      eventAuthority: meteora.eventAuthority,
+      dlmmProgram: meteora.dlmmProgram,
+      vaultTokenX,
+      vaultTokenY,
+      ownerTokenX,
+      ownerTokenY,
+      roverAuthority,
+      roverFeeTokenX,
+      roverFeeTokenY,
+      tokenXProgram: meteora.tokenXProgram,
+      tokenYProgram: meteora.tokenYProgram,
+      memoProgram: SPL_MEMO_PROGRAM_ID,
+      systemProgram: new PublicKey('11111111111111111111111111111111'),
+    })
+    .instruction();
+
+  // Fix bitmap extension writable flag for Meteora CPI
+  const DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  if (!meteora.binArrayBitmapExt.equals(DLMM_PROGRAM)) {
+    for (const key of ix.keys) {
+      if (key.pubkey.equals(meteora.binArrayBitmapExt)) key.isWritable = true;
+    }
+  }
+
+  const tx = new Transaction();
+  tx.add(...priorityIxs, ...createAtaIxs, ix);
+  tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+  tx.feePayer = botKp.publicKey;
+  tx.sign(botKp);
+
   const sig = await withRetry(
-    () => program.methods
-      .closePosition()
-      .accounts({
-        bot: botKp.publicKey,
-        config: configPDA,
-        position: target.publicKey,
-        vault: vaultPda,
-        owner,
-        meteoraPosition: meteoraPosKey,
-        lbPair: meteora.lbPair,
-        binArrayBitmapExt: meteora.binArrayBitmapExt,
-        binArrayLower: meteora.binArrayLower,
-        binArrayUpper: meteora.binArrayUpper,
-        reserveX: meteora.reserveX,
-        reserveY: meteora.reserveY,
-        tokenXMint: meteora.tokenXMint,
-        tokenYMint: meteora.tokenYMint,
-        eventAuthority: meteora.eventAuthority,
-        dlmmProgram: meteora.dlmmProgram,
-        vaultTokenX,
-        vaultTokenY,
-        ownerTokenX,
-        ownerTokenY,
-        roverAuthority,
-        roverFeeTokenX,
-        roverFeeTokenY,
-        tokenXProgram: meteora.tokenXProgram,
-        tokenYProgram: meteora.tokenYProgram,
-        memoProgram: SPL_MEMO_PROGRAM_ID,
-        systemProgram: new PublicKey('11111111111111111111111111111111'),
-      })
-      .preInstructions([...priorityIxs, ...createAtaIxs])
-      .signers([botKp])
-      .rpc(),
+    () => conn.sendRawTransaction(tx.serialize(), { skipPreflight: true }),
     'close rover'
   );
 

@@ -1,5 +1,6 @@
-import { ChatInputCommandInteraction, TextChannel } from 'discord.js';
+import { ChatInputCommandInteraction, TextChannel, ButtonBuilder, ButtonStyle, ActionRowBuilder } from 'discord.js';
 import { PublicKey, VersionedTransaction, TransactionMessage, Transaction } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { address } from '@solana/kit';
 import { BN } from '@coral-xyz/anchor';
 import {
@@ -14,7 +15,7 @@ import {
   buildPriorityFeeIxs, kitIxToWeb3, asSigner,
   binToPrice, formatPrice,
   signAndSend, signAndSendLegacy, withUserLock,
-  NATIVE_MINT, TOKEN_PROGRAM_ID,
+  NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, KNOWN_TOKENS,
   loadPoolRegistry, routeCommand, isRouteError,
   parseCommand, fetchDexScreenerPrice, hasTransferHook,
 } from '@crankbot/core-sdk';
@@ -69,12 +70,12 @@ export async function handleOpenPosition(
   }
 
   // Check minimum SOL balance in vault for rent + gas
-  const MIN_SOL_LAMPORTS = 250_000_000; // 0.25 SOL
+  const MIN_SOL_LAMPORTS = 10_000_000; // 0.01 SOL
   const solBalance = await ctx.connection.getBalance(vaultPda);
   if (solBalance < MIN_SOL_LAMPORTS) {
     const err = formatErrorBig(
-      `need at least 0.25 SOL in your vault (you have ${(solBalance / 1e9).toFixed(3)} SOL).`,
-      `Deposit SOL to \`${vaultPda.toBase58()}\` — your vault address.`
+      `vault is empty (${(solBalance / 1e9).toFixed(4)} SOL).`,
+      `Deposit SOL to \`${vaultPda.toBase58()}\``
     );
     await interaction.reply({ content: err.monke, ephemeral: true });
     await interaction.followUp({ content: err.body, ephemeral: true });
@@ -167,6 +168,45 @@ export async function handleOpenPosition(
 
     // TODO: if positions.length > 1, show split confirmation before proceeding
 
+    // Check if vault has ATAs for non-SOL tokens in this pool.
+    // If not, prompt the user to enable trading for that token.
+    {
+      const nonSolMints: { mint58: string; symbol: string }[] = [];
+      if (selectedPool.mintX !== NATIVE_MINT.toBase58()) {
+        nonSolMints.push({ mint58: selectedPool.mintX, symbol: selectedPool.tokenX });
+      }
+      if (selectedPool.mintY !== NATIVE_MINT.toBase58()) {
+        nonSolMints.push({ mint58: selectedPool.mintY, symbol: selectedPool.tokenY });
+      }
+
+      const missingTokens: { mint58: string; symbol: string }[] = [];
+      for (const t of nonSolMints) {
+        const mint = new PublicKey(t.mint58);
+        const mintInfo = await ctx.connection.getAccountInfo(mint);
+        if (!mintInfo) continue;
+        const tokenProgram = mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
+          ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+        const ata = getAssociatedTokenAddressSync(mint, vaultPda!, true, tokenProgram);
+        const ataInfo = await ctx.connection.getAccountInfo(ata);
+        if (!ataInfo) missingTokens.push(t);
+      }
+
+      if (missingTokens.length > 0) {
+        const buttons = missingTokens.map(t =>
+          new ButtonBuilder()
+            .setCustomId(`enable_token:${t.mint58}`)
+            .setLabel(`Enable $${t.symbol}`)
+            .setStyle(ButtonStyle.Primary)
+        );
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
+        await interaction.editReply({
+          content: `**$${missingTokens.map(t => t.symbol).join(', $')}** isn't enabled on your vault yet.\n\nEnable it to deposit and trade.`,
+          components: [row],
+        });
+        return;
+      }
+    }
+
     // Open each position
     const sigs: string[] = [];
     const positionPDAs: PublicKey[] = [];
@@ -231,9 +271,19 @@ export async function handleOpenPosition(
           await signAndSendLegacy(setupTx, bot, ctx.connection);
         }
 
-        // TX 1.5: wrap SOL → WSOL in vault (for buy-side native SOL deposits)
+        // TX 1.5: create WSOL ATA (idempotent) + wrap SOL → WSOL + sync_native
+        // All three in one tx so the ATA always exists when wrap runs.
+        // sync_native must be a separate ix from wrapSolInVault — CPI to sync_native
+        // within the same instruction causes runtime balance mismatch.
         if (isNative) {
-          await ctx.coreProgram.methods
+          const { Transaction: Tx, TransactionInstruction: TxIx } = await import('@solana/web3.js');
+          const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
+
+          const createAtaIx = createAssociatedTokenAccountIdempotentInstruction(
+            bot.publicKey, userVaultDepositAta, vaultPda!, NATIVE_MINT, TOKEN_PROGRAM_ID,
+          );
+
+          const wrapIx = await ctx.coreProgram.methods
             .wrapSolInVault(positionAmountBN)
             .accounts({
               caller: bot.publicKey,
@@ -242,14 +292,30 @@ export async function handleOpenPosition(
               vaultWsolAta: userVaultDepositAta,
               tokenProgram: TOKEN_PROGRAM_ID,
             })
-            .signers([bot])
-            .rpc();
+            .instruction();
+
+          const syncIx = new TxIx({
+            programId: TOKEN_PROGRAM_ID,
+            keys: [{ pubkey: userVaultDepositAta, isSigner: false, isWritable: true }],
+            data: Buffer.from([17]), // SyncNative
+          });
+
+          const tx = new Tx().add(createAtaIx, wrapIx, syncIx);
+          tx.feePayer = bot.publicKey;
+          tx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+          tx.sign(bot);
+          const wrapSig = await ctx.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+          await ctx.connection.confirmTransaction(wrapSig, 'confirmed');
         }
 
         // TX 2: open position via Anchor program methods (bot is sole signer)
         const slippage = selectedPool.binStep >= 80 ? 15 : 5;
 
-        const sig = await ctx.coreProgram.methods
+        // Build instruction first, then fix bitmap extension mutability.
+        // Meteora's AddLiquidityByStrategy2 requires bitmap_ext as writable,
+        // but the IDL marks it read-only (can't be mut when placeholder is used).
+        // CPI can't escalate privileges, so the top-level tx must set writable.
+        const openIx = await ctx.coreProgram.methods
           .openPositionV2(
             positionAmountBN,
             pos.minBinId,
@@ -282,8 +348,60 @@ export async function handleOpenPosition(
             tokenXMint: cpi.tokenXMint,
             tokenYMint: cpi.tokenYMint,
           })
-          .signers([bot])
-          .rpc();
+          .instruction();
+
+        // Mark bitmap extension writable if it's a real account (not the DLMM program placeholder).
+        // Anchor IDL marks it read-only (can't be mut when executable placeholder is used),
+        // but the Meteora CPI needs it writable for AddLiquidityByStrategy2.
+        // We must set isWritable on the TransactionInstruction keys BEFORE adding to Transaction.
+        if (!cpi.binArrayBitmapExt.equals(cpi.dlmmProgram)) {
+          let flipped = false;
+          for (const key of openIx.keys) {
+            if (key.pubkey.equals(cpi.binArrayBitmapExt)) {
+              key.isWritable = true;
+              flipped = true;
+            }
+          }
+          if (!flipped) {
+            console.error(`[buy] WARN: bitmap extension ${cpi.binArrayBitmapExt.toBase58()} not found in openIx.keys (${openIx.keys.length} keys)`);
+          }
+        }
+
+        const { Transaction: Tx2 } = await import('@solana/web3.js');
+        const openTx = new Tx2().add(...(await buildPriorityFeeIxs(ctx.connection)), openIx);
+        openTx.feePayer = bot.publicKey;
+        openTx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+        openTx.sign(bot);
+        // skipPreflight: wrap tx just confirmed but simulation may hit a stale RPC node
+        // that doesn't see the WSOL ATA yet. Let on-chain execution be the authority.
+        let sig: string;
+        try {
+          sig = await ctx.connection.sendRawTransaction(openTx.serialize(), { skipPreflight: true });
+          await ctx.connection.confirmTransaction(sig, 'confirmed');
+        } catch (openErr) {
+          // If open failed after wrapping, unwrap WSOL back to SOL to avoid stuck funds
+          if (isNative) {
+            try {
+              const unwrapIx = await ctx.coreProgram.methods
+                .unwrapWsolInVault()
+                .accounts({
+                  caller: bot.publicKey,
+                  config: ctx.configPDA,
+                  userVault: vaultPda!,
+                  vaultWsolAta: userVaultDepositAta,
+                  tokenProgram: TOKEN_PROGRAM_ID,
+                })
+                .instruction();
+              const unwrapTx = new Tx2().add(unwrapIx);
+              unwrapTx.feePayer = bot.publicKey;
+              unwrapTx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+              unwrapTx.sign(bot);
+              await ctx.connection.sendRawTransaction(unwrapTx.serialize());
+              console.log(`[buy] Unwrapped WSOL after failed open for ${userId}`);
+            } catch { /* unwrap is best-effort */ }
+          }
+          throw openErr;
+        }
 
         ctx.walletService.savePosition({
           positionPda: positionPDA.toBase58(),

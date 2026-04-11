@@ -29,7 +29,7 @@ import {
 import { Program } from '@coral-xyz/anchor';
 import { logger } from './logger';
 import { alertEpochMiss, alertEpochSuccess } from './alerter';
-import { buildMeteoraCPIAccounts, getDLMM, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, hasTransferHook } from './meteora-accounts';
+import { buildMeteoraCPIAccounts, getDLMM, fixBitmapWritable, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, hasTransferHook } from './meteora-accounts';
 import { fetchDexScreenerPrice } from '../packages/core-sdk/price-source';
 
 // Priority fee floor/cap (micro-lamports per compute unit)
@@ -450,45 +450,54 @@ export class MonkeKeeper {
           const amountBN = new BN(rawAmount.toString());
 
           await withRetry(
-            () => this.coreProgram.methods
-              .openFeeRover(amountBN, binStep)
-              .accounts({
-                bot:                  this.botKeypair.publicKey,
-                config:               configPDA,
-                roverAuthority,
-                lbPair,
-                meteoraPosition:      meteoraPosition.publicKey,
-                binArrayBitmapExt:    meteora.binArrayBitmapExt,
-                reserveX:             meteora.reserveX,
-                reserveY:             meteora.reserveY,
-                binArrayLower:        meteora.binArrayLower,
-                binArrayUpper:        meteora.binArrayUpper,
-                position:             PublicKey.findProgramAddressSync(
-                  [Buffer.from('position'), meteoraPosition.publicKey.toBuffer()],
-                  this.coreProgramId
-                )[0],
-                vault:                vaultPda,
-                roverTokenAccount:    account.pubkey,
-                vaultTokenX,
-                vaultTokenY,
-                tokenXMint:           meteora.tokenXMint,
-                tokenYMint:           meteora.tokenYMint,
-                tokenXProgram:        meteora.tokenXProgram,
-                tokenYProgram:        meteora.tokenYProgram,
-                systemProgram:        new PublicKey('11111111111111111111111111111111'),
-              })
-              .remainingAccounts([
-                { pubkey: meteora.eventAuthority, isWritable: false, isSigner: false },
-                { pubkey: meteora.dlmmProgram, isWritable: false, isSigner: false },
-              ])
-              .preInstructions([
+            async () => {
+              const ix = await this.coreProgram.methods
+                .openFeeRover(amountBN, binStep)
+                .accounts({
+                  bot:                  this.botKeypair.publicKey,
+                  config:               configPDA,
+                  roverAuthority,
+                  lbPair,
+                  meteoraPosition:      meteoraPosition.publicKey,
+                  binArrayBitmapExt:    meteora.binArrayBitmapExt,
+                  reserveX:             meteora.reserveX,
+                  reserveY:             meteora.reserveY,
+                  binArrayLower:        meteora.binArrayLower,
+                  binArrayUpper:        meteora.binArrayUpper,
+                  position:             PublicKey.findProgramAddressSync(
+                    [Buffer.from('position'), meteoraPosition.publicKey.toBuffer()],
+                    this.coreProgramId
+                  )[0],
+                  vault:                vaultPda,
+                  roverTokenAccount:    account.pubkey,
+                  vaultTokenX,
+                  vaultTokenY,
+                  tokenXMint:           meteora.tokenXMint,
+                  tokenYMint:           meteora.tokenYMint,
+                  tokenXProgram:        meteora.tokenXProgram,
+                  tokenYProgram:        meteora.tokenYProgram,
+                  systemProgram:        new PublicKey('11111111111111111111111111111111'),
+                })
+                .remainingAccounts([
+                  { pubkey: meteora.eventAuthority, isWritable: false, isSigner: false },
+                  { pubkey: meteora.dlmmProgram, isWritable: false, isSigner: false },
+                ])
+                .instruction();
+              fixBitmapWritable(ix, meteora.binArrayBitmapExt);
+              const tx = new Transaction().add(
                 ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
-                this.priorityIxs[1], // setComputeUnitPrice from cached priority IXs
+                this.priorityIxs[1],
                 createVaultAtaX,
                 createVaultAtaY,
-              ])
-              .signers([this.botKeypair, meteoraPosition])
-              .rpc(),
+                ix,
+              );
+              tx.feePayer = this.botKeypair.publicKey;
+              tx.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+              tx.sign(this.botKeypair, meteoraPosition);
+              const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+              await this.connection.confirmTransaction(sig, 'confirmed');
+              return sig;
+            },
             `open_fee_rover ${mintStr.slice(0, 8)}`
           );
 
@@ -606,40 +615,48 @@ export class MonkeKeeper {
               const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
 
               await withRetry(
-                () => this.coreProgram.methods
-                  .closePosition()
-                  .accounts({
-                    bot:                this.botKeypair.publicKey,
-                    config:             configPDA,
-                    position:           pos.publicKey,
-                    vault:              vaultPda,
-                    owner:              roverAuthority,
-                    meteoraPosition:    meteoraPosKey,
-                    lbPair:             meteora.lbPair,
-                    binArrayBitmapExt:  meteora.binArrayBitmapExt,
-                    binArrayLower:      meteora.binArrayLower,
-                    binArrayUpper:      meteora.binArrayUpper,
-                    reserveX:           meteora.reserveX,
-                    reserveY:           meteora.reserveY,
-                    tokenXMint:         meteora.tokenXMint,
-                    tokenYMint:         meteora.tokenYMint,
-                    eventAuthority:     meteora.eventAuthority,
-                    dlmmProgram:        meteora.dlmmProgram,
-                    vaultTokenX,
-                    vaultTokenY,
-                    ownerTokenX,
-                    ownerTokenY,
-                    roverFeeTokenY,
-                    roverAuthority,
-                    roverFeeTokenX,
-                    tokenXProgram:      meteora.tokenXProgram,
-                    tokenYProgram:      meteora.tokenYProgram,
-                    memoProgram:        SPL_MEMO_PROGRAM_ID,
-                    systemProgram:      new PublicKey('11111111111111111111111111111111'),
-                  })
-                  .preInstructions(this.priorityIxs)
-                  .signers([this.botKeypair])
-                  .rpc(),
+                async () => {
+                  const ix = await this.coreProgram.methods
+                    .closePosition()
+                    .accounts({
+                      bot:                this.botKeypair.publicKey,
+                      config:             configPDA,
+                      position:           pos.publicKey,
+                      vault:              vaultPda,
+                      owner:              roverAuthority,
+                      meteoraPosition:    meteoraPosKey,
+                      lbPair:             meteora.lbPair,
+                      binArrayBitmapExt:  meteora.binArrayBitmapExt,
+                      binArrayLower:      meteora.binArrayLower,
+                      binArrayUpper:      meteora.binArrayUpper,
+                      reserveX:           meteora.reserveX,
+                      reserveY:           meteora.reserveY,
+                      tokenXMint:         meteora.tokenXMint,
+                      tokenYMint:         meteora.tokenYMint,
+                      eventAuthority:     meteora.eventAuthority,
+                      dlmmProgram:        meteora.dlmmProgram,
+                      vaultTokenX,
+                      vaultTokenY,
+                      ownerTokenX,
+                      ownerTokenY,
+                      roverFeeTokenY,
+                      roverAuthority,
+                      roverFeeTokenX,
+                      tokenXProgram:      meteora.tokenXProgram,
+                      tokenYProgram:      meteora.tokenYProgram,
+                      memoProgram:        SPL_MEMO_PROGRAM_ID,
+                      systemProgram:      new PublicKey('11111111111111111111111111111111'),
+                    })
+                    .instruction();
+                  fixBitmapWritable(ix, meteora.binArrayBitmapExt);
+                  const tx = new Transaction().add(...this.priorityIxs, ix);
+                  tx.feePayer = this.botKeypair.publicKey;
+                  tx.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+                  tx.sign(this.botKeypair);
+                  const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+                  await this.connection.confirmTransaction(sig, 'confirmed');
+                  return sig;
+                },
                 `close rover ${pos.publicKey.toBase58().slice(0, 8)}`
               );
 

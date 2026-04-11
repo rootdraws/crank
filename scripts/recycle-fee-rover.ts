@@ -22,6 +22,7 @@ import {
   PublicKey,
   Keypair,
   ComputeBudgetProgram,
+  Transaction,
 } from '@solana/web3.js';
 import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor';
 import BN from 'bn.js';
@@ -165,7 +166,7 @@ async function main() {
   // 10. Send open_fee_rover
   console.log(`\n[SEND] open_fee_rover — amount=${balance}, binStep=${binStep}`);
   try {
-    const sig = await program.methods
+    const ix = await program.methods
       .openFeeRover(new BN(balance.toString()), binStep)
       .accounts({
         bot: botKeypair.publicKey,
@@ -193,9 +194,22 @@ async function main() {
         { pubkey: eventAuth, isWritable: false, isSigner: false },
         { pubkey: DLMM_PROGRAM, isWritable: false, isSigner: false },
       ])
-      .preInstructions(preIxs)
-      .signers([botKeypair, meteoraPosition])
-      .rpc();
+      .instruction();
+
+    // Fix bitmap extension writable flag for Meteora CPI
+    if (!bitmapExt.equals(DLMM_PROGRAM)) {
+      for (const key of ix.keys) {
+        if (key.pubkey.equals(bitmapExt)) key.isWritable = true;
+      }
+    }
+
+    const tx = new Transaction();
+    tx.add(...preIxs, ix);
+    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+    tx.feePayer = botKeypair.publicKey;
+    tx.sign(botKeypair, meteoraPosition);
+
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
 
     console.log('\n=== SUCCESS ===');
     console.log('Signature:', sig);

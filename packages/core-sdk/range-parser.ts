@@ -33,7 +33,7 @@ export function parseRangeInput(raw: string): RangeInput | null {
   }
 
   // Market cap with "mc" suffix: "22mmc", "500kmc", "1.1bmc", "45mc"
-  const mcMatch = s.match(/^(\d+(?:\.\d+)?)(k|m|b)?mc$/);
+  const mcMatch = s.match(/^(\d*\.?\d+)(k|m|b)?mc$/);
   if (mcMatch) {
     const base = parseFloat(mcMatch[1]);
     const mult: Record<string, number> = { k: 1_000, m: 1_000_000, b: 1_000_000_000 };
@@ -42,7 +42,7 @@ export function parseRangeInput(raw: string): RangeInput | null {
   }
 
   // Plain number with optional k/m/b suffix: "24k", "1.5m", "84", "0.0000089"
-  const numMatch = s.match(/^(\d+(?:\.\d+)?)(k|m|b)?$/);
+  const numMatch = s.match(/^(\d*\.?\d+)(k|m|b)?$/);
   if (numMatch) {
     const base = parseFloat(numMatch[1]);
     if (!isNaN(base) && base > 0) {
@@ -105,7 +105,12 @@ export function parseCommand(input: string): ParsedCommand | null {
   const remaining = parts.slice(toIdx + 2);
   if (remaining.length < 2) return null;
 
-  const amount = parseFloat(remaining[0]);
+  const amountRaw = remaining[0].toLowerCase();
+  const amountMatch = amountRaw.match(/^(\d*\.?\d+)(k|m|b)?$/);
+  if (!amountMatch) return null;
+  const amountBase = parseFloat(amountMatch[1]);
+  const amountMult: Record<string, number> = { k: 1_000, m: 1_000_000, b: 1_000_000_000 };
+  const amount = amountMatch[2] ? amountBase * (amountMult[amountMatch[2]] ?? 1) : amountBase;
   const quote = remaining[1];
 
   if (isNaN(amount) || amount <= 0) return null;

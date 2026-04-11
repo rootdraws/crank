@@ -1887,23 +1887,12 @@ pub mod bin_farm {
             .saturating_sub(rent);
         require!(amount <= available, CoreError::InsufficientBalance);
 
-        // Debit vault PDA (bin-farm-owned: can decrease lamports)
+        // Debit vault PDA (bin-farm-owned), credit WSOL ATA.
+        // sync_native must be called AFTER this instruction (separate ix in same tx)
+        // to update the WSOL token balance. CPI to sync_native in the same instruction
+        // causes a runtime balance mismatch on the Token-program-owned ATA.
         **ctx.accounts.user_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
-        // Credit WSOL ATA (any program can increase lamports on any account)
         **ctx.accounts.vault_wsol_ata.to_account_info().try_borrow_mut_lamports()? += amount;
-
-        // CPI: sync_native updates the WSOL token balance to match lamports
-        let sync_ix = anchor_lang::solana_program::instruction::Instruction {
-            program_id: anchor_spl::token::ID,
-            accounts: vec![
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_wsol_ata.key(), false),
-            ],
-            data: vec![17u8], // SyncNative instruction variant
-        };
-        anchor_lang::solana_program::program::invoke(
-            &sync_ix,
-            &[ctx.accounts.vault_wsol_ata.to_account_info()],
-        )?;
 
         // Gas reimbursement
         deduct_gas(
@@ -1917,13 +1906,23 @@ pub mod bin_farm {
     }
 
     /// Unwrap WSOL in vault back to native SOL.
-    /// Closes the vault's WSOL ATA — all lamports (token balance + rent) return to vault PDA.
+    /// Closes the vault's WSOL ATA — token balance returns to vault PDA,
+    /// ATA rent returns to caller (bot paid for creation, bot gets rent back).
     /// Called after harvest/close that produces WSOL, or before withdraw_sol.
     pub fn unwrap_wsol_in_vault(ctx: Context<UnwrapWsolInVault>) -> Result<()> {
         let caller = ctx.accounts.caller.key();
         let is_authorized = caller == ctx.accounts.config.bot
             || caller == ctx.accounts.user_vault.owner;
         require!(is_authorized, CoreError::UnauthorizedCaller);
+
+        // Read ATA rent before closing (rent = lamports - token_amount)
+        let ata_lamports = ctx.accounts.vault_wsol_ata.lamports();
+        let token_amount = {
+            let data = ctx.accounts.vault_wsol_ata.try_borrow_data()?;
+            // SPL Token account layout: amount is u64 LE at offset 64
+            u64::from_le_bytes(data[64..72].try_into().map_err(|_| CoreError::Overflow)?)
+        };
+        let rent_lamports = ata_lamports.saturating_sub(token_amount);
 
         let owner_key = ctx.accounts.user_vault.owner;
         let vault_seeds: &[&[u8]] = &[
@@ -1932,7 +1931,7 @@ pub mod bin_farm {
             &[ctx.accounts.user_vault.bump],
         ];
 
-        // Close vault's WSOL ATA — lamports (token balance + rent) go to vault PDA
+        // Close ATA — all lamports go to vault PDA first
         close_account(CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             CloseAccount {
@@ -1942,6 +1941,12 @@ pub mod bin_farm {
             },
             &[vault_seeds],
         ))?;
+
+        // Return ATA rent to caller (bot paid for creation)
+        if rent_lamports > 0 {
+            **ctx.accounts.user_vault.to_account_info().try_borrow_mut_lamports()? -= rent_lamports;
+            **ctx.accounts.caller.to_account_info().try_borrow_mut_lamports()? += rent_lamports;
+        }
 
         // Gas reimbursement
         deduct_gas(
@@ -2491,6 +2496,7 @@ pub struct OpenPositionV2<'info> {
     pub bot: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [b"user_vault", user_vault.owner.as_ref()],
         bump = user_vault.bump,
     )]
@@ -2847,7 +2853,7 @@ pub struct UserClose<'info> {
         seeds = [b"position", position.meteora_position.as_ref()],
         bump = position.bump,
         constraint = position.user_vault == user_vault.key() @ CoreError::Unauthorized,
-        close = user_vault
+        close = user_vault,
     )]
     pub position: Box<Account<'info, Position>>,
 
@@ -2947,8 +2953,9 @@ pub struct ClaimFees<'info> {
     #[account(seeds = [b"config"], bump = config.bump)]
     pub config: Account<'info, Config>,
 
-    /// UserVault PDA — authorization checked in handler body
+    /// UserVault PDA — gas deducted from here
     #[account(
+        mut,
         seeds = [b"user_vault", user_vault.owner.as_ref()],
         bump = user_vault.bump,
     )]
@@ -3121,11 +3128,11 @@ pub struct WrapSolInVault<'info> {
     pub user_vault: Account<'info, UserVault>,
 
     /// CHECK: Vault's WSOL ATA. Must be owned by SPL Token with mint = NATIVE_MINT.
-    /// Lamport credit is validated by sync_native CPI.
+    /// Lamport credit via system_program::transfer, validated by sync_native CPI.
     #[account(mut)]
     pub vault_wsol_ata: AccountInfo<'info>,
 
-    /// CHECK: SPL Token program (for sync_native)
+    /// CHECK: SPL Token program (for sync_native — called separately after this ix)
     #[account(constraint = token_program.key() == anchor_spl::token::ID @ CoreError::InvalidProgram)]
     pub token_program: AccountInfo<'info>,
 }

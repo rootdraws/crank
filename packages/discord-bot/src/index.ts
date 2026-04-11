@@ -21,7 +21,7 @@ import { DiscordNotifier } from './notifier';
 
 import { handleStart } from './commands/start';
 import { handleBalance } from './commands/balance';
-import { handleDeposit } from './commands/deposit';
+// deposit killed — /balance shows the vault address
 import { handleBuy } from './commands/buy';
 import { handleSell } from './commands/sell';
 import { handlePositions } from './commands/positions';
@@ -31,6 +31,7 @@ import { handlePools } from './commands/pools';
 import { handleVote } from './commands/vote';
 import { handleBurn } from './commands/burn';
 import { handleHelp } from './commands/help';
+import { handleEnableToken } from './commands/enable-token';
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '..', '.env') });
 
@@ -101,6 +102,24 @@ export class DiscordBot {
     });
 
     this.client.on('interactionCreate', async (interaction: Interaction) => {
+      // Handle button clicks (e.g. "Enable $TOKEN")
+      if (interaction.isButton()) {
+        try {
+          if (interaction.customId.startsWith('enable_token:')) {
+            return await handleEnableToken(interaction, ctx);
+          }
+        } catch (err: any) {
+          console.error('[discord-bot] Button error:', err);
+          const msg = `Something went wrong: ${err.message?.slice(0, 100) || 'unknown error'}`;
+          if (interaction.replied || interaction.deferred) {
+            await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});
+          } else {
+            await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+          }
+        }
+        return;
+      }
+
       if (!interaction.isChatInputCommand()) return;
 
       const { commandName } = interaction;
@@ -109,7 +128,7 @@ export class DiscordBot {
         switch (commandName) {
           case 'start':     return await handleStart(interaction, ctx);
           case 'balance':   return await handleBalance(interaction, ctx);
-          case 'deposit':   return await handleDeposit(interaction, ctx);
+          case 'deposit':   return await interaction.reply({ content: 'Use `/balance` to see your vault address and balances.', ephemeral: true });
           case 'buy':       return await handleBuy(interaction, ctx);
           case 'sell':      return await handleSell(interaction, ctx);
           case 'positions': return await handlePositions(interaction, ctx);

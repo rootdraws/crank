@@ -502,8 +502,9 @@
         {
           "name": "user_vault",
           "docs": [
-            "UserVault PDA — authorization checked in handler body"
+            "UserVault PDA — gas deducted from here"
           ],
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -1580,6 +1581,7 @@
         },
         {
           "name": "user_vault",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -2480,7 +2482,8 @@
       "name": "unwrap_wsol_in_vault",
       "docs": [
         "Unwrap WSOL in vault back to native SOL.",
-        "Closes the vault's WSOL ATA — all lamports (token balance + rent) return to vault PDA.",
+        "Closes the vault's WSOL ATA — token balance returns to vault PDA,",
+        "ATA rent returns to caller (bot paid for creation, bot gets rent back).",
         "Called after harvest/close that produces WSOL, or before withdraw_sol."
       ],
       "discriminator": [
@@ -3404,7 +3407,7 @@
         {
           "name": "vault_wsol_ata",
           "docs": [
-            "Lamport credit is validated by sync_native CPI."
+            "Lamport credit via system_program::transfer, validated by sync_native CPI."
           ],
           "writable": true
         },

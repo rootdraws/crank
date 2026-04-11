@@ -94,7 +94,7 @@ export type OpenPositionV2Instruction<
         ? WritableSignerAccount<TAccountBot> & AccountSignerMeta<TAccountBot>
         : TAccountBot,
       TAccountUserVault extends string
-        ? ReadonlyAccount<TAccountUserVault>
+        ? WritableAccount<TAccountUserVault>
         : TAccountUserVault,
       TAccountConfig extends string
         ? WritableAccount<TAccountConfig>
@@ -356,7 +356,7 @@ export async function getOpenPositionV2InstructionAsync<
   // Original accounts.
   const originalAccounts = {
     bot: { value: input.bot ?? null, isWritable: true },
-    userVault: { value: input.userVault ?? null, isWritable: false },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
     positionCounter: { value: input.positionCounter ?? null, isWritable: true },
@@ -641,7 +641,7 @@ export function getOpenPositionV2Instruction<
   // Original accounts.
   const originalAccounts = {
     bot: { value: input.bot ?? null, isWritable: true },
-    userVault: { value: input.userVault ?? null, isWritable: false },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
     lbPair: { value: input.lbPair ?? null, isWritable: true },
     positionCounter: { value: input.positionCounter ?? null, isWritable: true },

@@ -11,6 +11,7 @@
 import {
   Connection,
   PublicKey,
+  TransactionInstruction,
 } from '@solana/web3.js';
 import {
   TOKEN_PROGRAM_ID,
@@ -115,6 +116,30 @@ export function buildMeteoraCPIAccounts(
     tokenYProgram,
     memoProgram: SPL_MEMO_PROGRAM_ID,
   };
+}
+
+// ═══ BITMAP EXTENSION WRITABLE FIX ═══
+
+const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+
+/**
+ * Fix bitmap extension writable flag on an Anchor-generated instruction.
+ *
+ * The Anchor IDL marks bin_array_bitmap_ext as read-only (can't be mut
+ * because the DLMM program ID placeholder is executable and executables
+ * can't be writable). But the Meteora CPI needs it writable when it's
+ * a real account. This function flips the writable flag in the instruction
+ * keys so the CPI doesn't fail with "writable privilege escalated".
+ *
+ * Call this on any instruction that does Meteora CPI before sending.
+ */
+export function fixBitmapWritable(ix: TransactionInstruction, bitmapExt: PublicKey): void {
+  if (bitmapExt.equals(DLMM_PROGRAM_ID)) return; // placeholder — leave read-only
+  for (const key of ix.keys) {
+    if (key.pubkey.equals(bitmapExt)) {
+      key.isWritable = true;
+    }
+  }
 }
 
 // ═══ TOKEN-2022 HOOK DETECTION ═══

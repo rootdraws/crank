@@ -533,23 +533,26 @@ export class GeyserSubscriber extends EventEmitter {
     for (const pool of this.getWatchedPools()) {
       lbPairFilters[`lb_${pool}`] = {
         account: [pool],
-        filters: [{ datasize: LBPAIR_EXPECTED_SIZE }],
+        filters: [],
       };
     }
 
-    return {
+    const request = {
       accounts: {
         ...lbPairFilters,
-        positions: { owner: [this.coreProgramId.toBase58()] },
+        positions: { account: [], owner: [this.coreProgramId.toBase58()], filters: [] },
       },
       slots: {},
       transactions: {},
+      transactionsStatus: {},
       blocks: {},
       blocksMeta: {},
+      entry: {},
       accountsDataSlice: [],
       commitment: 1,
       ping: { id: ++this.pingId },
     };
+    return request;
   }
 
   /**

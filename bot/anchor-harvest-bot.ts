@@ -455,8 +455,11 @@ class HarvestBot {
         if (this.shuttingDown) break;
 
         try {
-          const dlmm = await getDLMM(this.connection, new PublicKey(poolKey));
-          const activeId = dlmm.lbPair.activeId;
+          // Read activeId directly from on-chain bytes — not the DLMM SDK cache
+          // which can be stale for up to 10 minutes.
+          const poolInfo = await this.connection.getAccountInfo(new PublicKey(poolKey));
+          if (!poolInfo || poolInfo.data.length < 80) continue;
+          const activeId = poolInfo.data.readInt32LE(76);
 
           // Look up cached pool metadata from gRPC stream (if available)
           // so the executor gets token program flags for Token-2022 ATA derivation.
@@ -496,7 +499,7 @@ class HarvestBot {
     const lbPair = data.lbPair as PublicKey;
     const meteoraPosition = data.meteoraPosition as PublicKey;
     const side: 'Buy' | 'Sell' = data.side.buy ? 'Buy' : 'Sell';
-    const owner = data.owner as PublicKey;
+    const owner = (data.userVault ?? data.owner) as PublicKey;
 
     const minBin = data.minBinId as number;
     const maxBin = data.maxBinId as number;

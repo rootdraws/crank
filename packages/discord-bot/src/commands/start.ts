@@ -1,22 +1,59 @@
 import { ChatInputCommandInteraction } from 'discord.js';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, SystemProgram } from '@solana/web3.js';
 import type { BotContext } from '../index';
 
 export async function handleStart(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
   const userId = `discord:${interaction.user.id}`;
   const walletArg = interaction.options.getString('wallet');
 
-  // If already registered, show existing vault
+  // If already registered, verify vault exists on-chain before trusting local DB
   const existingVault = ctx.walletService.getVaultPda(userId);
   if (existingVault) {
-    await interaction.reply({
-      content:
-        `Your vault is already set up.\n\n` +
-        `**Deposit address:** \`${existingVault.toBase58()}\`\n\n` +
-        `Send SOL here to fund your vault, then use \`/buy\` to open positions.`,
-      ephemeral: true,
-    });
-    return;
+    const acctInfo = await ctx.connection.getAccountInfo(existingVault);
+    const programOwned = acctInfo && acctInfo.owner.equals(ctx.coreProgramId);
+
+    if (programOwned) {
+      await interaction.reply({
+        content:
+          `Your vault is already set up.\n\n` +
+          `**Deposit address:** \`${existingVault.toBase58()}\`\n\n` +
+          `Send SOL to your vault, then use \`/buy\` to open positions.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Local DB says registered but vault not initialized on-chain — fix it
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const ownerWallet = ctx.walletService.getOwnerWallet(userId)!;
+      const tx = await ctx.coreProgram.methods
+        .createVault()
+        .accounts({
+          payer: ctx.botKeypair.publicKey,
+          owner: ownerWallet,
+          userVault: existingVault,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      await interaction.editReply({
+        content:
+          `Vault initialized!\n\n` +
+          `**Deposit address:** \`${existingVault.toBase58()}\`\n` +
+          `**Withdraw wallet:** \`${ownerWallet.toBase58()}\`\n\n` +
+          `Send at least **0.25 SOL** to your deposit address, then use \`/buy\` to open positions.\n` +
+          `All withdrawals go to your wallet automatically — enforced on-chain.`,
+      });
+      return;
+    } catch (e: any) {
+      // Can't recover — wipe local registration so user can retry clean
+      ctx.walletService.removeUser(userId);
+      await interaction.editReply({
+        content: `Vault was registered but not created on-chain. Registration cleared — please run \`/start\` again.`,
+      });
+      return;
+    }
   }
 
   // Require wallet address for new registration
@@ -43,16 +80,16 @@ export async function handleStart(interaction: ChatInputCommandInteraction, ctx:
     return;
   }
 
-  // Register user and derive vault PDA
-  const { vaultPda } = ctx.walletService.registerUser(userId, ownerWallet);
+  await interaction.deferReply({ ephemeral: true });
 
-  // Create vault on-chain (bot pays rent)
+  // Create vault on-chain FIRST, then register locally
+  const { deriveUserVaultPDA } = await import('@crankbot/core-sdk');
+  const [vaultPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('user_vault'), ownerWallet.toBuffer()],
+    ctx.coreProgramId,
+  );
+
   try {
-    await interaction.deferReply({ ephemeral: true });
-    const { signAndSendLegacy } = await import('@crankbot/core-sdk');
-    const { Transaction, SystemProgram } = await import('@solana/web3.js');
-
-    // Call create_vault instruction
     const tx = await ctx.coreProgram.methods
       .createVault()
       .accounts({
@@ -61,15 +98,17 @@ export async function handleStart(interaction: ChatInputCommandInteraction, ctx:
         userVault: vaultPda,
         systemProgram: SystemProgram.programId,
       })
-      .signers([ctx.botKeypair])
       .rpc();
+
+    // On-chain succeeded — now save locally
+    ctx.walletService.registerUser(userId, ownerWallet);
 
     await interaction.editReply({
       content:
         `Vault created!\n\n` +
         `**Deposit address:** \`${vaultPda.toBase58()}\`\n` +
         `**Withdraw wallet:** \`${ownerWallet.toBase58()}\`\n\n` +
-        `Send SOL to your deposit address, then use \`/buy\` to open positions.\n` +
+        `Send SOL to your vault, then use \`/buy\` to open positions.\n` +
         `All withdrawals go to your wallet automatically — enforced on-chain.`,
     });
   } catch (e: any) {

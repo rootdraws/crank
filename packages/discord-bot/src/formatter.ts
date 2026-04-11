@@ -91,11 +91,9 @@ function formatMcap(mcap: number): string {
 // ─── Position Opened (ephemeral follow-up) ─────────────────────────────────
 
 export function formatPositionEphemeral(positionPda: string, txSig: string): string {
-  const shortId = positionPda.slice(0, 8);
   return (
-    `ID: ${positionPda}\n` +
     `TX: <${SOLSCAN_TX}${txSig}>\n` +
-    `/close ${shortId} to close · /positions to see all`
+    `/close to see positions · /positions to check status`
   );
 }
 
@@ -109,12 +107,21 @@ export function formatPositionClosed(params: {
   amountOut: string;
   tokenSymbol: string;
   txSig: string;
+  displayMode?: 'price' | 'mc';
+  supply?: number;
+  quoteTokenUsdPrice?: number;
 }): string {
-  return (
-    `Closed ${params.side === 'Buy' ? 'BUY' : 'SELL'} ${params.poolName} — ` +
-    `$${formatPrice(params.priceLow)} to $${formatPrice(params.priceHigh)}\n` +
-    `[${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig}) out`
-  );
+  const qUsd = params.quoteTokenUsdPrice ?? 1;
+  let range: string;
+  if (params.displayMode === 'mc' && params.supply) {
+    range = `${formatMcap(params.priceLow * qUsd * params.supply)} to ${formatMcap(params.priceHigh * qUsd * params.supply)}`;
+  } else {
+    range = `$${formatPrice(params.priceLow)} to $${formatPrice(params.priceHigh)}`;
+  }
+  const amountPart = params.amountOut !== '—'
+    ? `[${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig}) returned`
+    : `[closed](${SOLSCAN_TX}${params.txSig})`;
+  return `Closed ${params.side === 'Buy' ? 'BUY' : 'SELL'} ${params.poolName} — ${range}\n${amountPart}`;
 }
 
 // ─── Positions List (ephemeral) ────────────────────────────────────────────
@@ -276,11 +283,21 @@ export function formatFeedClosed(params: {
   amountOut: string;
   tokenSymbol: string;
   txSig: string;
+  displayMode?: 'price' | 'mc';
+  supply?: number;
+  quoteTokenUsdPrice?: number;
 }): string {
-  return (
-    `closed · ${params.side} ${params.poolName} $${formatPrice(params.priceLow)}–$${formatPrice(params.priceHigh)} · ` +
-    `[${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig}) out`
-  );
+  const qUsd = params.quoteTokenUsdPrice ?? 1;
+  let range: string;
+  if (params.displayMode === 'mc' && params.supply) {
+    range = `${formatMcap(params.priceLow * qUsd * params.supply)}–${formatMcap(params.priceHigh * qUsd * params.supply)}`;
+  } else {
+    range = `$${formatPrice(params.priceLow)}–$${formatPrice(params.priceHigh)}`;
+  }
+  const amountPart = params.amountOut !== '—'
+    ? `[${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig}) returned`
+    : `[closed](${SOLSCAN_TX}${params.txSig})`;
+  return `closed · ${params.side} ${params.poolName} ${range} · ${amountPart}`;
 }
 
 // ─── Error Messages (orangutan voice) ──────────────────────────────────────

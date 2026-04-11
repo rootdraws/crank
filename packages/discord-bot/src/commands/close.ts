@@ -1,5 +1,5 @@
 import { ChatInputCommandInteraction, TextChannel } from 'discord.js';
-import { PublicKey, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
+import { PublicKey, VersionedTransaction, TransactionMessage, Transaction } from '@solana/web3.js';
 import { address } from '@solana/kit';
 import {
   getUserCloseInstructionAsync,
@@ -9,7 +9,7 @@ import {
   resolveMeteoraCPIAccounts, parseLbPairFull, deriveATA,
   buildSetupTx, buildPriorityFeeIxs, kitIxToWeb3, asSigner,
   signAndSend, signAndSendLegacy, binToPrice, fetchDexScreenerPrice,
-  SPL_MEMO_PROGRAM_ID, loadPoolRegistry,
+  SPL_MEMO_PROGRAM_ID, METEORA_DLMM_PROGRAM_ID, loadPoolRegistry,
 } from '@crankbot/core-sdk';
 import { formatPositionClosed, formatFeedClosed, formatError, formatPositionsList, PositionDisplayData } from '../formatter';
 import type { BotContext } from '../index';
@@ -90,10 +90,8 @@ export async function handleClose(interaction: ChatInputCommandInteraction, ctx:
     }
 
     const text = formatPositionsList(positions);
-    const shortIds = dbPositions.map((p, i) => `\`/close ${p.position_pda.slice(0, 8)}\``).join(' · ');
-    await interaction.editReply(
-      text + '\n\n' + shortIds + '\n`/close all` to close everything'
-    );
+    const closeIds = [...dbPositions.map((_, i) => `/close ${i + 1}`), '/close all'].join(' · ');
+    await interaction.editReply(text + '\n\n' + closeIds);
     return;
   }
 
@@ -124,11 +122,18 @@ export async function handleClose(interaction: ChatInputCommandInteraction, ctx:
     return;
   }
 
-  // /close <id> — close specific position
-  const position = ctx.walletService.findPositionByIdPrefix(userId, idInput);
+  // /close <id> — close specific position (by number or PDA prefix)
+  let position: any;
+  const num = parseInt(idInput, 10);
+  if (!isNaN(num) && num > 0) {
+    const allPositions = ctx.walletService.getOpenPositions(userId);
+    position = allPositions[num - 1] ?? null;
+  } else {
+    position = ctx.walletService.findPositionByIdPrefix(userId, idInput);
+  }
   if (!position) {
     await interaction.reply({
-      content: formatError(`no position found matching "${idInput}".`, '/close to see your positions'),
+      content: formatError(`no position #${idInput}.`, '/close to see your positions'),
       ephemeral: true,
     });
     return;
@@ -148,20 +153,88 @@ export async function handleClose(interaction: ChatInputCommandInteraction, ctx:
     const priceLow = binToPrice(position.min_bin_id, binStep, decimalsX, decimalsY);
     const priceHigh = binToPrice(position.max_bin_id, binStep, decimalsX, decimalsY);
     const poolName = poolConfig?.label ?? position.lb_pair.slice(0, 8) + '...';
+    // Deposit token: BUY deposits quote (SOL/USDC), SELL deposits base (CRANK)
     const tokenSymbol = position.side === 'Buy'
-      ? (poolConfig?.buyToken ?? 'TOKEN')
-      : (poolConfig?.quoteToken ?? 'SOL');
+      ? (poolConfig?.quoteToken ?? 'SOL')
+      : (poolConfig?.buyToken ?? 'TOKEN');
+    const displayMode = poolConfig?.displayMode as 'price' | 'mc' | undefined;
+    const supply = poolConfig?.supply;
 
-    const publicText = formatPositionClosed({
+    // Fetch quote token USD price for mcap display
+    let quoteTokenUsdPrice = 1.0;
+    if (displayMode === 'mc' && poolConfig?.mintY) {
+      const isStable = ['USDC', 'USDT'].includes((poolConfig.quoteToken ?? '').toUpperCase());
+      if (!isStable) {
+        const qData = await fetchDexScreenerPrice(poolConfig.mintY).catch(() => null);
+        quoteTokenUsdPrice = qData?.priceUsd ?? 1.0;
+      }
+    }
+
+    // Read actual amount returned from the confirmed tx
+    let amountOut = '—';
+    try {
+      const vaultKey = ctx.walletService.getVaultPda(userId)!.toBase58();
+      // Deposit token mint: BUY deposits tokenY (SOL), SELL deposits tokenX (CRANK)
+      const depositMint = position.side === 'Buy'
+        ? (poolConfig?.mintY ?? '') : (poolConfig?.mintX ?? '');
+      const depositDecimals = position.side === 'Buy' ? decimalsY : decimalsX;
+
+      let txData = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        txData = await ctx.connection.getTransaction(sig, {
+          maxSupportedTransactionVersion: 0, commitment: 'confirmed',
+        });
+        if (txData?.meta) break;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+
+      if (txData?.meta) {
+        // Sum all token deltas going to the vault owner
+        const pre = txData.meta.preTokenBalances ?? [];
+        const post = txData.meta.postTokenBalances ?? [];
+        let totalDelta = 0n;
+        for (const p of post) {
+          if (p.owner !== vaultKey) continue;
+          if (depositMint && p.mint !== depositMint) continue;
+          const preEntry = pre.find(e => e.accountIndex === p.accountIndex);
+          const preBal = BigInt(preEntry?.uiTokenAmount?.amount ?? '0');
+          const postBal = BigInt(p.uiTokenAmount.amount);
+          const delta = postBal - preBal;
+          if (delta > 0n) totalDelta += delta;
+        }
+        if (totalDelta > 0n) {
+          const amt = Number(totalDelta) / Math.pow(10, depositDecimals);
+          if (amt >= 1_000_000) {
+            const m = amt / 1_000_000;
+            amountOut = (m % 1 === 0 ? m.toFixed(0) : m.toFixed(2)) + 'M';
+          } else if (amt >= 1_000) {
+            const k = amt / 1_000;
+            amountOut = (k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)) + 'k';
+          } else if (amt % 1 === 0) {
+            amountOut = amt.toFixed(0);
+          } else if (amt >= 1) {
+            amountOut = amt.toFixed(2);
+          } else {
+            amountOut = amt.toFixed(4);
+          }
+        }
+      }
+    } catch { /* fall back to — */ }
+
+    const closeParams = {
       side: position.side,
       poolName,
       priceLow,
       priceHigh,
-      amountOut: '—',
+      amountOut,
       tokenSymbol,
       txSig: sig,
-    });
-    await interaction.editReply(publicText);
+      displayMode,
+      supply,
+      quoteTokenUsdPrice,
+    };
+
+    await interaction.editReply(formatPositionClosed(closeParams));
 
     await interaction.followUp({
       content: `TX: https://solscan.io/tx/${sig}`,
@@ -172,15 +245,7 @@ export async function handleClose(interaction: ChatInputCommandInteraction, ctx:
       try {
         const feedChannel = await ctx.client.channels.fetch(ctx.feedChannelId) as TextChannel;
         if (feedChannel) {
-          await feedChannel.send(formatFeedClosed({
-            side: position.side,
-            poolName,
-            priceLow,
-            priceHigh,
-            amountOut: '—',
-            tokenSymbol,
-            txSig: sig,
-          }));
+          await feedChannel.send(formatFeedClosed(closeParams));
         }
       } catch { /* best-effort */ }
     }
@@ -228,8 +293,8 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
     await signAndSendLegacy(setupTx, bot, ctx.connection);
   }
 
-  // Use user_close with bot as caller (dual-caller pattern)
-  const sig = await ctx.coreProgram.methods
+  // Build instruction, fix bitmap extension writable, send manually
+  const closeIx = await ctx.coreProgram.methods
     .userClose()
     .accounts({
       caller: bot.publicKey,
@@ -260,8 +325,23 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
       memoProgram: SPL_MEMO_PROGRAM_ID,
       systemProgram: new PublicKey('11111111111111111111111111111111'),
     })
-    .signers([bot])
-    .rpc();
+    .instruction();
+
+  // Bitmap extension must be writable for Meteora CPI (IDL marks it read-only)
+  if (!cpi.binArrayBitmapExt.equals(METEORA_DLMM_PROGRAM_ID)) {
+    for (const key of closeIx.keys) {
+      if (key.pubkey.equals(cpi.binArrayBitmapExt)) {
+        key.isWritable = true;
+      }
+    }
+  }
+
+  const closeTx = new Transaction().add(...(await buildPriorityFeeIxs(ctx.connection)), closeIx);
+  closeTx.feePayer = bot.publicKey;
+  closeTx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+  closeTx.sign(bot);
+  const sig = await ctx.connection.sendRawTransaction(closeTx.serialize(), { skipPreflight: true });
+  await ctx.connection.confirmTransaction(sig, 'confirmed');
 
   ctx.walletService.closePosition(position.position_pda);
   return sig;

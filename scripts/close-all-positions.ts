@@ -5,7 +5,7 @@
  *
  * Example: npx tsx scripts/close-all-positions.ts discord:123456789
  */
-import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js';
 import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { getConfigPDA, getPositionPDA, getVaultPDA, getRoverAuthorityPDA } from '../packages/core-sdk/pda';
@@ -78,7 +78,7 @@ async function main() {
       ]);
       if (setupTx) { console.log('  Setup ATAs...'); await signAndSendLegacy(setupTx, botKeypair, connection); }
 
-      const sig = await coreProgram.methods
+      const ix = await coreProgram.methods
         .userClose()
         .accounts({
           caller: botKeypair.publicKey,
@@ -109,9 +109,24 @@ async function main() {
           memoProgram: SPL_MEMO_PROGRAM_ID,
           systemProgram: new PublicKey('11111111111111111111111111111111'),
         })
-        .signers([botKeypair])
-        .rpc();
+        .instruction();
 
+      // Fix bitmap extension writable flag for Meteora CPI
+      const DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+      if (!cpi.binArrayBitmapExt.equals(DLMM_PROGRAM)) {
+        for (const key of ix.keys) {
+          if (key.pubkey.equals(cpi.binArrayBitmapExt)) key.isWritable = true;
+        }
+      }
+
+      const priorityIxs = await buildPriorityFeeIxs(connection, 1_400_000);
+      const tx = new Transaction();
+      tx.add(...priorityIxs, ix);
+      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      tx.feePayer = botKeypair.publicKey;
+      tx.sign(botKeypair);
+
+      const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
       console.log(`  Done: https://solscan.io/tx/${sig}`);
       walletService.closePosition(pos.position_pda);
     } catch (e: any) {

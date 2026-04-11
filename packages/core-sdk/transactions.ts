@@ -24,6 +24,7 @@ import {
   DEFAULT_PRIORITY_ULAMPORTS,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
+  NATIVE_MINT,
 } from './constants';
 import { deriveBinArrayPDA, binIdToBinArrayIndex } from './pda';
 
@@ -283,6 +284,67 @@ export function kitIxToWeb3(ix: any): TransactionInstruction {
  * Wrap a PublicKey as a @solana/kit TransactionSigner shim.
  * Used when Codama expects a signer object.
  */
+// ─── Vault ATA Provisioning ──────────────────────────────────────────────
+
+/**
+ * Ensure a vault PDA has ATAs for all tradeable token mints.
+ * Reads curator.json to discover mints, resolves token programs on-chain,
+ * and creates missing ATAs in a single transaction.
+ *
+ * Call this from /start (eager) and any vault-touching command (lazy).
+ * Returns the number of ATAs created.
+ */
+export async function ensureVaultATAs(
+  connection: Connection,
+  payer: Keypair,
+  vaultPda: PublicKey,
+): Promise<number> {
+  const { loadPoolRegistry } = await import('./pool-config');
+  const { getAssociatedTokenAddressSync } = await import('@solana/spl-token');
+
+  // Collect unique non-SOL mints from pool registry
+  const pools = loadPoolRegistry();
+  const mintSet = new Map<string, string>(); // mint address → any (dedup)
+  for (const p of pools) {
+    if (p.mintX !== NATIVE_MINT.toBase58()) mintSet.set(p.mintX, p.tokenX);
+    if (p.mintY !== NATIVE_MINT.toBase58()) mintSet.set(p.mintY, p.tokenY);
+  }
+
+  if (mintSet.size === 0) return 0;
+
+  // Resolve token programs (SPL Token vs Token-2022) via on-chain mint owner
+  const mintKeys = [...mintSet.keys()].map(m => new PublicKey(m));
+  const mintInfos = await connection.getMultipleAccountsInfo(mintKeys);
+
+  const ataChecks: { ata: PublicKey; mint: PublicKey; tokenProgram: PublicKey }[] = [];
+  for (let i = 0; i < mintKeys.length; i++) {
+    const info = mintInfos[i];
+    if (!info) continue;
+    const tokenProgram = info.owner.equals(TOKEN_2022_PROGRAM_ID)
+      ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    const ata = getAssociatedTokenAddressSync(mintKeys[i], vaultPda, true, tokenProgram);
+    ataChecks.push({ ata, mint: mintKeys[i], tokenProgram });
+  }
+
+  // Check which ATAs already exist
+  const ataInfos = await connection.getMultipleAccountsInfo(ataChecks.map(c => c.ata));
+  const missing = ataChecks.filter((_, i) => !ataInfos[i]);
+  if (missing.length === 0) return 0;
+
+  // Create all missing ATAs in one tx
+  const tx = new Transaction();
+  for (const m of missing) {
+    tx.add(createAssociatedTokenAccountIdempotentInstruction(
+      payer.publicKey, m.ata, vaultPda, m.mint, m.tokenProgram,
+    ));
+  }
+  tx.feePayer = payer.publicKey;
+  tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+  tx.sign(payer);
+  await connection.sendRawTransaction(tx.serialize());
+  return missing.length;
+}
+
 export function asSigner(pubkey: PublicKey): any {
   const addr = pubkey.toBase58();
   return {

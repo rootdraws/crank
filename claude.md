@@ -1,5 +1,9 @@
 # claude.md — crank.money codebase context
 
+## RULES — READ THESE FIRST
+
+**When something isn't working on the deployed bot, CHECK THE LOGS FIRST.** Run `ssh -i ~/.ssh/id_ed25519_deploy root@159.223.133.9 'pm2 logs crank-harvester --lines 50 --nostream'` and grep for errors BEFORE theorizing about why it should or shouldn't work. The error is almost always right there. Do not explain bin math, skip logic, or account derivation until you have looked at the actual logs.
+
 **Limit orders that earn fees. Burn $CRANK, earn SOL.**
 
 crank.money wraps Meteora DLMM positions on Solana. Set your range as a single-sided LP — **sell the rips** or **buy the dips**. If price moves through your range, Crank's Harvester pulls each bin the moment it converts.
@@ -160,7 +164,6 @@ deploy/nginx/
 security.md                      — Security hardening checklist (completed 2026-03-29)
 
 curator.json                     — Pool registry (ticker → pool address + config, read by bot)
-pool-info.json                   — Sanctum stake pool static addresses
 Anchor.toml                      — 5 programs, mainnet cluster
 todo.md                          — Living task list
 ```
@@ -336,7 +339,7 @@ pm2 logs crank-harvester --lines 50
 curl http://localhost:8080/api/stats
 ```
 
-**Bot security:** The bot keypair is the deployer/admin. Holds authority for all programs + SPL stake pool manager + Config.bot fee recipient (20%). Keypair separation planned (see todo.md).
+**Bot security:** The bot keypair is the deployer/admin. Holds authority for all 5 programs + Config.bot fee recipient (20%). Keypair separation planned (see todo.md).
 
 ## Relay endpoints
 
@@ -402,33 +405,18 @@ Add `mint_address: 'SYMBOL'`. Used by `/balance` and `/withdraw` for display. Wi
 
 **PDA vault architecture (replaced custodial keypairs 2026-04-08):** Each user gets a UserVault PDA seeded by their real Solana wallet. No encrypted keypairs. No encryption keys. Bot is a stateless operator. Withdraw address = `vault.owner` (baked into PDA seed, immutable). Wallet DB backed up per-minute to DO Spaces (`s3://crank-backups`) as convenience — not a security-critical backup.
 
-## Current state (2026-04-08)
-
-- **PDA vault migration complete** — No custodial keypairs. UserVault PDAs hold all user funds on-chain. Bot is stateless operator. 8 new instructions: create_vault, withdraw_sol, withdraw_token, wrap_sol_in_vault, unwrap_wsol_in_vault, vault_burn_and_mint, vault_vote, update_gas_lamports. Position.owner → Position.user_vault. Config.gas_lamports added. SBF binary built, IDL + Codama regenerated.
-- **Gas model: vault reimburses bot** — 9 instructions call deduct_gas (open, harvest, both closes, claim_fees, both withdraws, wrap, unwrap). Protocol ops eat costs from 20%.
-- **Epoch-computer hardened + test infra** — Exported internals for testing. Configurable `minEpochLamports`. BN precision fix (was losing precision via Number()). Dynamic rent-exempt. Harvest skip logging. 500ms claim throttle. `lastEpochTimestamp` for miss detection. Return type `EpochResult { ran, epoch, amountSol, userCount }`. Manual test script (`scripts/test-epoch.ts` with `--dry-run` and `--min-lamports`). 27 unit tests (`bot/epoch-computer.test.ts`). Epoch alerting (`alertEpochMiss` + `alertEpochSuccess` wired into keeper). Still needs live E2E test.
-- **Epoch claim bundles claim + unwrap** — Single tx: merkle-distributor claim + bin-farm unwrap_wsol_in_vault. Vault pays via deduct_gas on the unwrap.
-- **Discord bot live** — `crankbot#8555`, 12 slash commands, feed channel `#crank-feed`
-- **Harvester running** — gRPC connected, daily keeper sequence (5 steps), relay on :8080
-- **Droplet** — s-2vcpu-4gb NYC1, 1GB swap, fail2ban, SSH key-only, UFW, nginx rate limiting
-- **All 5 programs on mainnet** — bin-farm needs upgrade deploy for PDA vaults
-- **Price syncer deployed (disabled)** — detection works, swap execution needs direct Meteora DLMM instructions
-- **SOL price from Pyth** — eliminates FOGO contamination
-- **Gauge-voter pool gauges live** — SOL and CRANK PoolGauge PDAs created on-chain
-
 ## Known issues
 
-- ~~**bin-farm program upgrade not yet deployed**~~ — DONE 2026-04-09. Upgraded on mainnet.
-- ~~**Epoch-computer never run live**~~ — DONE 2026-04-09. Epoch 1 distributed 0.023 SOL end-to-end.
 - **Token-2022 transfer hooks unsupported** — V2 CPI but hook extra accounts not resolved. Defense-in-depth guards reject hook-bearing tokens.
-- **$BANK metadata missing** — no logo, no URI, looks like scam token in wallets.
+- **$BANK metadata missing** — no logo, no URI, looks like scam token in wallets. Blocks all community onboarding.
 - **Keypair separation still relevant** — PDA vaults solve user-side trust, but bot keypair still holds all program authorities. Cold wallet for admin keys still needed.
-- **close_vault instruction missing** — Users can't reclaim vault PDA rent yet. Deferred to post-hackathon.
+- **close_vault instruction missing** — Users can't reclaim vault PDA rent yet.
 - **No arb on CRANK/SOL DLMM pool** — price syncer detection works but swap execution needs direct Meteora DLMM instructions.
+- **3 audit program upgrades pending** — gauge-voter (M-03), bin-farm (L-03), merkle-distributor (L-04). Code ready, needs build + deploy.
 
 ## Program audit notes (reviewed 2026-04-01)
 
-**epoch-vault** (`programs/epoch-vault/src/lib.rs`) — Clean. `drain_vault` does direct lamport manipulation on the PDA (no CPI needed since vault is system-owned). The `vault_bump` is stored on config but never used in `drain_vault` — not a bug (lamport manipulation doesn't need PDA signing, only CPI invoke_signed does). `destination` is unchecked — authority-gated so only the bot can drain, but it can drain to ANY address. This is intentional (bot drains to itself for WSOL wrapping).
+**epoch-vault** (`programs/epoch-vault/src/lib.rs`) — Clean. `drain_vault` uses `system_program::transfer` via `invoke_signed` with vault PDA seeds (upgraded 2026-04-09 — original direct lamport manipulation was rejected by runtime on system-owned PDAs). `destination` is unchecked — authority-gated so only the bot can drain, but it can drain to ANY address. This is intentional (bot drains to itself for WSOL wrapping).
 
 **merkle-distributor** (`programs/merkle-distributor/src/lib.rs`) — Clean. `update_mint` added correctly — authority-gated, validates new vault ATA is owned by distributor PDA and denominated in new mint. Mint changed to WSOL on-chain (verified). The `claim()` instruction uses `transfer_checked` via `token_interface` so it works with both SPL Token and Token-2022. Cumulative accounting is sound — delta computed from `cumulative_amount - claim_status.cumulative_claimed`.
 
@@ -478,9 +466,8 @@ Full adversarial audit completed. Report: `audit.md` at repo root. 53 findings, 
 - bin-farm: total_positions decrement on close (L-03)
 - merkle-distributor: old vault drain check before update_mint (L-04)
 
-**What remains open (20 findings):**
+**What remains open (see `audit.md` for details):**
 - C-02: Keypair separation (architecture — needs Ledger)
-- C-03: Encryption key in local .env (operational cleanup)
 - H-01: Token-2022 transfer hooks on-chain guard (program upgrade)
 - H-10: gRPC trust model (inherent to Helius endpoint)
 - M-01, M-02, M-04, L-01, L-02, L-05, L-06: on-chain changes (various)
@@ -499,18 +486,21 @@ Full adversarial audit completed. Report: `audit.md` at repo root. 53 findings, 
 
 ## Current state (2026-04-11)
 
-- **All ops items complete:** PINATA_JWT, gas_lamports (125K), RELAY_AUTH_TOKEN set on droplet. Stale emergency close cleared.
-- **Epoch 1 distributed on mainnet** (2026-04-09): 0.023 SOL end-to-end. Merkle trees pinned to IPFS.
+- **PDA vault migration complete + deployed** — All 5 programs upgraded on mainnet (bin-farm 2026-04-09, epoch-vault 2026-04-09). Non-custodial UserVault PDAs. Bot is stateless operator. 8 vault instructions + gas model (9 deduct_gas sites).
+- **Epoch 1 distributed on mainnet** (2026-04-09): 0.023 SOL end-to-end. Merkle trees pinned to IPFS. 27 unit tests, crash recovery, epoch-miss alerting.
 - **Gas model active:** 125,000 lamports/op. Bot self-sustaining — recoups vault creation rent after ~10 user ops.
+- **All ops items set:** PINATA_JWT, gas_lamports, RELAY_AUTH_TOKEN on droplet. Stale emergency close cleared.
 - **API locked down:** Bearer token on all `/api/*` except `/api/health`.
-- **Bug fixes deployed (2026-04-11):** `/start` wallet option missing from command registration, `this.botKeypair` undefined in Discord bot context.
+- **Discord bot live** — `crankbot#8555`, 12 slash commands, feed channel `#crank-feed`. Root onboarded with vault + active positions.
+- **Harvester running** — gRPC connected, daily keeper sequence (5 steps), relay on :8080.
+- **Droplet** — s-2vcpu-4gb NYC1, 1GB swap, fail2ban, SSH key-only, UFW, nginx rate limiting.
+- **Price syncer deployed (disabled)** — detection works, swap execution needs direct Meteora DLMM instructions.
 
-## Next session priorities
+## Next priorities
 
-See `todo.md` for detailed resume notes. Key priorities:
+See `todo.md` for full list. Key items:
 
-1. **$BANK metadata** — Register Metaplex token metadata. BLOCKS ALL OUTREACH.
+1. **$BANK metadata** — Register Metaplex token metadata. Blocks all community onboarding.
 2. **Deploy 3 program upgrades** — gauge-voter (M-03), bin-farm (L-03), merkle-distributor (L-04). Code ready.
-3. **Build `/stats` + `#crank-stats`** — Analytics for pitching.
-4. **Polish remaining commands** — `/deposit`, `/balance`, `/pools`, `/burn`.
-5. **GSD community launch** — First real onboard.
+3. **Build `/stats` + `#crank-stats`** — Operational analytics.
+4. **GSD community onboard** — First real community. Quiet, one-at-a-time approach.

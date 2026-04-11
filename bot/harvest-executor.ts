@@ -16,6 +16,7 @@ import {
   Connection,
   PublicKey,
   Keypair,
+  Transaction,
   ComputeBudgetProgram,
 } from '@solana/web3.js';
 import { Program } from '@coral-xyz/anchor';
@@ -27,7 +28,7 @@ import {
 } from '@solana/spl-token';
 import DLMM from '@meteora-ag/dlmm';
 import { EventEmitter } from 'events';
-import { buildMeteoraCPIAccounts, getDLMM, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from './meteora-accounts';
+import { buildMeteoraCPIAccounts, getDLMM, fixBitmapWritable, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from './meteora-accounts';
 import type { HarvestJob, LbPairInfo } from './geyser-subscriber';
 import { logger } from './logger';
 
@@ -318,39 +319,50 @@ export class HarvestExecutor extends EventEmitter {
     const priorityIxs = await buildPriorityFeeIxs(this.connection);
 
     const txSig = await withRetry(
-      () => this.coreProgram.methods
-        .harvestBins(binIds)
-        .accounts({
-          bot:                this.botKeypair.publicKey,
-          config:             configPDA,
-          position:           new PublicKey(job.positionPDA),
-          vault:              vaultPda,
-          userVault:          job.owner,  // position.user_vault = UserVault PDA
-          meteoraPosition:    meteora.meteoraPosition,
-          lbPair:             meteora.lbPair,
-          binArrayBitmapExt:  meteora.binArrayBitmapExt,
-          binArrayLower:      meteora.binArrayLower,
-          binArrayUpper:      meteora.binArrayUpper,
-          reserveX:           meteora.reserveX,
-          reserveY:           meteora.reserveY,
-          tokenXMint:         meteora.tokenXMint,
-          tokenYMint:         meteora.tokenYMint,
-          eventAuthority:     meteora.eventAuthority,
-          dlmmProgram:        meteora.dlmmProgram,
-          vaultTokenX,
-          vaultTokenY,
-          ownerTokenX,
-          ownerTokenY,
-          roverAuthority,
-          roverFeeTokenX,
-          roverFeeTokenY,
-          tokenXProgram:      meteora.tokenXProgram,
-          tokenYProgram:      meteora.tokenYProgram,
-          memoProgram:        meteora.memoProgram,
-        })
-        .preInstructions([...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY])
-        .signers(signers)
-        .rpc(),
+      async () => {
+        const ix = await this.coreProgram.methods
+          .harvestBins(binIds)
+          .accounts({
+            bot:                this.botKeypair.publicKey,
+            config:             configPDA,
+            position:           new PublicKey(job.positionPDA),
+            vault:              vaultPda,
+            userVault:          job.owner,
+            owner:              job.owner,
+            meteoraPosition:    meteora.meteoraPosition,
+            lbPair:             meteora.lbPair,
+            binArrayBitmapExt:  meteora.binArrayBitmapExt,
+            binArrayLower:      meteora.binArrayLower,
+            binArrayUpper:      meteora.binArrayUpper,
+            reserveX:           meteora.reserveX,
+            reserveY:           meteora.reserveY,
+            tokenXMint:         meteora.tokenXMint,
+            tokenYMint:         meteora.tokenYMint,
+            eventAuthority:     meteora.eventAuthority,
+            dlmmProgram:        meteora.dlmmProgram,
+            vaultTokenX,
+            vaultTokenY,
+            ownerTokenX,
+            ownerTokenY,
+            roverAuthority,
+            roverFeeTokenX,
+            roverFeeTokenY,
+            tokenXProgram:      meteora.tokenXProgram,
+            tokenYProgram:      meteora.tokenYProgram,
+            memoProgram:        meteora.memoProgram,
+          })
+          .instruction();
+        fixBitmapWritable(ix, meteora.binArrayBitmapExt);
+        const tx = new Transaction().add(
+          ...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY, ix
+        );
+        tx.feePayer = this.botKeypair.publicKey;
+        tx.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+        tx.sign(this.botKeypair);
+        const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+        await this.connection.confirmTransaction(sig, 'confirmed');
+        return sig;
+      },
       `harvest ${key.slice(0, 8)}`
     );
 
@@ -489,40 +501,50 @@ export class HarvestExecutor extends EventEmitter {
     const priorityIxs = await buildPriorityFeeIxs(this.connection);
 
     const closeSig = await withRetry(
-      () => this.coreProgram.methods
-        .closePosition()
-        .accounts({
-          bot:                this.botKeypair.publicKey,
-          config:             configPDA,
-          userVault:          job.owner,  // position.user_vault = UserVault PDA
-          position:           new PublicKey(job.positionPDA),
-          vault:              vaultPda,
-          meteoraPosition:    meteora.meteoraPosition,
-          lbPair:             meteora.lbPair,
-          binArrayBitmapExt:  meteora.binArrayBitmapExt,
-          binArrayLower:      meteora.binArrayLower,
-          binArrayUpper:      meteora.binArrayUpper,
-          reserveX:           meteora.reserveX,
-          reserveY:           meteora.reserveY,
-          tokenXMint:         meteora.tokenXMint,
-          tokenYMint:         meteora.tokenYMint,
-          eventAuthority:     meteora.eventAuthority,
-          dlmmProgram:        meteora.dlmmProgram,
-          vaultTokenX,
-          vaultTokenY,
-          ownerTokenX,
-          ownerTokenY,
-          roverAuthority,
-          roverFeeTokenX,
-          roverFeeTokenY,
-          tokenXProgram:      meteora.tokenXProgram,
-          tokenYProgram:      meteora.tokenYProgram,
-          memoProgram:        meteora.memoProgram,
-          systemProgram:      new PublicKey('11111111111111111111111111111111'),
-        })
-        .preInstructions([...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY])
-        .signers(signers)
-        .rpc(),
+      async () => {
+        const ix = await this.coreProgram.methods
+          .closePosition()
+          .accounts({
+            bot:                this.botKeypair.publicKey,
+            config:             configPDA,
+            userVault:          job.owner,
+            position:           new PublicKey(job.positionPDA),
+            vault:              vaultPda,
+            meteoraPosition:    meteora.meteoraPosition,
+            lbPair:             meteora.lbPair,
+            binArrayBitmapExt:  meteora.binArrayBitmapExt,
+            binArrayLower:      meteora.binArrayLower,
+            binArrayUpper:      meteora.binArrayUpper,
+            reserveX:           meteora.reserveX,
+            reserveY:           meteora.reserveY,
+            tokenXMint:         meteora.tokenXMint,
+            tokenYMint:         meteora.tokenYMint,
+            eventAuthority:     meteora.eventAuthority,
+            dlmmProgram:        meteora.dlmmProgram,
+            vaultTokenX,
+            vaultTokenY,
+            ownerTokenX,
+            ownerTokenY,
+            roverAuthority,
+            roverFeeTokenX,
+            roverFeeTokenY,
+            tokenXProgram:      meteora.tokenXProgram,
+            tokenYProgram:      meteora.tokenYProgram,
+            memoProgram:        meteora.memoProgram,
+            systemProgram:      new PublicKey('11111111111111111111111111111111'),
+          })
+          .instruction();
+        fixBitmapWritable(ix, meteora.binArrayBitmapExt);
+        const tx = new Transaction().add(
+          ...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY, ix
+        );
+        tx.feePayer = this.botKeypair.publicKey;
+        tx.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+        tx.sign(this.botKeypair);
+        const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+        await this.connection.confirmTransaction(sig, 'confirmed');
+        return sig;
+      },
       `close ${key.slice(0, 8)}`
     );
 

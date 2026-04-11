@@ -92,6 +92,14 @@ async function main() {
         })
         .instruction();
 
+      // Fix bitmap extension writable flag for Meteora CPI (before simulation)
+      const DLMM_PROGRAM = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+      if (!cpi.binArrayBitmapExt.equals(DLMM_PROGRAM)) {
+        for (const key of ix.keys) {
+          if (key.pubkey.equals(cpi.binArrayBitmapExt)) key.isWritable = true;
+        }
+      }
+
       const cuIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
       const feeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50000 });
       const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();

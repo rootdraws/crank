@@ -79,7 +79,7 @@ export type ClaimFeesInstruction<
         ? ReadonlyAccount<TAccountConfig>
         : TAccountConfig,
       TAccountUserVault extends string
-        ? ReadonlyAccount<TAccountUserVault>
+        ? WritableAccount<TAccountUserVault>
         : TAccountUserVault,
       TAccountPosition extends string
         ? ReadonlyAccount<TAccountPosition>
@@ -196,7 +196,7 @@ export type ClaimFeesAsyncInput<
   /** Caller: authorized bot or vault owner */
   caller: TransactionSigner<TAccountCaller>;
   config?: Address<TAccountConfig>;
-  /** UserVault PDA — authorization checked in handler body */
+  /** UserVault PDA — gas deducted from here */
   userVault: Address<TAccountUserVault>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
@@ -303,7 +303,7 @@ export async function getClaimFeesInstructionAsync<
   const originalAccounts = {
     caller: { value: input.caller ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: false },
-    userVault: { value: input.userVault ?? null, isWritable: false },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: false },
     vault: { value: input.vault ?? null, isWritable: false },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
@@ -421,7 +421,7 @@ export type ClaimFeesInput<
   /** Caller: authorized bot or vault owner */
   caller: TransactionSigner<TAccountCaller>;
   config: Address<TAccountConfig>;
-  /** UserVault PDA — authorization checked in handler body */
+  /** UserVault PDA — gas deducted from here */
   userVault: Address<TAccountUserVault>;
   position: Address<TAccountPosition>;
   vault: Address<TAccountVault>;
@@ -526,7 +526,7 @@ export function getClaimFeesInstruction<
   const originalAccounts = {
     caller: { value: input.caller ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: false },
-    userVault: { value: input.userVault ?? null, isWritable: false },
+    userVault: { value: input.userVault ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: false },
     vault: { value: input.vault ?? null, isWritable: false },
     meteoraPosition: { value: input.meteoraPosition ?? null, isWritable: true },
@@ -616,7 +616,7 @@ export type ParsedClaimFeesInstruction<
     /** Caller: authorized bot or vault owner */
     caller: TAccountMetas[0];
     config: TAccountMetas[1];
-    /** UserVault PDA — authorization checked in handler body */
+    /** UserVault PDA — gas deducted from here */
     userVault: TAccountMetas[2];
     position: TAccountMetas[3];
     vault: TAccountMetas[4];
