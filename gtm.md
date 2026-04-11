@@ -23,8 +23,8 @@ HawkFi is the closest competitor (high-frequency DLMM automation) but has no tok
 
 These must land before GTM outreach converts to retention:
 
-### 1. Epoch-Computer — End-to-End Test
-The 80% revenue share is the headline pitch. The epoch-computer code exists (`bot/epoch-computer.ts`) and has been hardened (2026-04-08): BN precision fix, dynamic rent, harvest logging, claim throttle, 27 unit tests (Merkle proof verification passes), epoch-miss alerting wired into keeper, standalone test script (`scripts/test-epoch.ts`). **Needs live E2E test on mainnet after bin-farm deploy. This is the #1 blocker.**
+### ~~1. Epoch-Computer — End-to-End Test~~ DONE
+The 80% revenue share is the headline pitch. Epoch 1 distributed 0.023 SOL end-to-end on mainnet (2026-04-09). Epoch-computer hardened with 27 unit tests, BN precision fix, dynamic rent, claim throttle, epoch-miss alerting. PINATA_JWT set on droplet (2026-04-11) — Merkle trees now pinned to IPFS. **Gas model active:** `gas_lamports = 125,000` — users reimburse bot ~$0.01/op.
 
 ### 2. Token Metadata
 $BANK has zero metadata. Looks like a scam token in Phantom/Solflare. Anyone you onboard will see this immediately. Register Metaplex metadata, host logo on Arweave.

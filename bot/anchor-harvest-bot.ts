@@ -599,7 +599,7 @@ class HarvestBot {
           connection: this.connection,
           coreProgram: this.coreProgram,
           coreProgramId: CORE_PROGRAM_ID,
-          botKeypair: this.botKeypair,
+          botKeypair,
           configPDA,
         });
         this.executor.on('harvestExecuted', (data: any) => {

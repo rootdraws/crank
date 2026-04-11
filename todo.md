@@ -6,14 +6,14 @@
 
 ## IMMEDIATE — Ops Steps (No Code Needed)
 
-Verified on droplet 2026-04-10. Bot online 9h+, healthy. `gas_lamports = 0` on-chain (decoded Config PDA `MeTGCG86…` directly). PINATA_JWT + RELAY_AUTH_TOKEN missing from `bot/.env`. backup.key generated this session (audit H-09 closed). Stale `run-emergency-close.sh` cron line removed (script was deleted but cron entry remained — would have failed-fired next March 31).
+Verified on droplet 2026-04-11. Bot online, healthy, gRPC connected.
 
 1. ~~Deploy bin-farm + merkle-distributor upgrades to mainnet~~ — DONE 2026-04-09
 2. ~~Dry-run + live E2E epoch test~~ — DONE 2026-04-09 (Epoch 1 distributed end-to-end)
-3. **Set PINATA_JWT on droplet** — SSH, add `PINATA_JWT=<jwt>` to `bot/.env`, `pm2 restart crank-harvester`. Trees pinned to IPFS for transparency. PENDING.
-4. **Call `update_gas_lamports()`** — verified `gas_lamports = 0` on-chain. Bot is currently subsidizing all user gas. PENDING — need value decision.
-5. **Set RELAY_AUTH_TOKEN** — `openssl rand -hex 32 > token`, add to `bot/.env`, restart PM2. Will require updating any external dashboards/scripts hitting `/api/*`. PENDING.
-6. **Stale Config state** — `pending_emergency_close = EQzqS7PgfV1v2v8TH3PD3mV45MF3mHPMqe5nrR3sMGYM` is set on Config PDA from a prior unfired emergency close. Field is dangling, will need clearing if a new emergency close is queued. Investigate next session.
+3. ~~Set PINATA_JWT on droplet~~ — DONE 2026-04-11. Merkle trees now pinned to IPFS.
+4. ~~Set gas_lamports~~ — DONE 2026-04-11. Set to 125,000 lamports ($0.01/op at $80 SOL). Bot recoups vault creation rent after ~10 user operations. Each full position cycle (open → harvest chunks → close → withdraw) reimburses bot ~$0.12.
+5. ~~Set RELAY_AUTH_TOKEN~~ — DONE 2026-04-11. All `/api/*` endpoints (except `/api/health`) require `Authorization: Bearer <token>`. Token stored in local `.env` and droplet `bot/.env`.
+6. ~~Stale pending_emergency_close~~ — DONE 2026-04-11. Overwritten with `Pubkey::default` via `proposeEmergencyClose`. Old target `EQzqS7Pg…` cleared. New proposal targets nothing, expires harmlessly.
 
 ---
 
@@ -58,12 +58,12 @@ Replaced all custodial keypairs with on-chain PDA vaults. Biggest session in pro
 **What still needs doing:**
 1. ~~**Deploy bin-farm + merkle-distributor upgrades to mainnet**~~ — DONE 2026-04-09 (bin-farm upgraded, merkle-distributor already matched)
 2. ~~**Run epoch E2E test**~~ — DONE 2026-04-09 (Epoch 1 distributed 0.021 SOL end-to-end)
-3. **Set PINATA_JWT** — IPFS pinning for Merkle trees (still pending)
-4. **Set gas_lamports** — `update_gas_lamports()` after deploy (still pending)
+3. ~~**Set PINATA_JWT**~~ — DONE 2026-04-11
+4. ~~**Set gas_lamports**~~ — DONE 2026-04-11 (125,000 lamports)
 5. **$BANK metadata** — Metaplex registration
 6. **Web rebrand** — "community-first market making tool"
 7. **Activate @libraryofCrank + CRM**
-8. **Root re-onboards via `/start`** — wallet DB is empty post-wipe, needs one `/start wallet:E9Zuou7Mr…` to create his new UserVault PDA in the clean format
+8. **Root re-onboards via `/start`** — wallet DB is empty post-wipe, needs one `/start wallet:E9Zuou7Mr…` to create his new UserVault PDA in the clean format. Fixed 2026-04-11: `/start` wallet option was missing from Discord command registration (`deploy-commands.ts`), and `this.botKeypair` was undefined in `anchor-harvest-bot.ts` (should be module-level `botKeypair`). Both fixed and deployed.
 9. ~~**Audit H-09: enable encrypted backups**~~ — DONE 2026-04-10. `/root/.keys/backup.key` generated (`openssl rand -hex 32`, mode 0600). Note: backup script has been silently skipping with "No wallet DB found" since the custodial wipe — `data/crankbot.json` doesn't exist, so no encryption is being exercised yet. Will activate naturally on first user `/start`.
 
 **Build commands:**
@@ -185,9 +185,9 @@ Single keypair controls everything. Server compromise = total loss. (Lower prior
 Code is in the repo. These items need server actions to take effect.
 
 **Relay auth (audit H-04):**
-- [ ] Generate token: `openssl rand -hex 32`
-- [ ] Add `RELAY_AUTH_TOKEN=<token>` to `bot/.env`
-- [ ] Restart PM2 — all `/api/*` endpoints (except `/api/health`) now require `Authorization: Bearer <token>`
+- [x] ~~Generate token~~ — DONE 2026-04-11
+- [x] ~~Add `RELAY_AUTH_TOKEN` to `bot/.env`~~ — DONE 2026-04-11
+- [x] ~~Restart PM2~~ — DONE 2026-04-11. Verified: unauthenticated `/api/stats` → 401, with token → 200, `/api/health` → 200 (always open)
 - [ ] Update any external dashboards/scripts that hit the relay
 
 **Backup encryption (audit H-09):**
@@ -389,3 +389,11 @@ Continue conversation. Ship epoch-computer + analytics first.
 - [x] Updated /help + /buy + /sell examples to use k suffix (CRANK 15k to 20k)
 - [x] Fixed deploy-commands.ts dotenv path (bot/.env not root .env)
 - [x] Updated claude.md, audit.md, gtm.md, todo.md
+- [x] **2026-04-11 session: Ops cleanup + bug fixes**
+- [x] Committed 85 uncommitted files (PDA vault migration, audit, npm patches, epoch computer) — commit `3599816`
+- [x] Set PINATA_JWT on droplet — Merkle tree IPFS pinning active
+- [x] Set gas_lamports to 125,000 on-chain — users reimburse bot ~$0.01/op at $80 SOL
+- [x] Set RELAY_AUTH_TOKEN on droplet — all `/api/*` endpoints locked behind Bearer auth
+- [x] Cleared stale `pending_emergency_close` on Config PDA (was `EQzqS7Pg…` from March 29)
+- [x] Fixed `/start` command: added missing `wallet` string option to `deploy-commands.ts`
+- [x] Fixed `this.botKeypair` → `botKeypair` in `anchor-harvest-bot.ts` — Discord bot was receiving `undefined` for keypair, breaking all on-chain commands (`/start`, `/buy`, etc.)

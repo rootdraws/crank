@@ -3,12 +3,16 @@
 Written 2026-04-09 after the bin-farm program upgrade landed on mainnet
 (slot 412072595, 12:47 UTC) and the bot was redeployed to the droplet.
 
-## TL;DR
+**UPDATE 2026-04-11:** All threads below are RESOLVED. Committed as `3599816` (one big commit). npm fixes deployed with the commit. Decision points answered: one big commit, npm fixes batched, Meteora vulns accepted. Registry empty state was (a) — force-close happened, no users on new binary yet.
 
-Three threads are live at once. Two Claudes are touching the same working
+## TL;DR (RESOLVED)
+
+~~Three threads are live at once. Two Claudes are touching the same working
 tree, nothing is committed since `fd9f2aa cleanup`, and a round of npm
 vulnerability fixes is sitting uncommitted + undeployed. Before doing
-anything further, **commit the current state as a recovery point**.
+anything further, **commit the current state as a recovery point**.~~
+
+All committed 2026-04-11 as commit `3599816`. 110 files, +17,940 / -7,888 lines.
 
 ---
 
@@ -195,16 +199,13 @@ daily tick. Not populated yet post-restart. Expected.
 
 ---
 
-## Decision points on return
+## Decision points on return — ALL RESOLVED (2026-04-11)
 
-1. **Commit strategy** — one big WIP commit, or split by thread (PDA
-   migration / audit sweep / npm fixes)?
-2. **Coordinate with other Claude** — are their pieces (force-close,
-   epoch dry-run) complete?
-3. **npm fixes — deploy now, batch, or hold-and-test?**
-4. **4 remaining Meteora vulns — accept-and-document, or try the override
-   experiment?**
-5. **User position registry** — is the empty state (a) or (b) above?
+1. **Commit strategy** — One big commit (`3599816`). Done.
+2. **Coordinate with other Claude** — Force-close + epoch dry-run were complete. Confirmed.
+3. **npm fixes** — Batched with the commit. Deployed.
+4. **4 remaining Meteora vulns** — Accepted risk. Trust-boundary analysis above stands.
+5. **User position registry** — Was (a): force-close happened, no user positions on new binary.
 
 ---
 

@@ -2,6 +2,7 @@
 
 **Original audit:** 2026-04-01 (commit `5194807f2231d8f607da5ac8d44f1f93c962e683`)
 **Collapsed:** 2026-04-09 — post PDA-vault migration (2026-04-08)
+**Server-side activation:** 2026-04-11 — RELAY_AUTH_TOKEN set (H-04 fully active), backup.key set (H-09 ready)
 **Scope:** 5 on-chain programs, off-chain bot, SDK, Discord bot
 
 ---

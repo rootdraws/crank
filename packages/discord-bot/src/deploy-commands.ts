@@ -26,7 +26,11 @@ if (!TOKEN || !CLIENT_ID) {
 const commands = [
   new SlashCommandBuilder()
     .setName('start')
-    .setDescription('Create your vault and get a deposit address'),
+    .setDescription('Create your vault and get a deposit address')
+    .addStringOption(opt =>
+      opt.setName('wallet')
+        .setDescription('Your Solana wallet address')
+        .setRequired(false)),
 
   new SlashCommandBuilder()
     .setName('balance')

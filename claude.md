@@ -418,8 +418,8 @@ Add `mint_address: 'SYMBOL'`. Used by `/balance` and `/withdraw` for display. Wi
 
 ## Known issues
 
-- **bin-farm program upgrade not yet deployed** — PDA vault code built + IDL generated, but `anchor upgrade` to mainnet not yet executed. Must force-close all existing positions first, then deploy.
-- **Epoch-computer never run live** — Code hardened + 27 unit tests pass (Merkle proof verification, share computation). Test script ready (`scripts/test-epoch.ts`). Needs live E2E test on mainnet after bin-farm deploy.
+- ~~**bin-farm program upgrade not yet deployed**~~ — DONE 2026-04-09. Upgraded on mainnet.
+- ~~**Epoch-computer never run live**~~ — DONE 2026-04-09. Epoch 1 distributed 0.023 SOL end-to-end.
 - **Token-2022 transfer hooks unsupported** — V2 CPI but hook extra accounts not resolved. Defense-in-depth guards reject hook-bearing tokens.
 - **$BANK metadata missing** — no logo, no URI, looks like scam token in wallets.
 - **Keypair separation still relevant** — PDA vaults solve user-side trust, but bot keypair still holds all program authorities. Cold wallet for admin keys still needed.
@@ -468,11 +468,10 @@ Full adversarial audit completed. Report: `audit.md` at repo root. 53 findings, 
 - Byte offset startup validation (SDK cross-check)
 - BigInt-native amount conversion in /buy
 
-**What needs server action to activate (code is ready):**
-- `RELAY_AUTH_TOKEN` in bot/.env (relay auth)
-- `/root/.keys/backup.key` (backup encryption)
+**What needed server action (now activated):**
+- ~~`RELAY_AUTH_TOKEN` in bot/.env~~ — DONE 2026-04-11. All `/api/*` endpoints gated.
+- ~~`/root/.keys/backup.key`~~ — DONE 2026-04-10. Backup encryption key generated.
 - ~~Re-provision droplet or manual user migration (service user)~~ deferred — deploy script reverted to `root`
-- See `todo.md` "Deploy Audit Fixes" section for exact steps
 
 **What needs program upgrade (code is ready, requires `anchor build` + deploy):**
 - gauge-voter: owner check on remaining_accounts (M-03)
@@ -498,13 +497,20 @@ Full adversarial audit completed. Report: `audit.md` at repo root. 53 findings, 
 
 **SBF build requires rustup cargo.** Homebrew cargo doesn't support `+toolchain` syntax. Use: `PATH="$HOME/.cargo/bin:$HOME/.rustup/shims:$PATH" cargo-build-sbf --manifest-path programs/bin-farm/Cargo.toml`
 
+## Current state (2026-04-11)
+
+- **All ops items complete:** PINATA_JWT, gas_lamports (125K), RELAY_AUTH_TOKEN set on droplet. Stale emergency close cleared.
+- **Epoch 1 distributed on mainnet** (2026-04-09): 0.023 SOL end-to-end. Merkle trees pinned to IPFS.
+- **Gas model active:** 125,000 lamports/op. Bot self-sustaining — recoups vault creation rent after ~10 user ops.
+- **API locked down:** Bearer token on all `/api/*` except `/api/health`.
+- **Bug fixes deployed (2026-04-11):** `/start` wallet option missing from command registration, `this.botKeypair` undefined in Discord bot context.
+
 ## Next session priorities
 
 See `todo.md` for detailed resume notes. Key priorities:
 
-1. **Deploy bin-farm + merkle-distributor upgrades to mainnet** — Force-close ~2 existing positions, then `anchor upgrade`. Binaries are built.
-2. **Epoch dry-run** — `npx tsx scripts/test-epoch.ts --dry-run --min-lamports 1000000` — verify share computation + tree.
-3. **Epoch live E2E** — `npx tsx scripts/test-epoch.ts --min-lamports 1000000` — full drain → WSOL → new_epoch → auto-claim.
-4. **Set PINATA_JWT** — SSH to droplet, add to bot/.env. Trees pinned to IPFS.
-5. **Set gas_lamports** — Call `update_gas_lamports()` after deploy.
-6. **$BANK metadata** — Register Metaplex token metadata.
+1. **$BANK metadata** — Register Metaplex token metadata. BLOCKS ALL OUTREACH.
+2. **Deploy 3 program upgrades** — gauge-voter (M-03), bin-farm (L-03), merkle-distributor (L-04). Code ready.
+3. **Build `/stats` + `#crank-stats`** — Analytics for pitching.
+4. **Polish remaining commands** — `/deposit`, `/balance`, `/pools`, `/burn`.
+5. **GSD community launch** — First real onboard.
