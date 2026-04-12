@@ -10,7 +10,7 @@ You are a senior Solana security auditor performing a comprehensive adversarial 
 
 You are not here to compliment the code. You are here to break it.
 
-**Primary focus:** The PDA vault migration (2026-04-08) introduced 8 new bin-farm instructions and added `deduct_gas` to 9 existing instructions. **This code has never been audited.** It is the largest uncharted attack surface in the repo. Prioritize this area.
+**Primary focus:** The PDA vault migration (2026-04-08) introduced 8 new bin-farm instructions and added `deduct_gas` to 9 existing instructions. The bin-farm program upgrade was deployed to mainnet on 2026-04-09. **This code has never been audited.** The `deduct_gas` integration into 9 existing code paths is at least as important as the 8 new instructions — it touches battle-tested logic. Prioritize both equally.
 
 **Secondary focus:** Re-audit the previously reviewed surfaces for regressions. The original audit (2026-04-01) produced 53 findings, of which 33 were remediated and 8 were rendered obsolete by the migration. The live open findings are in `audit.md` at the repository root — **read it first** and do not re-report those issues unless you find them worse than currently believed.
 
@@ -36,7 +36,39 @@ crank.money is a **non-custodial DLMM limit-order protocol** that:
 
 **This is a live, mainnet system holding real user funds.** Treat it accordingly.
 
-**Architecture change (2026-04-08):** The previous custodial keypair model (encrypted AES-256-GCM keypairs in a JSON file) was replaced by UserVault PDAs. No `WALLET_ENCRYPTION_KEY`, no custodial keypairs, no deposit-address-based withdraw locking. All user funds live on-chain. The bin-farm program still needs `anchor upgrade` to activate the new instructions on mainnet.
+**Architecture change (2026-04-08):** The previous custodial keypair model (encrypted AES-256-GCM keypairs in a JSON file) was replaced by UserVault PDAs. No `WALLET_ENCRYPTION_KEY`, no custodial keypairs, no deposit-address-based withdraw locking. All user funds live on-chain. The bin-farm program upgrade was deployed to mainnet on 2026-04-09. Epoch 1 distributed 0.023 SOL end-to-end the same day. All operational items (RELAY_AUTH_TOKEN, PINATA_JWT, gas_lamports=125K, emergency close cleared) were completed by 2026-04-11.
+
+---
+
+## 1.1 DELTA SINCE AUDIT v1 (2026-04-01)
+
+The auditor should understand exactly what changed between the v1 audit and now:
+
+**On-chain (bin-farm program upgrade, deployed 2026-04-09):**
+- 8 new instructions: `create_vault`, `wrap_sol_in_vault`, `unwrap_wsol_in_vault`, `withdraw_sol`, `withdraw_token`, `vault_burn_and_mint`, `vault_vote`, `update_gas_lamports`
+- `deduct_gas()` added to 9 existing instructions (open, harvest, both closes, claim_fees, both withdraws, wrap, unwrap)
+- `Position.owner` → `Position.user_vault` (positions now reference vault PDA, not a raw wallet)
+- `Config.gas_lamports` added (admin-settable gas reimbursement amount)
+- Custodial keypair model completely removed — no encrypted keypairs, no `WALLET_ENCRYPTION_KEY`
+
+**Off-chain (bot + SDK changes):**
+- `wallet-service.ts` stripped of all keypair management — now only maps Discord ID → owner wallet → vault PDA
+- `signer.ts` stripped of user keypair signing — bot keypair only
+- Epoch-computer hardened: BN precision fix, dynamic rent-exempt, staged crash recovery, 27 unit tests
+- Epoch claim bundles `claim() + unwrap_wsol_in_vault()` in single tx
+- RELAY_AUTH_TOKEN enforced on all `/api/*` endpoints
+- PINATA_JWT set for IPFS pinning
+
+**Operational milestones:**
+- bin-farm upgrade deployed to mainnet (2026-04-09)
+- Epoch 1 distributed 0.023 SOL end-to-end (2026-04-09)
+- gas_lamports set to 125,000 (2026-04-11)
+- All ops items from v1 audit completed (2026-04-11)
+
+**Still open from v1 (3 program upgrades, code ready but not deployed):**
+- gauge-voter: owner check on remaining_accounts (M-03)
+- bin-farm: total_positions decrement on close (L-03)
+- merkle-distributor: old vault drain check before update_mint (L-04)
 
 ---
 
@@ -52,7 +84,28 @@ crank.money is a **non-custodial DLMM limit-order protocol** that:
 | **merkle_distributor** | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` | Cumulative WSOL Merkle distribution |
 | **epoch_vault** | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` | SOL fee accumulator (bridge vault) |
 
-### 2.2 PDA Vault Instructions (bin-farm, added 2026-04-08 — UNAUDITED)
+**Live PDA addresses (use `getAccountInfo` to verify on-chain state):**
+
+| PDA | Address | Program |
+|-----|---------|---------|
+| Core Config | `MeTGCG86PTWhnN52yV9ie8oJkgfSLGyuRCFxhDd97i2` | bin-farm |
+| RoverAuthority | `56UrucGXHYPfsXS8BMZG82UA632fHDB1o6aXWwt9i6PR` | bin-farm |
+| BridgeVault (= trader_dest = revenue_dest) | `B9gTfeCbN1oSXKCKgog5gGTH3VGNr3U5SYH4mL3gtqxK` | epoch-vault |
+| BankConfig | `HxvvyJtscUTmUhkvz6D5gidGEfmatuSmFgcxxRzexwKF` | bank-mint |
+| GaugeConfig | `AqdJmiDvUj6DWKt48QCMEqWSnh2a2qjExidhbrMw9z17` | gauge-voter |
+| Distributor | `Hwra7Rz8ZfBVuJYqyGz5PL9Bj21jSvw2qbxkg2uoE7xQ` | merkle-distributor |
+| Distributor Vault | `Fr3ntupQJRsYzTAVzNerd7zQ7QHkwKtaE5fjPVx21ZSw` | ATA (WSOL) |
+
+**Token mints (use `getAccountInfo` to verify supply for cap checks):**
+
+| Token | Mint | Decimals |
+|-------|------|----------|
+| $CRANK | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` | 6 |
+| $BANK | `BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA` | 6 |
+
+Verify on-chain: `bank_supply + crank_supply <= 2_000_000_000 * 10^6` (2B raw units). Read both mint accounts and sum `supply` fields.
+
+### 2.2 PDA Vault Instructions (bin-farm, added 2026-04-08, deployed 2026-04-09 — UNAUDITED)
 
 | Instruction | Purpose | Gas deducted? |
 |-------------|---------|---------------|
@@ -85,12 +138,13 @@ crank.money is a **non-custodial DLMM limit-order protocol** that:
 | **Harvester Bot** | `bot/anchor-harvest-bot.ts` | Main orchestrator, health server :8080 |
 | **Geyser Subscriber** | `bot/geyser-subscriber.ts` | Helius LaserStream gRPC, raw LbPair parsing, position registry, bin detection |
 | **Harvest Executor** | `bot/harvest-executor.ts` | Job queue, Token-2022 aware, tx execution, dedup, concurrency cap |
-| **Keeper** | `bot/keeper.ts` | Daily 5-step fee sequencer (close WSOL → sweep → epoch → fee rovers → close exhausted) |
+| **Keeper** | `bot/keeper.ts` | Daily 6-step fee sequencer (close WSOL → sweep → open fee rovers → close exhausted rovers → epoch distribution → cleanup) |
 | **Epoch Computer** | `bot/epoch-computer.ts` | Merkle tree builder, IPFS pinning, auto-claim (27 unit tests) |
 | **Relay Server** | `bot/relay-server.ts` | REST API + WebSocket (15 endpoints) |
 | **Price Syncer** | `bot/price-syncer.ts` | Arb detection (disabled, swap execution pending) |
 | **Alerter** | `bot/alerter.ts` | Discord feed alerts |
 | **Price Source** | `packages/core-sdk/price-source.ts` | DexScreener (non-SOL) + Pyth (SOL) |
+| **Protocol LP Bot** | `tools/protocol-lp/index.ts` | Separate autonomous bot (own keypair, own droplet) — harvests + redeploys protocol liquidity |
 
 ### 2.4 Shared SDK (`packages/core-sdk`)
 
@@ -149,7 +203,8 @@ harvest/close -> 0.3% fee -> rover_authority ATAs
 - **Permissionless harvesting:** Anyone can call `harvest_bins` after `priority_slots` (100 slots ~40s), earns `keeper_tip_bps` (10%)
 - **Flash-loan gauge voting accepted:** `gauge_voter` acknowledges this, cost = swap fees + loan interest
 - **Single bot keypair (known risk):** Holds all 5 program upgrade authorities, `Config.authority`, `Config.bot`, drain authority, merkle authority, gauge authority, bank mint authority. Keypair separation planned. See C-02 in audit.md.
-- **bin-farm program upgrade pending:** PDA vault instructions are in the repo, compiled, IDL generated — but not yet deployed to mainnet. Existing positions must be force-closed first.
+- **bin-farm program upgrade deployed (2026-04-09).** PDA vault instructions are live on mainnet. Verify the deployed program matches the repo source — check IDL hash and instruction discriminators against the on-chain program.
+- **Epoch 1 completed (2026-04-09).** Distributed 0.023 SOL end-to-end via Merkle tree. Verify on-chain: correct root, correct claims, no leftover WSOL in distributor vault.
 
 ---
 
@@ -165,10 +220,10 @@ claude.md                                        (codebase context — architect
 
 ### 3.1 On-Chain Programs (Rust/Anchor)
 
-All five programs are single-file `lib.rs` — there are no `state.rs`, `instructions/`, or `errors.rs` subdirectories.
+All five programs use `lib.rs` as the primary source — there are no `state.rs`, `instructions/`, or `errors.rs` subdirectories. bin-farm also has a separate `meteora_dlmm_cpi.rs` CPI module (375 lines).
 
 ```
-programs/bin-farm/src/lib.rs                     (3054+ lines — PDA vaults, positions, harvest, rovers, 40/40/20)
+programs/bin-farm/src/lib.rs                     (3741 lines — PDA vaults, positions, harvest, rovers, 40/40/20)
 programs/bin-farm/src/meteora_dlmm_cpi.rs        (CPI module, V2 only, 375 lines)
 programs/bin-farm/Cargo.toml
 
@@ -219,6 +274,8 @@ packages/core-sdk/wallet-service.ts              (PDA mapping — NOT keypairs a
 packages/core-sdk/signer.ts                      (bot-only signing — NOT user keypairs anymore)
 packages/core-sdk/transactions.ts
 packages/core-sdk/meteora.ts
+packages/core-sdk/generated/bin-farm/             (Codama-generated instruction builders — verify these match deployed program)
+packages/core-sdk/generated/epoch-vault/          (Codama-generated instruction builders)
 ```
 
 ### 3.4 Discord Bot
@@ -257,6 +314,20 @@ package.json
 todo.md
 ```
 
+### 3.6 Protocol LP Bot (separate autonomous bot — NOT in main harvester scope)
+
+```
+tools/protocol-lp/index.ts                       (orchestrator, poll loop — runs on SEPARATE droplet)
+tools/protocol-lp/harvester.ts                    (bin detection + removeLiquidity — uses its OWN keypair)
+tools/protocol-lp/deployer.ts                     (BidAsk buy position creation via DLMM SDK)
+tools/protocol-lp/config.ts                       (env loading — KEYPAIR_PATH points to LP wallet, NOT bot keypair)
+tools/protocol-lp/state.ts                        (persistent state: data/protocol-lp-state.json)
+tools/protocol-lp/health.ts                       (HTTP health on :8081)
+tools/protocol-lp/ecosystem.config.cjs            (PM2 config)
+```
+
+**This bot makes real transactions with real funds on a separate droplet.** It has its own keypair, its own PM2 process, its own state file. If its keypair is compromised or its logic has a bug, funds are at risk independently of the main harvester.
+
 ---
 
 ## 4. ATTACK SURFACE MAP
@@ -294,6 +365,10 @@ Audit every item below. For each, ask: **"What happens if an attacker controls t
 | **Epoch manipulation** | `new_epoch()` | Can a stale or replayed Merkle root be submitted? Can epoch be skipped? |
 | **`drain_vault` destination** | `epoch_vault` `drain_vault()` | Destination is unchecked (known: L-05) — verify authority-gating is sufficient in current code. |
 | **Bin range manipulation** | `open_position_v2` | Can an attacker open a position with a manipulated bin range that games fee collection? |
+| **Stale activeId for side derivation** | `open_position_v2` | Side is derived on-chain from `activeId`. If `activeId` changes between the bot's gRPC read and on-chain execution (30s safety poll for low-activity pools), can a position open on the wrong side? What are the consequences? |
+| **`create_vault` for victim wallet** | `create_vault` | Anyone can pay rent. Can an attacker pre-create a vault for a victim's wallet with unexpected initial state? Does a pre-created vault block the real user or affect their operations? |
+| **IDL/program mismatch** | All bot-signed instructions | If the bot's IDL files (`bot/idl/`) or Codama-generated clients (`packages/core-sdk/generated/`) don't match the deployed program (e.g., after a partial upgrade), malformed instructions could be sent. Verify IDL discriminators match on-chain. |
+| **`emergency_close` abuse** | `apply_emergency_close` instruction + `scripts/apply-emergency-close.ts` | The bin-farm Config has an `emergency_close` flag. When set, it allows force-closing any position via `apply_emergency_close`. Who can set this flag? Is it authority-gated? Can a compromised bot keypair set it and force-close all user positions at unfavorable prices? What happens to the funds — do they return to the correct vault? Is there a cooldown or governance requirement? The flag was set at some point and cleared on 2026-04-11 — verify it's currently false on-chain. |
 
 ### 4.2 Off-Chain Attack Vectors
 
@@ -313,6 +388,9 @@ Audit every item below. For each, ask: **"What happens if an attacker controls t
 | **PM2 crash loop** | `ecosystem.config.cjs` | Can an attacker trigger a crash loop that prevents harvesting? Death alerting exists (M-10) — verify. |
 | **IPFS pinning** | `epoch-computer.ts` Pinata JWT | Can a compromised Pinata key inject false Merkle trees? |
 | **Epoch crash recovery** | `epoch-computer.ts` staged progress | Recovery path exists (H-03) — verify it handles all failure modes (drain-but-not-wrap, wrap-but-not-publish, publish-but-not-claim). |
+| **Discord→wallet mapping hijack** | `/start` command, `wallet-service.ts` | Can a Discord user call `/start wallet:<victim_address>` to map their Discord ID to someone else's wallet? If so, can they trigger `/buy` or `/sell` on the victim's vault? The on-chain PDA seed should prevent cross-vault access, but verify the full path from Discord command to transaction signing. |
+| **Protocol LP bot compromise** | `tools/protocol-lp/` | Separate autonomous bot with its own keypair. If compromised, can it affect main harvester funds? Does it have any access to user vaults? What permissions does its keypair hold? |
+| **Force-close script abuse** | `scripts/close-all-positions.ts`, `scripts/force-close-position.ts` | These scripts force-close user positions using the bot keypair. If the bot keypair is compromised, can these scripts be weaponized to close all positions at unfavorable prices? Do closed funds return to user vaults or somewhere else? |
 
 ### 4.3 Economic Attack Vectors
 
@@ -341,6 +419,7 @@ Audit every item below. For each, ask: **"What happens if an attacker controls t
 | **nginx rate limiting** | Effective against DDoS? Security headers in place (L-14)? |
 | **Secrets management** | Where are bot keypair, Discord token, Pinata JWT, Helius gRPC key, `RELAY_AUTH_TOKEN` stored? File permissions? |
 | **Dependency supply chain** | `package.json` pinned to exact versions (I-09) — verify. Any known vulnerabilities? |
+| **Protocol LP bot isolation** | `tools/protocol-lp/` runs on a separate droplet with its own keypair, PM2, and state. Is there any shared state or credential overlap with the main harvester? |
 
 ---
 
@@ -350,7 +429,7 @@ Audit every item below. For each, ask: **"What happens if an attacker controls t
 
 Additionally verify these known issues:
 
-1. **PDA vault migration not deployed on mainnet** — Code is in the repo, IDL generated, binaries built, but `anchor upgrade` has not run. Existing positions must be force-closed first. Confirm the migration plan is sound.
+1. **PDA vault migration deployed on mainnet (2026-04-09)** — bin-farm upgrade is live. Verify: does the deployed program match the repo source? Check IDL discriminators against on-chain program. Look for orphaned pre-migration state (old Position accounts, stale Config fields). Verify Epoch 1 (0.023 SOL distributed) completed cleanly — correct Merkle root on-chain, all claims settled, no leftover WSOL in distributor vault.
 2. **Keccak256 vs sha3-256** — Fixed in original C-01 via direct `@noble/hashes` import + startup self-test. **VERIFY** the import still resolves and the self-test still runs.
 3. **Single bot keypair controls all authority roles** — Still open, see C-02 in audit.md. Verify no new authority was added that also funnels to this key.
 4. **Price syncer swap execution disabled** — Arb detection works, swap execution pending direct Meteora DLMM integration. See M-09 in audit.md.
@@ -358,7 +437,7 @@ Additionally verify these known issues:
 6. **Flash-loan voting is accepted by design** — Verify the economic analysis still holds at current TVL.
 7. **Token-2022 transfer hooks unsupported on-chain** — H-01, needs program upgrade. Defense-in-depth via curator whitelist + `hasTransferHook()` detection. Verify the off-chain guards still reject hook-bearing mints.
 8. **`close_vault` instruction missing** — Users cannot reclaim vault PDA rent. Confirm and assess whether this creates any griefing or UX attack surface.
-9. **Epoch-computer never run live on mainnet** — 27 unit tests pass, dry-run script exists (`scripts/test-epoch.ts`). Untested in production.
+9. **Epoch-computer ran live on mainnet (2026-04-09)** — Epoch 1 distributed 0.023 SOL. 27 unit tests pass, dry-run script exists (`scripts/test-epoch.ts`). Verify the live epoch completed without anomalies: correct share computation, all users claimed, no funds stuck in transit between drain→wrap→publish→claim stages.
 
 ---
 
@@ -454,11 +533,11 @@ This is the biggest uncharted attack surface. The entire custody model was repla
 - **WSOL accounting:** Can `wrap_sol_in_vault` / `unwrap_wsol_in_vault` break the invariant `vault_lamports_for_wsol == wsol_ata.amount`?
 - **Cross-program CPI:** `vault_burn_and_mint` and `vault_vote` are CPIs to bank-mint and gauge-voter. Are the CPI signer seeds correct? Can the CPI be redirected?
 - **Rent recovery:** No `close_vault` exists. Is this a griefing vector? Is there a cleanup plan?
-- **Migration path:** The bin-farm upgrade requires force-closing all existing positions first. Is this atomic? What if the upgrade runs while a user has an open position?
+- **Post-migration state:** The bin-farm upgrade was deployed 2026-04-09. Are there any orphaned pre-migration accounts (old-format Position, Vault, or Config data)? Was the migration clean — no stuck positions, no stale fields in Config? Verify the on-chain Config matches expected values (gas_lamports=125000, correct bot address, no emergency state).
 
 ### 8.2 The Merkle Distribution Pipeline
 
-Still largely untested on mainnet (unit tests only):
+Epoch 1 completed on mainnet (2026-04-09, 0.023 SOL). Verify the live run was clean, then stress-test edge cases:
 - Merkle tree construction correctness (27 unit tests in `epoch-computer.test.ts`)
 - Hash function (keccak256 via `@noble/hashes` — verify the self-test fires)
 - Cumulative accounting (can someone claim more than entitled?)
@@ -501,6 +580,34 @@ The geyser subscriber parses raw 904-byte LbPair account data:
 - What happens if Meteora updates their account layout?
 - Can malformed account data crash the subscriber?
 
+### 8.7 Protocol LP Bot (`tools/protocol-lp/`)
+
+**This is a separate autonomous bot completely absent from the v1 audit.** It:
+- Runs on a separate DigitalOcean droplet with its own keypair (`KEYPAIR_PATH`)
+- Harvests SOL from converted sell-side bins via `removeLiquidity`
+- Accumulates until threshold (2 SOL default), then opens BidAsk buy positions 70 bins below active price
+- Has persistent state (`data/protocol-lp-state.json`)
+- Has its own PM2 process and health endpoint (`:8081`)
+
+Audit:
+- What permissions does the protocol-lp keypair hold? Is it the same bot keypair or a separate one?
+- Can the harvester logic be tricked into removing liquidity from positions it doesn't own?
+- Can the deployer open positions that extract value (e.g., immediately sandwichable BidAsk)?
+- Is the state file tamper-resistant? Can a corrupted state cause double-harvests or lost funds?
+- Does the 2 SOL threshold create a predictable pattern that MEV bots can exploit?
+
+### 8.8 Trust Boundaries
+
+Apply these trust levels when evaluating each component:
+
+| Trust Level | Components | Implications |
+|-------------|------------|--------------|
+| **Trusted** | On-chain PDA derivation, Anchor account constraints, program-level checks | Bugs here are CRITICAL — they bypass all other defenses |
+| **Semi-trusted** | Helius gRPC stream, RPC responses, DexScreener/Pyth prices, Codama-generated clients | Verify before acting. Stale/malicious data here causes incorrect operations but shouldn't lose funds if on-chain checks hold |
+| **Untrusted** | Discord user input, relay API requests, remaining_accounts, external Meteora pool state | Full validation required. Assume adversarial. |
+
+Verify that every data flow from a lower trust level to a higher trust level has validation at the boundary.
+
 ---
 
 ## 9. REQUIRED OUTPUT FORMAT
@@ -524,7 +631,10 @@ Produce `audit-v2.md` with exactly this structure:
 |---|----------|-----------|-------|--------|
 
 ## Critical Findings
-### C-01: [Title]
+
+**Numbering:** Use `v2-` prefix on all findings (e.g., `v2-C-01`, `v2-H-01`) to avoid collision with v1 findings in `audit.md`. Both reports will be referenced side by side.
+
+### v2-C-01: [Title]
 **Component:** [file path]
 **Lines:** [line numbers]
 **Description:** [what's wrong]
@@ -567,7 +677,7 @@ Produce `audit-v2.md` with exactly this structure:
 1. **Read `audit.md` first.** It has the live findings from the previous audit. Do not re-report them. Escalate only if you find them worse than documented.
 2. **Read before you judge.** Read every file listed in Section 3. Do not make assumptions about code you haven't read.
 3. **No false positives.** Every finding must reference specific lines of code. "This could potentially be an issue" is not a finding.
-4. **No softballing.** If something is critical, say so. The PDA vault model is new and untested — if you find a flaw, that's a potential total loss of funds — don't downplay it.
+4. **No softballing.** If something is critical, say so. The PDA vault model is new, deployed, and never audited — if you find a flaw, that's a potential total loss of funds on a live mainnet system — don't downplay it.
 5. **Verify known issues.** Section 5 lists what the team already knows. Verify current status and escalate if warranted.
 6. **Think like an attacker.** For every finding, describe the exploit path. Who does it? What do they need? What do they get?
 7. **Check the math.** Every fee calculation, every bin conversion, every supply cap check, every `deduct_gas` call — verify the arithmetic by hand.
@@ -581,7 +691,7 @@ Produce `audit-v2.md` with exactly this structure:
 
 ## 11. CONTEXT THE TEAM WANTS YOU TO KNOW
 
-- **PDA vault migration shipped 2026-04-08.** bin-farm program upgrade is built, IDL regenerated, but not yet deployed on mainnet. All existing positions must be force-closed first.
+- **PDA vault migration shipped 2026-04-08, deployed 2026-04-09.** bin-farm program upgrade is live on mainnet. Epoch 1 distributed 0.023 SOL end-to-end. All operational items (RELAY_AUTH_TOKEN, PINATA_JWT, gas_lamports=125K, emergency close cleared) completed by 2026-04-11.
 - **Bot is sole tx signer + fee payer.** Every user-facing instruction reimburses the bot via `deduct_gas(config.gas_lamports)` which transfers lamports from the user's vault PDA to `Config.bot`. 9 instructions deduct gas. Protocol operations (sweep_rover, fee rovers, epoch claims bundled with unwrap) are funded by the 20% operations split.
 - **Both `revenue_dest` and `trader_dest` point to `bridge_vault`.** This is intentional — the 80% fee share (40% holders + 40% traders) all flows to one PDA for simplicity. The gauge_voter weights determine how epoch-computer splits the trader 40% across pools off-chain.
 - **Token-2022 support is via V2 CPI only.** All V1 Meteora code has been removed. All 14 outbound transfers use `transfer_checked`.
@@ -590,9 +700,13 @@ Produce `audit-v2.md` with exactly this structure:
 - **`binIdToBinArrayIndex` uses `Math.trunc`, not `Math.floor`.** This is a deliberate fix for negative bin IDs. Verify it matches Meteora's SDK.
 - **SOL price comes from Pyth, not DexScreener.** DexScreener was returning FOGO prices for SOL due to pair contamination.
 - **$PEGGED is dead.** Related staking/bridge code was removed. `epoch_vault` is the former `pegged_bridge` with the same program ID, repurposed.
-- **`wallet-service.ts` is NOT a keypair store.** It only maps Discord ID → owner wallet + tracks positions/votes/harvests. No encryption, no keypairs. DB loss = users re-register, NOT fund loss.
+- **`wallet-service.ts` is NOT a keypair store.** It only maps Discord ID → owner wallet + tracks positions/votes/harvests. No encryption, no keypairs. DB path: `data/crankbot.json`. DB loss = users re-register, NOT fund loss. Verify rsync excludes `data/` and backup pipeline (`scripts/backup-wallet-db.sh`) works.
 - **`signer.ts` signs only with the bot keypair.** It does not sign with user keypairs — they don't exist.
 - **curator.json is the pool registry.** Multiple pools across several trading pairs.
+- **Protocol LP bot (`tools/protocol-lp/`) is a separate autonomous system.** Own keypair, own droplet, own PM2 process. It was not included in the v1 audit. Verify its keypair permissions and whether it can affect user vaults.
+- **Codama-generated clients (`packages/core-sdk/generated/`) define the instruction interfaces the bot uses.** If they drift from the deployed program, the bot sends malformed transactions. Verify the generated instruction discriminators match the on-chain program.
+- **3 program upgrades are code-ready but not deployed:** gauge-voter M-03 (owner check), bin-farm L-03 (total_positions decrement), merkle-distributor L-04 (old vault drain). Audit the pending code as well — it will be deployed soon.
+- **`emergency_close` mechanism:** bin-farm Config has an `emergency_close` boolean flag. When true, `apply_emergency_close` can force-close any position. The flag was set at some point during migration and cleared on 2026-04-11. Verify: (1) the flag is currently false on-chain, (2) only `Config.authority` can set it, (3) `apply_emergency_close` returns all funds to the correct user vault, (4) there's no path to set the flag and drain funds in the same transaction.
 
 ---
 

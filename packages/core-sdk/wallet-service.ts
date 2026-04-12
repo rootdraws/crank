@@ -130,6 +130,20 @@ export class WalletService {
   }
 
   /**
+   * Remove a user registration. Used when on-chain vault creation fails
+   * after local registration, to prevent orphaned DB entries.
+   */
+  removeUser(userId: string): void {
+    const user = this.data.users[userId];
+    if (!user) return;
+    delete this.data.vaultIndex[user.vault_pda];
+    delete this.data.ownerIndex[user.owner_wallet];
+    delete this.data.users[userId];
+    this.dirty = false;
+    fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+  }
+
+  /**
    * Get vault PDA for a user. Returns undefined if not registered.
    */
   getVaultPda(userId: string): PublicKey | undefined {

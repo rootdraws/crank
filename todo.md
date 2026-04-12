@@ -63,15 +63,8 @@ Single keypair controls everything. Server compromise = total loss.
 - [ ] `close_vault` instruction in bin-farm — reclaim rent from vault accounts when fully closed
 - [ ] Minimum vault SOL balance check before harvesting — DM notification if user is dry
 
-### Price Sync Bot (Arb)
-Detection deployed. Swap execution needs direct Meteora DLMM instructions.
-
-- [ ] Replace Jupiter swap with direct Meteora DLMM `swap` instruction
-- [ ] Build swap instruction targeting specific LbPair address
-- [ ] Handle bin array account resolution for the swap range
-- [ ] Profitability check
-- [ ] Test with small amounts on mainnet
-- [ ] Enable live swaps (`SYNC_ENABLED=true`)
+### ~~Price Sync Bot (Arb)~~ — REMOVED
+Jupiter routes buys through DLMM organically. Pools track within ~2 bins. Syncer was comparing DLMM price against itself (Jupiter routed the probe through DLMM). Removed 2026-04-12.
 
 ---
 
@@ -93,9 +86,8 @@ Detection deployed. Swap execution needs direct Meteora DLMM instructions.
 - [ ] Design doc page template
 - [ ] Deploy per-community subdomains
 
-### Arbitrage Health Evaluation
-- [ ] Who is arbing each pool? How many bots? How fast?
-- [ ] Is the sync bot needed per pool, or do arb bots handle it?
+### ~~Arbitrage Health Evaluation~~ — N/A
+Jupiter routes through DLMM. Organic arb handles sync.
 
 ---
 
@@ -128,6 +120,20 @@ Offer crank.money's harvester as a skill/API for other LP bots.
 Continue conversation. Ship analytics first.
 
 ---
+
+## DONE (2026-04-12 Session)
+
+- [x] **gRPC sub-second harvest detection confirmed** — measured ~180ms from activeId change to harvest execution via `[geyser] activeId changed` log. Safety poll now redundant (5s interval, was 30s).
+- [x] **gRPC migrated to `helius-laserstream` SDK** — old `@triton-one/yellowstone-grpc` was silently not delivering data (subscription format mismatch). New SDK has built-in reconnect + 24h replay.
+- [x] **`close_rover_position` instruction added to bin-farm** — rovers couldn't be closed via `close_position` (expects UserVault, rover has RoverAuthority). New instruction deployed to mainnet.
+- [x] **Dust rover closed** — 264 CRANK across 70 bins ($0.003) manually closed via new instruction. CRANK returned to rover_authority.
+- [x] **Fee rover opening fixed** — $10/bin minimum (was $0.50). No more dust spread across 70 bins. Min 1 bin (was 5).
+- [x] **Fee rover pricing uses PumpSwap reserves** — reads on-chain AMM reserves directly. No DexScreener dependency. `pumpswapPool` field in curator.json.
+- [x] **Rover exhaustion check improved** — closes positions with <5% of initial amount remaining.
+- [x] **Price syncer removed** — Jupiter routes through DLMM organically. Syncer was comparing pool against itself. All syncer code, alerts, and relay endpoint removed.
+- [x] **Positions API returns amounts** — `initialAmount` and `harvestedAmount` in `/api/positions`.
+- [x] **Single-bin positions tracked** — `MIN_POSITION_BINS` default changed from 2 to 1.
+- [x] **Buy/sell boundary nudge** — bin range landing on activeId nudges 1 bin instead of rejecting.
 
 ## DONE (2026-04-11 Session)
 

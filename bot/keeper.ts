@@ -330,9 +330,9 @@ export class MonkeKeeper {
       // Value-based threshold (USD). Dust below this accumulates in rover_authority
       // ATAs instead of burning gas on sub-economic rover deployments.
       const MIN_FEE_ROVER_USD = parseFloat(process.env.MIN_FEE_ROVER_USD || '10');
-      // Adaptive bin width — one bin per $FEE_ROVER_BIN_USD of token value, clamped
-      // [5, on-chain max]. Smaller rovers get fewer bins → lower gas footprint.
-      const FEE_ROVER_BIN_USD = parseFloat(process.env.FEE_ROVER_BIN_USD || '0.50');
+      // Minimum USD per bin — concentrate liquidity so each bin is meaningful.
+      // $10 → 1 bin, $50 → 5 bins, $100 → 10 bins.
+      const FEE_ROVER_BIN_USD = parseFloat(process.env.FEE_ROVER_BIN_USD || '10');
 
       // Fetch all token accounts owned by rover_authority (SPL + Token-2022)
       const [spl, t22] = await Promise.all([
@@ -387,15 +387,35 @@ export class MonkeKeeper {
         const lbPair = new PublicKey(poolConfig.address);
         const rawAmount = BigInt(parsed.info.tokenAmount.amount);
 
-        // Value-based threshold: convert raw balance to USD via DexScreener.
-        // Skip conservatively if price is unavailable — better to let dust accumulate
-        // than burn gas recycling an unpriced amount.
-        const priceData = await fetchDexScreenerPrice(mintStr);
-        if (!priceData) {
-          logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] Fee rover skipped — no price data');
+        // Value-based threshold: price from on-chain reserves (PumpSwap AMM).
+        // Each pool in curator.json must have a pumpswapPool address.
+        // Price = quoteReserve / baseReserve × SOL/USD (Pyth).
+        if (!poolConfig.pumpswapPool) {
+          logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] Fee rover skipped — no pumpswapPool configured');
           continue;
         }
-        const valueUsd = (Number(rawAmount) / 10 ** decimals) * priceData.priceUsd;
+        let priceUsd: number | null = null;
+        try {
+          const pumpAcc = await this.connection.getAccountInfo(new PublicKey(poolConfig.pumpswapPool));
+          if (!pumpAcc || pumpAcc.data.length < 203) throw new Error('PumpSwap account missing or too small');
+          const baseVault = new PublicKey(pumpAcc.data.slice(139, 171));
+          const quoteVault = new PublicKey(pumpAcc.data.slice(171, 203));
+          const [baseBal, quoteBal] = await Promise.all([
+            this.connection.getTokenAccountBalance(baseVault),
+            this.connection.getTokenAccountBalance(quoteVault),
+          ]);
+          const baseReserve = parseFloat(baseBal.value.uiAmountString || '0');
+          const quoteReserve = parseFloat(quoteBal.value.uiAmountString || '0');
+          if (baseReserve <= 0 || quoteReserve <= 0) throw new Error('Empty reserves');
+          const priceInSol = quoteReserve / baseReserve;
+          const solPrice = await fetchDexScreenerPrice('So11111111111111111111111111111111111111112');
+          if (!solPrice) throw new Error('No SOL/USD price');
+          priceUsd = priceInSol * solPrice.priceUsd;
+        } catch (e: any) {
+          logger.warn({ err: e.message, mint: mintStr.slice(0, 8) }, '[keeper] Fee rover skipped — reserve price failed');
+          continue;
+        }
+        const valueUsd = (Number(rawAmount) / 10 ** decimals) * priceUsd;
         if (valueUsd < MIN_FEE_ROVER_USD) {
           logger.info(
             { mint: mintStr.slice(0, 8), valueUsd: valueUsd.toFixed(2), threshold: MIN_FEE_ROVER_USD },
@@ -418,10 +438,10 @@ export class MonkeKeeper {
           // Generate new Meteora position keypair
           const meteoraPosition = SolKeypair.generate();
 
-          // Adaptive bin width — 1 bin per $FEE_ROVER_BIN_USD of token value, clamped
-          // [5, on-chain max]. Bigger amounts get full depth; dust gets a tight range.
+          // Adaptive bin width — 1 bin per $FEE_ROVER_BIN_USD of token value.
+          // Concentrate liquidity: $10 → 3 bins, not 20.
           const maxWidth = Math.min(70, Math.max(1, Math.floor(6931 / binStep)));
-          const width = Math.max(5, Math.min(maxWidth, Math.floor(valueUsd / FEE_ROVER_BIN_USD)));
+          const width = Math.max(1, Math.min(maxWidth, Math.floor(valueUsd / FEE_ROVER_BIN_USD)));
           const minBinId = activeId + 1;
           const maxBinId = minBinId + width - 1;
 
@@ -592,7 +612,21 @@ export class MonkeKeeper {
               BigInt(b.positionXAmount) === 0n && BigInt(b.positionYAmount) === 0n
             );
 
-            if (!allEmpty) continue;
+            // Close dust rovers — mostly converted, tail dust remaining.
+            let isDust = false;
+            if (!allEmpty) {
+              const totalX = binData.reduce((sum: bigint, b: any) => sum + BigInt(b.positionXAmount), 0n);
+              const initialAmount = BigInt((data.initialAmount as any)?.toString() || '0');
+              if (initialAmount > 0n && totalX * 100n / initialAmount < 5n) {
+                isDust = true;
+                logger.info(
+                  { position: pos.publicKey.toBase58().slice(0, 8), remaining: totalX.toString(), initial: initialAmount.toString() },
+                  '[keeper] Rover is dust (<5% remaining) — closing'
+                );
+              }
+            }
+
+            if (!allEmpty && !isDust) continue;
 
             logger.info(`  [keeper] Closing exhausted rover: ${pos.publicKey.toBase58().slice(0, 8)}`);
 

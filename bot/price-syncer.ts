@@ -37,6 +37,7 @@ export interface SyncPoolConfig {
   decimalsX: number;
   decimalsY: number;
   binStep: number;
+  pumpswapPool: string;
 }
 
 interface ActiveIdChange {
@@ -247,30 +248,35 @@ export class PriceSyncer extends EventEmitter {
 
     const meteoraPrice = binToPrice(activeId, pool.binStep, pool.decimalsX, pool.decimalsY);
 
-    // 2. Get Jupiter price via probe quote (1 whole token X → token Y)
-    const probeAmount = Math.pow(10, pool.decimalsX); // 1 whole token
-    let jupiterPrice: number;
+    // 2. Get market price from PumpSwap AMM reserves (on-chain, no API)
+    let marketPrice: number;
     try {
-      const quoteUrl = `${JUPITER_QUOTE_URL}?inputMint=${pool.mintX}&outputMint=${pool.mintY}&amount=${probeAmount}&slippageBps=100`;
-      const resp = await fetch(quoteUrl, { signal: AbortSignal.timeout(10_000) });
-      if (!resp.ok) throw new Error(`Jupiter quote HTTP ${resp.status}`);
-      const quote = await resp.json();
-      if (quote.error) throw new Error(`Jupiter quote error: ${quote.error}`);
-      jupiterPrice = parseInt(quote.outAmount) / Math.pow(10, pool.decimalsY);
+      const pumpAcc = await this.config.connection.getAccountInfo(new PublicKey(pool.pumpswapPool));
+      if (!pumpAcc || pumpAcc.data.length < 203) throw new Error('PumpSwap account missing');
+      const baseVault = new PublicKey(pumpAcc.data.slice(139, 171));
+      const quoteVault = new PublicKey(pumpAcc.data.slice(171, 203));
+      const [baseBal, quoteBal] = await Promise.all([
+        this.config.connection.getTokenAccountBalance(baseVault),
+        this.config.connection.getTokenAccountBalance(quoteVault),
+      ]);
+      const baseReserve = parseFloat(baseBal.value.uiAmountString || '0');
+      const quoteReserve = parseFloat(quoteBal.value.uiAmountString || '0');
+      if (baseReserve <= 0 || quoteReserve <= 0) throw new Error('Empty reserves');
+      marketPrice = quoteReserve / baseReserve;
     } catch (e: any) {
-      logger.warn({ err: e.message, pool: pool.label }, '[syncer] Jupiter probe quote failed');
+      logger.warn({ err: e.message, pool: pool.label }, '[syncer] PumpSwap reserve read failed');
       state.lastCheckAt = Date.now();
       return;
     }
 
-    if (jupiterPrice <= 0 || meteoraPrice <= 0) {
-      logger.warn({ jupiterPrice, meteoraPrice, pool: pool.label }, '[syncer] Invalid price — skipping');
+    if (marketPrice <= 0 || meteoraPrice <= 0) {
+      logger.warn({ marketPrice, meteoraPrice, pool: pool.label }, '[syncer] Invalid price — skipping');
       state.lastCheckAt = Date.now();
       return;
     }
 
     // 3. Compute divergence
-    const divergencePct = Math.abs(jupiterPrice - meteoraPrice) / jupiterPrice * 100;
+    const divergencePct = Math.abs(marketPrice - meteoraPrice) / marketPrice * 100;
 
     state.lastCheckAt = Date.now();
     state.lastDivergencePct = divergencePct;
@@ -280,7 +286,7 @@ export class PriceSyncer extends EventEmitter {
     // 4. Determine direction
     // Jupiter price > Meteora → token worth more externally → buy on Meteora (SOL→TOKEN, pushes activeId UP)
     // Jupiter price < Meteora → token worth less externally → sell on Meteora (TOKEN→SOL, pushes activeId DOWN)
-    const direction: 'buy' | 'sell' = jupiterPrice > meteoraPrice ? 'buy' : 'sell';
+    const direction: 'buy' | 'sell' = marketPrice > meteoraPrice ? 'buy' : 'sell';
     state.lastDirection = direction;
 
     // 5. Below threshold — done (quietly; stats still updated above for /api/syncer)
@@ -291,7 +297,7 @@ export class PriceSyncer extends EventEmitter {
       pool: pool.label,
       divergencePct: +divergencePct.toFixed(2),
       meteoraPrice: +meteoraPrice.toFixed(10),
-      jupiterPrice: +jupiterPrice.toFixed(10),
+      marketPrice: +marketPrice.toFixed(10),
       activeId,
       direction,
     }, `[syncer] Price check — above threshold`);
@@ -314,7 +320,7 @@ export class PriceSyncer extends EventEmitter {
       inputMint = pool.mintX;   // TOKEN
       outputMint = pool.mintY;  // SOL
       // Convert SOL-equivalent amount to token amount using Jupiter price
-      inputAmount = Math.floor((swapLamports / Math.pow(10, pool.decimalsY)) / jupiterPrice * Math.pow(10, pool.decimalsX));
+      inputAmount = Math.floor((swapLamports / Math.pow(10, pool.decimalsY)) / marketPrice * Math.pow(10, pool.decimalsX));
     }
 
     if (inputAmount <= 0) {
@@ -348,7 +354,7 @@ export class PriceSyncer extends EventEmitter {
       // Buying TOKEN with SOL. outAmount is token atoms.
       // At Jupiter price, that TOKEN is worth more SOL than we paid.
       const jupiterValueLamports = Math.floor(
-        (parseInt(realQuote.outAmount) / Math.pow(10, pool.decimalsX)) * jupiterPrice * Math.pow(10, pool.decimalsY)
+        (parseInt(realQuote.outAmount) / Math.pow(10, pool.decimalsX)) * marketPrice * Math.pow(10, pool.decimalsY)
       );
       expectedProfitLamports = jupiterValueLamports - inputAmount;
     }
@@ -362,7 +368,7 @@ export class PriceSyncer extends EventEmitter {
       divergencePct,
       direction,
       meteoraPrice,
-      jupiterPrice,
+      marketPrice,
       inputAmount,
       expectedProfitLamports,
     });

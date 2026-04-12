@@ -140,20 +140,23 @@ export async function handleOpenPosition(
     const priceLow = route.priceLow * quoteTokenUsdPrice;
     const priceHigh = route.priceHigh * quoteTokenUsdPrice;
 
-    // Validate side vs current price
-    if (side === 'Buy' && priceHigh >= currentPrice) {
-      await interaction.editReply(formatError(
-        `range crosses current price ($${formatPrice(currentPrice)}).`,
-        `buy range must be below current price`
-      ));
-      return;
+    // Validate side vs current price — use bin IDs, not float prices.
+    // On-chain derives side from activeId anyway, this just prevents confusing errors.
+    const activeId = (await parseLbPairFull(ctx.connection, selectedPool.address)).activeId;
+    const minBin = Math.min(...positions.map((p: any) => p.minBinId));
+    const maxBin = Math.max(...positions.map((p: any) => p.maxBinId));
+
+    if (side === 'Buy' && maxBin >= activeId) {
+      for (const p of positions) {
+        if (p.maxBinId >= activeId) p.maxBinId = activeId - 1;
+        if (p.minBinId >= activeId) p.minBinId = activeId - 1;
+      }
     }
-    if (side === 'Sell' && priceLow <= currentPrice) {
-      await interaction.editReply(formatError(
-        `range crosses current price ($${formatPrice(currentPrice)}).`,
-        `sell range must be above current price`
-      ));
-      return;
+    if (side === 'Sell' && minBin <= activeId) {
+      for (const p of positions) {
+        if (p.minBinId <= activeId) p.minBinId = activeId + 1;
+        if (p.maxBinId <= activeId) p.maxBinId = activeId + 1;
+      }
     }
 
     // Reject pools with Token-2022 transfer hooks (Meteora CPI uses empty_hooks())

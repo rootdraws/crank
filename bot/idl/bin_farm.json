@@ -868,6 +868,196 @@
       "args": []
     },
     {
+      "name": "close_rover_position",
+      "docs": [
+        "Close a rover position. Bot-gated.",
+        "Removes liquidity, claims fees, closes Meteora position,",
+        "transfers tokens back to rover_authority ATAs, closes PDAs."
+      ],
+      "discriminator": [
+        122,
+        197,
+        132,
+        123,
+        97,
+        214,
+        57,
+        58
+      ],
+      "accounts": [
+        {
+          "name": "bot",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_authority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  118,
+                  101,
+                  114,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.meteora_position",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.meteora_position",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "meteora_position",
+          "writable": true
+        },
+        {
+          "name": "lb_pair",
+          "writable": true
+        },
+        {
+          "name": "bin_array_bitmap_ext"
+        },
+        {
+          "name": "bin_array_lower",
+          "writable": true
+        },
+        {
+          "name": "bin_array_upper",
+          "writable": true
+        },
+        {
+          "name": "reserve_x",
+          "writable": true
+        },
+        {
+          "name": "reserve_y",
+          "writable": true
+        },
+        {
+          "name": "token_x_mint"
+        },
+        {
+          "name": "token_y_mint"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "dlmm_program"
+        },
+        {
+          "name": "vault_token_x",
+          "writable": true
+        },
+        {
+          "name": "vault_token_y",
+          "writable": true
+        },
+        {
+          "name": "rover_token_x",
+          "writable": true
+        },
+        {
+          "name": "rover_token_y",
+          "writable": true
+        },
+        {
+          "name": "token_x_program"
+        },
+        {
+          "name": "token_y_program"
+        },
+        {
+          "name": "memo_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "close_rover_token_account",
       "docs": [
         "Close a token account owned by rover_authority. Permissionless.",

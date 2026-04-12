@@ -47,6 +47,8 @@ export interface PositionInfo {
   side: 'Buy' | 'Sell';
   minBinId: number;
   maxBinId: number;
+  initialAmount?: bigint;
+  harvestedAmount?: bigint;
 }
 
 export interface ActiveBinChangedEvent {
@@ -167,19 +169,13 @@ export function parseActiveId(data: Buffer): number {
 
 // ═══ STREAM CONFIG ═══
 
-const RECONNECT_BASE_DELAY_MS = 1_000;
-const RECONNECT_MAX_DELAY_MS = 60_000;
-const SAFETY_POLL_INTERVAL_MS = 30 * 1000; // 30 seconds
-const PING_INTERVAL_MS = 10_000;       // Send ping every 10s
-const PING_TIMEOUT_MS  = 30_000;       // Reconnect if no pong for 30s
+const SAFETY_POLL_INTERVAL_MS = 5 * 1000; // 5 seconds
 
 // Persistent position cache to avoid full position.all() scan on restart
 const CACHE_PATH = process.env.CACHE_PATH || './positions-cache.json';
 
 // Skip dust positions below this bin width to mitigate griefing.
-// Attacker creating thousands of 1-bin positions bloats registry and safety poll.
-// Minimum 2 bins required for a position to be monitored (default).
-const MIN_POSITION_BINS = parseInt(process.env.MIN_POSITION_BINS || '2');
+const MIN_POSITION_BINS = parseInt(process.env.MIN_POSITION_BINS || '1');
 
 export class GeyserSubscriber extends EventEmitter {
   private connection: Connection;
@@ -197,14 +193,8 @@ export class GeyserSubscriber extends EventEmitter {
   private poolInfo: Map<string, LbPairInfo> = new Map();
 
   // Stream management
-  private stream: any = null;
   private connected = false;
-  private reconnectAttempts = 0;
-  // Track total reconnects for health endpoint
   private totalReconnects = 0;
-  private pingTimer: NodeJS.Timeout | null = null;
-  private lastPongTime = 0;
-  private pingId = 0;
   private shuttingDown = false;
 
   // Safety-net polling
@@ -253,6 +243,8 @@ export class GeyserSubscriber extends EventEmitter {
         side: data.side.buy ? 'Buy' : 'Sell',
         minBinId: data.minBinId,
         maxBinId: data.maxBinId,
+        initialAmount: data.initialAmount ? BigInt(data.initialAmount.toString()) : undefined,
+        harvestedAmount: data.harvestedAmount ? BigInt(data.harvestedAmount.toString()) : undefined,
       };
       this.addPosition(info);
     }
@@ -276,6 +268,8 @@ export class GeyserSubscriber extends EventEmitter {
         side: p.side,
         minBinId: p.minBinId,
         maxBinId: p.maxBinId,
+        initialAmount: p.initialAmount !== undefined ? p.initialAmount.toString() : undefined,
+        harvestedAmount: p.harvestedAmount !== undefined ? p.harvestedAmount.toString() : undefined,
       }));
       // Restrict cache file to owner-only read/write
       fs.writeFileSync(CACHE_PATH, JSON.stringify(entries, null, 2), { mode: 0o600 });
@@ -297,6 +291,8 @@ export class GeyserSubscriber extends EventEmitter {
         side: 'Buy' | 'Sell';
         minBinId: number;
         maxBinId: number;
+        initialAmount?: string;
+        harvestedAmount?: string;
       }>;
 
       this.positions.clear();
@@ -311,6 +307,8 @@ export class GeyserSubscriber extends EventEmitter {
           side: e.side,
           minBinId: e.minBinId,
           maxBinId: e.maxBinId,
+          initialAmount: e.initialAmount ? BigInt(e.initialAmount) : undefined,
+          harvestedAmount: e.harvestedAmount ? BigInt(e.harvestedAmount) : undefined,
         });
       }
 
@@ -415,6 +413,8 @@ export class GeyserSubscriber extends EventEmitter {
     if (previousActiveId !== null && previousActiveId === info.activeId) {
       return;
     }
+
+    logger.info({ pool: lbPairKey.slice(0, 8), from: previousActiveId, to: info.activeId }, '[geyser] activeId changed');
 
     this.emit('activeBinChanged', {
       lbPair: lbPairKey,
@@ -525,219 +525,83 @@ export class GeyserSubscriber extends EventEmitter {
   // ─── GRPC CONNECTION ───
 
   /**
-   * Build the current subscription request based on all tracked pools.
-   * Uses full pool address as filter key to avoid 8-char prefix collisions.
+   * Connect to Helius LaserStream using the official SDK.
+   * SDK handles reconnection, ping/pong, and 24h historical replay.
    */
-  private buildSubscriptionRequest(): object {
-    const lbPairFilters: Record<string, any> = {};
-    for (const pool of this.getWatchedPools()) {
-      lbPairFilters[`lb_${pool}`] = {
-        account: [pool],
-        filters: [],
-      };
-    }
-
-    const request = {
-      accounts: {
-        ...lbPairFilters,
-        positions: { account: [], owner: [this.coreProgramId.toBase58()], filters: [] },
-      },
-      slots: {},
-      transactions: {},
-      transactionsStatus: {},
-      blocks: {},
-      blocksMeta: {},
-      entry: {},
-      accountsDataSlice: [],
-      commitment: 1,
-      ping: { id: ++this.pingId },
-    };
-    return request;
-  }
-
-  /**
-   * Update the live gRPC subscription without reconnecting.
-   * Sends a new SubscribeRequest to add/remove pool filters in place.
-   */
-  private updateSubscription(): void {
-    if (!this.connected || !this.stream) return;
-    const request = this.buildSubscriptionRequest();
-    this.stream.write(request, (err: any) => {
-      if (err) {
-        logger.warn(`[geyser] Subscription update failed: ${err.message}`);
-      } else {
-        logger.info(`[geyser] Subscription updated: ${this.positionsByPool.size} pools tracked`);
-      }
-    });
-  }
-
   async connect(): Promise<void> {
     if (this.shuttingDown) return;
 
-    try {
-      // Strip query params (may contain API keys) before logging
-      const safeEndpoint = this.grpcEndpoint.split('?')[0];
-      logger.info(`[geyser] Connecting to gRPC: ${safeEndpoint}`);
+    const { subscribe, CommitmentLevel } = await import('helius-laserstream');
 
-      // Import Yellowstone gRPC client dynamically
-      const { default: Client } = await import('@triton-one/yellowstone-grpc');
+    const url = new URL(this.grpcEndpoint);
+    const apiKey = url.searchParams.get('api-key')
+      || url.searchParams.get('x-token')
+      || process.env.GRPC_TOKEN
+      || '';
+    const endpoint = `${url.protocol}//${url.host}${url.pathname}`;
 
-      // Helius LaserStream auth: API key via x-token metadata header.
-      // The key is extracted from the endpoint URL query param if present,
-      // or from GRPC_TOKEN env var.
-      const url = new URL(this.grpcEndpoint);
-      const token = url.searchParams.get('api-key')
-        || url.searchParams.get('x-token')
-        || process.env.GRPC_TOKEN
-        || undefined;
+    const config = { apiKey, endpoint, replay: true };
 
-      // Strip query params from endpoint URL for the gRPC client
-      const cleanEndpoint = `${url.protocol}//${url.host}${url.pathname}`;
+    // Watch specific LbPair accounts + all bin-farm program accounts
+    const accountAddresses = [...this.getWatchedPools()];
+    const lbPairFilters: Record<string, any> = {};
+    for (const pool of accountAddresses) {
+      lbPairFilters[`lb_${pool}`] = { account: [pool] };
+    }
+    const request: any = {
+      accounts: {
+        ...lbPairFilters,
+        positions: { owner: [this.coreProgramId.toBase58()] },
+      },
+      commitment: CommitmentLevel.CONFIRMED,
+    };
 
-      const client = new Client(cleanEndpoint, token, undefined);
-      await client.connect();
-      this.stream = await client.subscribe();
+    logger.info(`[geyser] Connecting to LaserStream: ${endpoint}`);
+    logger.info(`[geyser] apiKey present: ${apiKey.length > 0}, length: ${apiKey.length}`);
+    logger.info(`[geyser] Subscribing: ${accountAddresses.length} pools, owner=${this.coreProgramId.toBase58().slice(0, 8)}`);
 
-      // ── Build and send subscription request ──
-      const request = this.buildSubscriptionRequest();
-
-      await new Promise<void>((resolve, reject) => {
-        this.stream.write(request, (err: any) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-
-      // ── Handle incoming messages ──
-      this.stream.on('data', (message: any) => {
-        // Handle pong responses (Helius LaserStream ping/pong)
-        if (message.pong) {
-          this.lastPongTime = Date.now();
-          return;
+    await subscribe(
+      config,
+      request,
+      (message: any) => {
+        if (!this.connected) {
+          this.connected = true;
+          logger.info(`[geyser] Connected. Watching ${this.positionsByPool.size} pools, ${this.positions.size} positions`);
         }
 
-        if (message.account) {
-          const account = message.account;
-          const pubkey = new PublicKey(account.account.pubkey).toBase58();
-          const data = Buffer.from(account.account.data);
+        try {
+          // SubscribeUpdate → .account (SubscribeUpdateAccount) → .account (SubscribeUpdateAccountInfo)
+          const info = message.account?.account;
+          if (!info?.pubkey || !info?.data) return;
 
-          // Route to appropriate handler
+          const pubkey = new PublicKey(info.pubkey).toBase58();
+          const data = Buffer.from(info.data);
+
           if (this.positionsByPool.has(pubkey)) {
-            // This is an lb_pair account update
             this.handleLbPairUpdate(pubkey, data);
           } else if (this.isBinFarmPosition(data)) {
-            // Validated bin-farm Position account — route to position handler
             this.handlePositionUpdate(pubkey, data);
-          } else {
-            // Unknown account — ignore (prevents registry rebuild storms from
-            // random gRPC updates that happen to be large)
           }
+        } catch (e: any) {
+          logger.warn(`[geyser] Failed to parse stream message: ${e.message}`);
         }
-      });
-
-      this.stream.on('error', (err: any) => {
-        logger.error(`[geyser] Stream error: ${err.message}`);
-        this.handleDisconnect();
-      });
-
-      this.stream.on('end', () => {
-        logger.info('[geyser] Stream ended');
-        this.handleDisconnect();
-      });
-
-      this.connected = true;
-      if (this.reconnectAttempts > 0) this.emit('reconnected');
-      this.reconnectAttempts = 0;
-      this.lastPongTime = Date.now();
-      this.startPingLoop();
-
-      logger.info(`[geyser] Connected. Watching ${this.positionsByPool.size} pools, ${this.positions.size} positions`);
-    } catch (e: any) {
-      logger.error(`[geyser] Connection failed: ${e.message}`);
-      throw e;
-    }
-  }
-
-  private handleDisconnect(): void {
-    if (this.shuttingDown) return;
-
-    this.connected = false;
-    this.stopPingLoop();
-    this.emit('disconnected');
-
-    const delay = Math.min(
-      RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),
-      RECONNECT_MAX_DELAY_MS
+      },
+      (error: any) => {
+        logger.error(`[geyser] Stream error: ${error.message || error}`);
+        this.connected = false;
+        this.totalReconnects++;
+        this.emit('disconnected');
+      },
     );
-    this.reconnectAttempts++;
-    this.totalReconnects++;
-
-    logger.info(`[geyser] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-
-    setTimeout(async () => {
-      if (this.shuttingDown) return;
-
-      // Full re-sync on reconnect to catch anything missed
-      // Check rebuildInFlight guard to prevent concurrent buildRegistry() calls.
-      // Without this, handleDisconnect and handlePositionUpdate can race, with .clear() in one
-      // wiping the other's in-progress results.
-      try {
-        if (!this.rebuildInFlight) {
-          this.rebuildInFlight = true;
-          try {
-            await this.buildRegistry();
-          } finally {
-            this.rebuildInFlight = false;
-          }
-        } else {
-          logger.info('[geyser] Registry rebuild already in progress — skipping reconnect rebuild');
-        }
-        await this.connect();
-      } catch (e: any) {
-        logger.error(`[geyser] Reconnect failed: ${e.message}`);
-        this.handleDisconnect();
-      }
-    }, delay);
   }
-
-  // ─── PING/PONG (Helius LaserStream) ───
 
   /**
-   * Periodic ping loop using Helius LaserStream's built-in ping/pong.
-   * Sends {"ping": {"id": N}} every PING_INTERVAL_MS.
-   * If no pong received within PING_TIMEOUT_MS, reconnects.
+   * Update subscription not needed — helius-laserstream SDK manages the stream.
+   * On registry changes that add new pools, reconnect to pick them up.
    */
-  private startPingLoop(): void {
-    this.stopPingLoop();
-    this.pingTimer = setInterval(() => {
-      if (!this.connected || !this.stream) return;
-
-      // Check if last pong is stale
-      const timeSincePong = Date.now() - this.lastPongTime;
-      if (timeSincePong > PING_TIMEOUT_MS) {
-        logger.warn(`[geyser] No pong for ${Math.round(timeSincePong / 1000)}s — reconnecting`);
-        this.handleDisconnect();
-        return;
-      }
-
-      // Send ping
-      try {
-        this.stream.write({ ping: { id: ++this.pingId } }, (err: any) => {
-          if (err && this.connected) {
-            logger.warn(`[geyser] Ping write failed: ${err.message}`);
-          }
-        });
-      } catch {
-        // Stream may be closed, disconnect handler will fire
-      }
-    }, PING_INTERVAL_MS);
-  }
-
-  private stopPingLoop(): void {
-    if (this.pingTimer) {
-      clearInterval(this.pingTimer);
-      this.pingTimer = null;
-    }
+  private updateSubscription(): void {
+    logger.info('[geyser] Pool set changed — reconnecting to update subscription');
+    this.connect().catch(e => logger.error(`[geyser] Reconnect failed: ${e.message}`));
   }
 
   // ─── SAFETY-NET POLLING ───
@@ -811,22 +675,7 @@ export class GeyserSubscriber extends EventEmitter {
     // Validate hardcoded byte offsets against SDK on first startup
     await this.validateByteOffsets();
 
-    // Retry initial gRPC connection instead of crashing on transient failure.
-    // Post-connect disconnects already use handleDisconnect() with exponential backoff.
-    let attempts = 0;
-    while (!this.connected && !this.shuttingDown) {
-      try {
-        await this.connect();
-      } catch (e: any) {
-        attempts++;
-        const delay = Math.min(
-          RECONNECT_BASE_DELAY_MS * Math.pow(2, attempts),
-          RECONNECT_MAX_DELAY_MS
-        );
-        logger.warn(`[geyser] Initial connect failed (attempt ${attempts}): ${e.message} — retrying in ${delay}ms`);
-        await new Promise(r => setTimeout(r, delay));
-      }
-    }
+    await this.connect();
 
     if (cached) {
       // Delta sync in background: rebuild full registry and save updated cache
@@ -838,17 +687,14 @@ export class GeyserSubscriber extends EventEmitter {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-    this.stopPingLoop();
 
     if (this.safetyPollTimer) {
       clearInterval(this.safetyPollTimer);
       this.safetyPollTimer = null;
     }
 
-    if (this.stream) {
-      try { this.stream.cancel(); } catch (_) {}
-      this.stream = null;
-    }
+    const { shutdownAllStreams } = await import('helius-laserstream');
+    await shutdownAllStreams();
 
     this.connected = false;
     logger.info('[geyser] Subscriber shut down');

@@ -13,7 +13,7 @@
 import { logger } from './logger';
 
 const COOLDOWN_MS = 5 * 60 * 1000; // 5 min between duplicate alerts
-const MUTE_DIVERGENCE = process.env.MUTE_DIVERGENCE_ALERTS === 'true';
+
 const lastSent = new Map<string, number>();
 
 let feedFn: ((text: string) => Promise<void>) | null = null;
@@ -70,19 +70,6 @@ export async function alertLowBalance(solBalance: number): Promise<void> {
 
 export async function alertKeeperFailure(step: string, error: string): Promise<void> {
   await dispatch('ops', `keeper_${step}`, `**ALERT:** Keeper \`${step}\` failed: ${error.slice(0, 200)}`);
-}
-
-export async function alertSyncFailure(pool: string, error: string): Promise<void> {
-  await dispatch('ops', `sync_failure_${pool}`, `**ALERT:** Price sync failed on \`${pool}\`: ${error.slice(0, 200)}`);
-}
-
-export async function alertLargeDivergence(pool: string, divergencePct: number, thresholdPct: number): Promise<void> {
-  if (MUTE_DIVERGENCE) return;
-  await dispatch(
-    'ops',
-    `divergence_${pool}`,
-    `Price divergence on \`${pool}\`: ${divergencePct.toFixed(2)}% (threshold ${thresholdPct.toFixed(2)}%)`
-  );
 }
 
 export async function alertProcessDeath(reason: string): Promise<void> {

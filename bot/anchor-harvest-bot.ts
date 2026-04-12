@@ -34,7 +34,7 @@ import { RelayServer, FeePipelineState } from './relay-server';
 import { logger } from './logger';
 import { getDLMMCacheSize, getDLMM } from './meteora-accounts';
 import { initAlerter, alertLowBalance, alertGrpcDisconnect, alertGrpcReconnect, alertKeeperFailure } from './alerter';
-import { PriceSyncer, SyncPoolConfig } from './price-syncer';
+
 import * as path from 'path';
 
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -83,7 +83,7 @@ const DISTRIBUTOR_PROGRAM_ID = requireEnvPubkey('DISTRIBUTOR_PROGRAM_ID');
 const COMMITMENT: Commitment    = 'confirmed';
 const KEEPER_ACTIVE_INTERVAL_MS = parseInt(process.env.KEEPER_CHECK_INTERVAL_MS || '3600000'); // 1hr during Active
 const KEEPER_PROCESSING_INTERVAL_MS = 30_000; // 30s during daily processing
-const SAFETY_POLL_INTERVAL_MS   = 30 * 1000; // 30 seconds
+const SAFETY_POLL_INTERVAL_MS   = 5 * 1000; // 5 seconds
 
 const HEALTH_PORT = parseInt(process.env.HEALTH_PORT || '8080');
 // Validate parsed lamport values are within safe integer range
@@ -93,12 +93,6 @@ if (!Number.isSafeInteger(SOL_BALANCE_WARN)) { logger.warn(`SOL_BALANCE_WARN exc
 if (!Number.isSafeInteger(SOL_BALANCE_CRITICAL)) { logger.warn(`SOL_BALANCE_CRITICAL exceeds safe integer range`); }
 
 // ═══ SYNCER CONFIG ═══
-const SYNC_ENABLED = process.env.SYNC_ENABLED === 'true';
-const SYNC_INTERVAL_MS = parseInt(process.env.SYNC_INTERVAL_MS || '60000');
-const SYNC_DIVERGENCE_THRESHOLD_PCT = parseFloat(process.env.SYNC_DIVERGENCE_THRESHOLD_PCT || '2');
-const SYNC_MIN_PROFIT_LAMPORTS = parseInt(process.env.SYNC_MIN_PROFIT_LAMPORTS || '5000000');
-const SYNC_MAX_SWAP_SOL = parseFloat(process.env.SYNC_MAX_SWAP_SOL || '0.5');
-const SYNC_DRY_RUN = process.env.SYNC_DRY_RUN !== 'false'; // default true for safety
 
 // ═══ RETRY ═══
 
@@ -145,7 +139,6 @@ class HarvestBot {
   private executor!: HarvestExecutor;
   private keeper!: MonkeKeeper;
   private relay!: RelayServer;
-  private syncer: PriceSyncer | null = null;
 
   // Timers
   private keeperTimer: NodeJS.Timeout | null = null;
@@ -197,7 +190,7 @@ class HarvestBot {
     if (this.keeperTimer) clearTimeout(this.keeperTimer);
     if (this.healthServer) this.healthServer.close();
 
-    if (this.syncer) await this.syncer.shutdown();
+
     if (this.subscriber) await this.subscriber.shutdown();
     if (this.executor) await this.executor.shutdown();
 
@@ -624,55 +617,6 @@ class HarvestBot {
       }
     }
 
-    // Price syncer — arb bot for low-liquidity pools
-    if (SYNC_ENABLED) {
-      try {
-        const curatorPath = path.join(__dirname, '..', 'curator.json');
-        const curatorData = JSON.parse(fs.readFileSync(curatorPath, 'utf-8'));
-        const syncPools: SyncPoolConfig[] = curatorData.pools
-          .filter((p: any) => p.syncEnabled === true)
-          .map((p: any) => ({
-            address: p.address,
-            label: p.label,
-            mintX: p.mintX,
-            mintY: p.mintY,
-            decimalsX: p.decimalsX,
-            decimalsY: p.decimalsY,
-            binStep: p.binStep,
-          }));
-
-        if (syncPools.length > 0) {
-          this.syncer = new PriceSyncer({
-            connection: this.connection,
-            botKeypair,
-            subscriber: this.subscriber,
-            syncPools,
-            intervalMs: SYNC_INTERVAL_MS,
-            divergenceThresholdPct: SYNC_DIVERGENCE_THRESHOLD_PCT,
-            minProfitLamports: SYNC_MIN_PROFIT_LAMPORTS,
-            maxSwapLamports: Math.floor(SYNC_MAX_SWAP_SOL * 1e9),
-            dryRun: SYNC_DRY_RUN,
-          });
-
-          this.syncer.on('syncExecuted', (data: any) => {
-            this.relay?.broadcast('syncExecuted', data);
-          });
-          this.syncer.on('divergenceDetected', (data: any) => {
-            this.relay?.broadcast('divergenceDetected', data);
-          });
-
-          this.relay?.setSyncerStatsProvider(() => this.syncer!.getStats());
-          await this.syncer.start();
-          logger.info(`[syncer] Price syncer started: ${syncPools.length} pool(s), interval=${SYNC_INTERVAL_MS}ms, dryRun=${SYNC_DRY_RUN}`);
-        } else {
-          logger.info('[syncer] No sync-enabled pools in curator.json — syncer disabled');
-        }
-      } catch (e: any) {
-        logger.warn(`[syncer] Failed to start: ${e.message}`);
-      }
-    } else {
-      logger.info('[syncer] Price syncer disabled (SYNC_ENABLED != true)');
-    }
 
     // Start safety-net polling (5 min fallback for harvests)
     this.subscriber.startSafetyPolling(() => this.safetyPoll());

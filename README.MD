@@ -27,7 +27,7 @@ Set your range as a single-sided LP. If price moves through your range, Crank's 
 1. User deposits SOL or TOKEN into bins above/below current price.
 2. Position acts as a limit order, earning LP fees as the position fills.
 3. Price sweeps through bins, and your tokens are converted via Meteora DLMM.
-4. Crank's Harvester detects fully-converted bins via Helius LaserStream gRPC.
+4. Crank's Harvester detects fully-converted bins via Helius LaserStream gRPC (sub-second).
 5. Harvester calls `harvest_bins` with those specific bin IDs.
 6. Anchor program CPIs to Meteora `removeLiquidity` for only those bins.
 7. Harvested tokens flow directly into the owner's wallet.
@@ -167,7 +167,7 @@ Adversarial security audit completed 2026-04-01 (`audit.md`). 53 findings, 33 re
 - Rust (via rustup)
 - Node.js 18+
 - Meteora DLMM SDK (`@meteora-ag/dlmm`)
-- Helius LaserStream gRPC (`@triton-one/yellowstone-grpc`)
+- Helius LaserStream gRPC (`helius-laserstream`)
 - tsx (TypeScript execution for bot)
 
 ## License

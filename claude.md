@@ -2,7 +2,24 @@
 
 ## RULES — READ THESE FIRST
 
-**When something isn't working on the deployed bot, CHECK THE LOGS FIRST.** Run `ssh -i ~/.ssh/id_ed25519_deploy root@159.223.133.9 'pm2 logs crank-harvester --lines 50 --nostream'` and grep for errors BEFORE theorizing about why it should or shouldn't work. The error is almost always right there. Do not explain bin math, skip logic, or account derivation until you have looked at the actual logs.
+**When something happens on the deployed bot, READ THE FULL LOGS.** Do NOT grep for what you expect to find — read what's actually there.
+
+```bash
+# CORRECT: dump full logs around the time window, then read them
+ssh -i ~/.ssh/id_ed25519_deploy root@159.223.133.9 'cat /root/.pm2/logs/crank-harvester-out.log' | grep 'HH:MM'
+
+# WRONG: grep for a keyword and assume nothing happened if it's not there
+ssh ... 'pm2 logs ... | grep harvest'  # ← MISSES "Closed 9sUpPpqm" because you grepped for "harvest"
+```
+
+Key log patterns to know:
+- Executor harvest: `"Harvest submitted: N bins from XXXX"`
+- Executor close: `"Closed XXXX"` (NOT "close" lowercase — it's the position PDA prefix)
+- gRPC trigger: `"[executor] XXXX Sell ALL N bins → CLOSE"` or `"→ HARVEST"`
+- Safety poll: `"[safety] skip XXXX"` or `"[safety] HH:MM:SS N positions"`
+- gRPC connect: `"[geyser] Connected. Watching N pools"`
+
+When Root says something happened, it happened. Read the logs to find HOW, not to argue WHETHER.
 
 **Limit orders that earn fees. Burn $CRANK, earn SOL.**
 
@@ -100,7 +117,7 @@ bot/
   logger.ts                      — pino logger
   retry.ts                       — Shared withRetry (exponential backoff)
   alerter.ts                     — Discord feed channel alerts (gRPC, low balance, keeper failures, sync)
-  price-syncer.ts                — Price divergence detection + arb bot (disabled, pending direct Meteora swap)
+  price-syncer.ts                — RETIRED. Jupiter routes through DLMM organically.
   bot.test.ts                    — Unit tests (vitest): bin detection, byte parsing, dedup
   epoch-computer.test.ts         — Unit tests (vitest): Merkle proof verification, share computation, hashing (27 tests)
   ecosystem.config.cjs           — PM2 config (512MB, auto-restart)
@@ -283,7 +300,7 @@ Config via `tools/protocol-lp/.env` (falls back to `bot/.env` for RPC_URL). Requ
 
 **Fee rover CU budget: 1M.** `open_fee_rover` uses 1M compute units (BidAskImBalanced across 69 bins). All other operations stay at 400K.
 
-**Fee rover threshold is value-based, not raw-unit.** `keeper.ts crankOpenFeeRovers` computes USD value of each token balance via `fetchDexScreenerPrice(mint)` and only opens a rover if `valueUsd >= MIN_FEE_ROVER_USD` (default $10, env-tunable). Bin width is adaptive: `width = clamp(valueUsd / FEE_ROVER_BIN_USD, 5, 70)` with `FEE_ROVER_BIN_USD` default $0.50. Dust below the USD floor accumulates silently in `rover_authority` ATAs. The legacy `MIN_FEE_ROVER_VALUE` env var is retired.
+**Fee rover threshold is value-based, not raw-unit.** `keeper.ts crankOpenFeeRovers` computes USD value from PumpSwap AMM reserves (on-chain, no API). Each pool must have `pumpswapPool` in `curator.json`. Opens if `valueUsd >= MIN_FEE_ROVER_USD` (default $10). Bin width: `width = clamp(valueUsd / FEE_ROVER_BIN_USD, 1, maxWidth)` with `FEE_ROVER_BIN_USD` default $10 — concentrate liquidity, don't spread dust. Exhaustion check closes rovers with <5% of initial amount remaining.
 
 **`bitmap_ext` is NOT `#[account(mut)]`.** DLMM program ID placeholder is executable and can't be writable. CPI module uses `bitmap_meta()` helper.
 
@@ -295,7 +312,7 @@ Config via `tools/protocol-lp/.env` (falls back to `bot/.env` for RPC_URL). Requ
 
 **Setup tx CU budget: 800K for bin array init.** Meteora `initializeBinArray` on wide-step pools (binStep 80) exceeds the default 200K CU limit. `buildSetupTx()` auto-detects DLMM instructions and bumps to 800K.
 
-**Yellowstone gRPC v5:** Requires explicit `await client.connect()` before `client.subscribe()`.
+**Helius LaserStream SDK (`helius-laserstream`).** Replaced `@triton-one/yellowstone-grpc` which silently failed to deliver account updates. SDK handles reconnect, ping/pong, and 24h replay. Subscription format: named filters with `account` and `owner` arrays. Data callback receives `SubscribeUpdate` — account info at `message.account.account` with `pubkey` and `data` as Buffers.
 
 **Sanctum SPL Stake Pool — RETIRED.** $PEGGED killed 2026-04-01. Pool exists on-chain but is no longer used. Revenue distributed as SOL directly via Merkle distributor.
 
@@ -311,7 +328,7 @@ Config via `tools/protocol-lp/.env` (falls back to `bot/.env` for RPC_URL). Requ
 
 **Token-2022 transfer hooks unsupported — defense-in-depth guards in place.** bin-farm passes `RemainingAccountsInfo::empty_hooks()` to all Meteora CPI. Tokens with transfer hooks will fail at CPI level, locking ~0.06 SOL rent per position. Guards: (1) curator.json mint whitelist in `open_fee_rovers`, (2) `hasTransferHook()` detection in keeper + `/buy` + `/sell` — rejects Token-2022 mints with hook extensions. Full hook resolution would need a bin-farm program upgrade.
 
-**Safety poll interval: 30 seconds.** Fallback for pools with low gRPC activity (e.g. CRANK/SOL where arb bots fire in bursts). Primary detection is still gRPC sub-second for active pools.
+**Safety poll interval: 5 seconds.** Fallback only — gRPC sub-second harvest detection confirmed working as of 2026-04-12 (measured ~180ms from activeId change to harvest execution). Safety poll runs redundantly to catch anything gRPC misses.
 
 **Sell command auto-resolves quote token.** `/sell CRANK 25k to 35k 4000000 CRANK` detects token==quote and resolves actual quote from pool registry.
 
@@ -359,8 +376,7 @@ All served via `https://bot.crank.money`:
 | `GET /api/rovers/top5` | Top 5 rovers |
 | `GET /api/feed` | Last 50 activity feed events |
 | `GET /api/protocol-pnl` | Win rate, net PnL, per-pool breakdown, rover portfolio |
-| `GET /api/syncer` | Price syncer stats: divergence %, activeId, change history, profit tracking |
-| `WSS /ws` | Real-time: activeBinChanged, harvestNeeded, harvestExecuted, positionClosed, roverTvlUpdated, syncExecuted, divergenceDetected, feedHistory |
+| `WSS /ws` | Real-time: activeBinChanged, harvestNeeded, harvestExecuted, positionClosed, roverTvlUpdated, feedHistory |
 
 ## Adding a new token/pool
 
@@ -411,8 +427,8 @@ Add `mint_address: 'SYMBOL'`. Used by `/balance` and `/withdraw` for display. Wi
 - **$BANK metadata missing** — no logo, no URI, looks like scam token in wallets. Blocks all community onboarding.
 - **Keypair separation still relevant** — PDA vaults solve user-side trust, but bot keypair still holds all program authorities. Cold wallet for admin keys still needed.
 - **close_vault instruction missing** — Users can't reclaim vault PDA rent yet.
-- **No arb on CRANK/SOL DLMM pool** — price syncer detection works but swap execution needs direct Meteora DLMM instructions.
-- **3 audit program upgrades pending** — gauge-voter (M-03), bin-farm (L-03), merkle-distributor (L-04). Code ready, needs build + deploy.
+- **No `close_position` for rover positions** — `close_position` requires UserVault. Rovers use RoverAuthority. Use `close_rover_position` (added 2026-04-12).
+- **2 audit program upgrades pending** — gauge-voter (M-03), merkle-distributor (L-04). Code ready, needs build + deploy. bin-farm L-03 still needs `total_positions` decrement.
 
 ## Program audit notes (reviewed 2026-04-01)
 
@@ -484,7 +500,7 @@ Full adversarial audit completed. Report: `audit.md` at repo root. 53 findings, 
 
 **SBF build requires rustup cargo.** Homebrew cargo doesn't support `+toolchain` syntax. Use: `PATH="$HOME/.cargo/bin:$HOME/.rustup/shims:$PATH" cargo-build-sbf --manifest-path programs/bin-farm/Cargo.toml`
 
-## Current state (2026-04-11)
+## Current state (2026-04-12)
 
 - **PDA vault migration complete + deployed** — All 5 programs upgraded on mainnet (bin-farm 2026-04-09, epoch-vault 2026-04-09). Non-custodial UserVault PDAs. Bot is stateless operator. 8 vault instructions + gas model (9 deduct_gas sites).
 - **Epoch 1 distributed on mainnet** (2026-04-09): 0.023 SOL end-to-end. Merkle trees pinned to IPFS. 27 unit tests, crash recovery, epoch-miss alerting.
@@ -494,13 +510,17 @@ Full adversarial audit completed. Report: `audit.md` at repo root. 53 findings, 
 - **Discord bot live** — `crankbot#8555`, 12 slash commands, feed channel `#crank-feed`. Root onboarded with vault + active positions.
 - **Harvester running** — gRPC connected, daily keeper sequence (5 steps), relay on :8080.
 - **Droplet** — s-2vcpu-4gb NYC1, 1GB swap, fail2ban, SSH key-only, UFW, nginx rate limiting.
-- **Price syncer deployed (disabled)** — detection works, swap execution needs direct Meteora DLMM instructions.
+- **gRPC live on `helius-laserstream` SDK** — sub-second harvest detection confirmed working (2026-04-12).
+- **Price syncer removed** — Jupiter routes through DLMM organically, pools track within ~2 bins.
+- **Fee rover pricing via PumpSwap reserves** — no DexScreener dependency for token pricing.
+- **`close_rover_position` deployed** — bin-farm upgraded on mainnet (2026-04-12).
+- **Positions API returns amounts** — `initialAmount` and `harvestedAmount` in `/api/positions`.
 
 ## Next priorities
 
 See `todo.md` for full list. Key items:
 
 1. **$BANK metadata** — Register Metaplex token metadata. Blocks all community onboarding.
-2. **Deploy 3 program upgrades** — gauge-voter (M-03), bin-farm (L-03), merkle-distributor (L-04). Code ready.
+2. **Deploy 2 program upgrades** — gauge-voter (M-03), merkle-distributor (L-04). Code ready.
 3. **Build `/stats` + `#crank-stats`** — Operational analytics.
 4. **GSD community onboard** — First real community. Quiet, one-at-a-time approach.

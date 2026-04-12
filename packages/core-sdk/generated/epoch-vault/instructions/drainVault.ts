@@ -27,6 +27,7 @@ import {
   type Instruction,
   type InstructionWithAccounts,
   type InstructionWithData,
+  type ReadonlyAccount,
   type ReadonlySignerAccount,
   type ReadonlyUint8Array,
   type TransactionSigner,
@@ -49,6 +50,8 @@ export type DrainVaultInstruction<
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountBridgeVault extends string | AccountMeta<string> = string,
   TAccountDestination extends string | AccountMeta<string> = string,
+  TAccountSystemProgram extends string | AccountMeta<string> =
+    '11111111111111111111111111111111',
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
@@ -67,6 +70,9 @@ export type DrainVaultInstruction<
       TAccountDestination extends string
         ? WritableAccount<TAccountDestination>
         : TAccountDestination,
+      TAccountSystemProgram extends string
+        ? ReadonlyAccount<TAccountSystemProgram>
+        : TAccountSystemProgram,
       ...TRemainingAccounts,
     ]
   >;
@@ -110,11 +116,14 @@ export type DrainVaultAsyncInput<
   TAccountConfig extends string = string,
   TAccountBridgeVault extends string = string,
   TAccountDestination extends string = string,
+  TAccountSystemProgram extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config?: Address<TAccountConfig>;
+  /** without account init; drain uses System CPI + invoke_signed. */
   bridgeVault?: Address<TAccountBridgeVault>;
   destination: Address<TAccountDestination>;
+  systemProgram?: Address<TAccountSystemProgram>;
   amount: DrainVaultInstructionDataArgs['amount'];
 };
 
@@ -123,13 +132,15 @@ export async function getDrainVaultInstructionAsync<
   TAccountConfig extends string,
   TAccountBridgeVault extends string,
   TAccountDestination extends string,
+  TAccountSystemProgram extends string,
   TProgramAddress extends Address = typeof EPOCH_VAULT_PROGRAM_ADDRESS,
 >(
   input: DrainVaultAsyncInput<
     TAccountAuthority,
     TAccountConfig,
     TAccountBridgeVault,
-    TAccountDestination
+    TAccountDestination,
+    TAccountSystemProgram
   >,
   config?: { programAddress?: TProgramAddress }
 ): Promise<
@@ -138,7 +149,8 @@ export async function getDrainVaultInstructionAsync<
     TAccountAuthority,
     TAccountConfig,
     TAccountBridgeVault,
-    TAccountDestination
+    TAccountDestination,
+    TAccountSystemProgram
   >
 > {
   // Program address.
@@ -150,6 +162,7 @@ export async function getDrainVaultInstructionAsync<
     config: { value: input.config ?? null, isWritable: true },
     bridgeVault: { value: input.bridgeVault ?? null, isWritable: true },
     destination: { value: input.destination ?? null, isWritable: true },
+    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -184,6 +197,10 @@ export async function getDrainVaultInstructionAsync<
       ],
     });
   }
+  if (!accounts.systemProgram.value) {
+    accounts.systemProgram.value =
+      '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
+  }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
@@ -192,6 +209,7 @@ export async function getDrainVaultInstructionAsync<
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.bridgeVault),
       getAccountMeta(accounts.destination),
+      getAccountMeta(accounts.systemProgram),
     ],
     data: getDrainVaultInstructionDataEncoder().encode(
       args as DrainVaultInstructionDataArgs
@@ -202,7 +220,8 @@ export async function getDrainVaultInstructionAsync<
     TAccountAuthority,
     TAccountConfig,
     TAccountBridgeVault,
-    TAccountDestination
+    TAccountDestination,
+    TAccountSystemProgram
   >);
 }
 
@@ -211,11 +230,14 @@ export type DrainVaultInput<
   TAccountConfig extends string = string,
   TAccountBridgeVault extends string = string,
   TAccountDestination extends string = string,
+  TAccountSystemProgram extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config: Address<TAccountConfig>;
+  /** without account init; drain uses System CPI + invoke_signed. */
   bridgeVault: Address<TAccountBridgeVault>;
   destination: Address<TAccountDestination>;
+  systemProgram?: Address<TAccountSystemProgram>;
   amount: DrainVaultInstructionDataArgs['amount'];
 };
 
@@ -224,13 +246,15 @@ export function getDrainVaultInstruction<
   TAccountConfig extends string,
   TAccountBridgeVault extends string,
   TAccountDestination extends string,
+  TAccountSystemProgram extends string,
   TProgramAddress extends Address = typeof EPOCH_VAULT_PROGRAM_ADDRESS,
 >(
   input: DrainVaultInput<
     TAccountAuthority,
     TAccountConfig,
     TAccountBridgeVault,
-    TAccountDestination
+    TAccountDestination,
+    TAccountSystemProgram
   >,
   config?: { programAddress?: TProgramAddress }
 ): DrainVaultInstruction<
@@ -238,7 +262,8 @@ export function getDrainVaultInstruction<
   TAccountAuthority,
   TAccountConfig,
   TAccountBridgeVault,
-  TAccountDestination
+  TAccountDestination,
+  TAccountSystemProgram
 > {
   // Program address.
   const programAddress = config?.programAddress ?? EPOCH_VAULT_PROGRAM_ADDRESS;
@@ -249,6 +274,7 @@ export function getDrainVaultInstruction<
     config: { value: input.config ?? null, isWritable: true },
     bridgeVault: { value: input.bridgeVault ?? null, isWritable: true },
     destination: { value: input.destination ?? null, isWritable: true },
+    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -258,6 +284,12 @@ export function getDrainVaultInstruction<
   // Original args.
   const args = { ...input };
 
+  // Resolve default values.
+  if (!accounts.systemProgram.value) {
+    accounts.systemProgram.value =
+      '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
+  }
+
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
@@ -265,6 +297,7 @@ export function getDrainVaultInstruction<
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.bridgeVault),
       getAccountMeta(accounts.destination),
+      getAccountMeta(accounts.systemProgram),
     ],
     data: getDrainVaultInstructionDataEncoder().encode(
       args as DrainVaultInstructionDataArgs
@@ -275,7 +308,8 @@ export function getDrainVaultInstruction<
     TAccountAuthority,
     TAccountConfig,
     TAccountBridgeVault,
-    TAccountDestination
+    TAccountDestination,
+    TAccountSystemProgram
   >);
 }
 
@@ -287,8 +321,10 @@ export type ParsedDrainVaultInstruction<
   accounts: {
     authority: TAccountMetas[0];
     config: TAccountMetas[1];
+    /** without account init; drain uses System CPI + invoke_signed. */
     bridgeVault: TAccountMetas[2];
     destination: TAccountMetas[3];
+    systemProgram: TAccountMetas[4];
   };
   data: DrainVaultInstructionData;
 };
@@ -301,7 +337,7 @@ export function parseDrainVaultInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedDrainVaultInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 4) {
+  if (instruction.accounts.length < 5) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -318,6 +354,7 @@ export function parseDrainVaultInstruction<
       config: getNextAccount(),
       bridgeVault: getNextAccount(),
       destination: getNextAccount(),
+      systemProgram: getNextAccount(),
     },
     data: getDrainVaultInstructionDataDecoder().decode(instruction.data),
   };

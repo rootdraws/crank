@@ -26,7 +26,13 @@ the live findings plus the on-chain audit notes that remain current.
 (`create_vault`, `withdraw_sol`, `withdraw_token`, `wrap_sol_in_vault`,
 `unwrap_wsol_in_vault`, `vault_burn_and_mint`, `vault_vote`,
 `update_gas_lamports`, plus `deduct_gas` on 9 instructions) **have not been
-audited**. A fresh review is needed before mainnet upgrade.
+audited**. These are live on mainnet as of 2026-04-09 — deployed unaudited.
+
+**Also unaudited:** `close_rover_position` (bin-farm, deployed 2026-04-12).
+Gated by `bot == config.bot`. Closes rover-owned positions where
+`position.user_vault == rover_authority`. Required because `close_position`
+expects a `UserVault` account and fails for rover-owned positions.
+A retroactive review is still recommended.
 
 For the full historical report with PoCs, see git history.
 
@@ -42,7 +48,6 @@ For the full historical report with PoCs, see git history.
 | M-01 | Medium | bin-farm | Orphaned per-position vault ATAs lose ~0.004 SOL each |
 | M-02 | Medium | bin-farm | set_trader_dest has no timelock (unlike revenue_dest) |
 | M-04 | Medium | gauge-voter | remove_pool does not redistribute weight |
-| M-09 | Medium | price-syncer | Trusts arbitrary Jupiter swap instructions (disabled) |
 | L-01 | Low | bin-farm | Deposit transfers use raw SPL Transfer, not TransferChecked |
 | L-02 | Low | bin-farm | Emergency close rent goes to caller, not position owner |
 | L-05 | Low | epoch-vault | drain_vault destination unchecked (authority-gated) |
@@ -310,7 +315,7 @@ TVL.
 
 | Priority | Finding | Effort | Category |
 |----------|---------|--------|----------|
-| 1 | **PDA vault audit pass** (8 new instructions + `deduct_gas`) | 4-8 hrs | Must-do before upgrade |
+| 1 | **PDA vault audit pass** (8 new instructions + `deduct_gas`) | 4-8 hrs | Deployed unaudited 2026-04-09 |
 | 2 | **C-02:** Keypair separation (cold admin + hot bot, Ledger) | 4-8 hrs | Architecture |
 | 3 | **M-03:** gauge-voter owner check (code ready) | 30 min | Program upgrade |
 | 4 | **L-03:** `total_positions` decrement (code ready) | 30 min | Program upgrade |

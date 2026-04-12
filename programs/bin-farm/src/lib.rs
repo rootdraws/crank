@@ -1602,6 +1602,139 @@ pub mod bin_farm {
         Ok(())
     }
 
+    /// Close a rover position. Bot-gated.
+    /// Removes liquidity, claims fees, closes Meteora position,
+    /// transfers tokens back to rover_authority ATAs, closes PDAs.
+    pub fn close_rover_position(ctx: Context<CloseRoverPosition>) -> Result<()> {
+        require!(ctx.accounts.bot.key() == ctx.accounts.config.bot, CoreError::Unauthorized);
+        require!(!ctx.accounts.config.bot_paused, CoreError::BotPaused);
+
+        let min_bin_id = ctx.accounts.position.min_bin_id;
+        let max_bin_id = ctx.accounts.position.max_bin_id;
+        let meteora_pos_key = ctx.accounts.position.meteora_position;
+
+        let vault_seeds: &[&[u8]] = &[
+            b"vault",
+            meteora_pos_key.as_ref(),
+            &[ctx.accounts.vault.bump],
+        ];
+        let signer = &[vault_seeds];
+
+        // 1. Remove ALL remaining liquidity
+        let remaining = &[
+            ctx.accounts.bin_array_lower.to_account_info(),
+            ctx.accounts.bin_array_upper.to_account_info(),
+        ];
+        remove_liquidity_by_range2(
+            &[
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.lb_pair.to_account_info(),
+                ctx.accounts.bin_array_bitmap_ext.to_account_info(),
+                ctx.accounts.vault_token_x.to_account_info(),
+                ctx.accounts.vault_token_y.to_account_info(),
+                ctx.accounts.reserve_x.to_account_info(),
+                ctx.accounts.reserve_y.to_account_info(),
+                ctx.accounts.token_x_mint.to_account_info(),
+                ctx.accounts.token_y_mint.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.token_x_program.to_account_info(),
+                ctx.accounts.token_y_program.to_account_info(),
+                ctx.accounts.memo_program.to_account_info(),
+                ctx.accounts.event_authority.to_account_info(),
+                ctx.accounts.dlmm_program.to_account_info(),
+            ],
+            min_bin_id,
+            max_bin_id,
+            10_000,
+            RemainingAccountsInfo::none(),
+            signer,
+            remaining,
+        )?;
+
+        // 2. Claim accrued trading fees
+        let remaining = &[
+            ctx.accounts.bin_array_lower.to_account_info(),
+            ctx.accounts.bin_array_upper.to_account_info(),
+        ];
+        claim_fee2(
+            &[
+                ctx.accounts.lb_pair.to_account_info(),
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.reserve_x.to_account_info(),
+                ctx.accounts.reserve_y.to_account_info(),
+                ctx.accounts.vault_token_x.to_account_info(),
+                ctx.accounts.vault_token_y.to_account_info(),
+                ctx.accounts.token_x_mint.to_account_info(),
+                ctx.accounts.token_y_mint.to_account_info(),
+                ctx.accounts.token_x_program.to_account_info(),
+                ctx.accounts.token_y_program.to_account_info(),
+                ctx.accounts.memo_program.to_account_info(),
+                ctx.accounts.event_authority.to_account_info(),
+                ctx.accounts.dlmm_program.to_account_info(),
+            ],
+            min_bin_id,
+            max_bin_id,
+            RemainingAccountsInfo::none(),
+            signer,
+            remaining,
+        )?;
+
+        // 3. Close Meteora position (rent -> bot)
+        close_position2(
+            &[
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.bot.to_account_info(),
+                ctx.accounts.event_authority.to_account_info(),
+                ctx.accounts.dlmm_program.to_account_info(),
+            ],
+            signer,
+        )?;
+
+        // 4. Transfer remaining tokens back to rover_authority ATAs (no fee — it's our money)
+        let x_decimals = read_mint_decimals(&ctx.accounts.token_x_mint)?;
+        let y_decimals = read_mint_decimals(&ctx.accounts.token_y_mint)?;
+
+        let x_amount = ctx.accounts.vault_token_x.amount;
+        if x_amount > 0 {
+            memo_cpi(&ctx.accounts.memo_program, &ctx.accounts.vault.to_account_info(), signer)?;
+            transfer_checked(CpiContext::new_with_signer(
+                ctx.accounts.token_x_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault_token_x.to_account_info(),
+                    mint: ctx.accounts.token_x_mint.to_account_info(),
+                    to: ctx.accounts.rover_token_x.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                }, signer,
+            ), x_amount, x_decimals)?;
+        }
+
+        let y_amount = ctx.accounts.vault_token_y.amount;
+        if y_amount > 0 {
+            memo_cpi(&ctx.accounts.memo_program, &ctx.accounts.vault.to_account_info(), signer)?;
+            transfer_checked(CpiContext::new_with_signer(
+                ctx.accounts.token_y_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault_token_y.to_account_info(),
+                    mint: ctx.accounts.token_y_mint.to_account_info(),
+                    to: ctx.accounts.rover_token_y.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                }, signer,
+            ), y_amount, y_decimals)?;
+        }
+
+        ctx.accounts.config.total_positions = ctx.accounts.config.total_positions.saturating_sub(1);
+
+        msg!(
+            "Rover position closed: {} | x={} y={}",
+            ctx.accounts.position.key(),
+            x_amount,
+            y_amount,
+        );
+        Ok(())
+    }
+
     /// Open a fee rover position from accumulated token fees in rover_authority ATA.
     /// Bot-gated. Uses BidAskOneSide distribution (more tokens at higher bins).
     /// Bot pays rent for Position + Vault PDAs (refunded on close).
@@ -3552,6 +3685,96 @@ pub struct CloseRoverTokenAccount<'info> {
     /// CHECK: SPL Token or Token-2022
     #[account(constraint = *token_program.key == anchor_spl::token::ID || *token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
     pub token_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CloseRoverPosition<'info> {
+    #[account(mut)]
+    pub bot: Signer<'info>,
+
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(mut, seeds = [b"rover_authority"], bump = rover_authority.bump)]
+    pub rover_authority: Box<Account<'info, RoverAuthority>>,
+
+    #[account(
+        mut,
+        seeds = [b"position", position.meteora_position.as_ref()],
+        bump = position.bump,
+        constraint = position.user_vault == rover_authority.key() @ CoreError::Unauthorized,
+        close = bot
+    )]
+    pub position: Box<Account<'info, Position>>,
+
+    #[account(
+        mut,
+        seeds = [b"vault", position.meteora_position.as_ref()],
+        bump = vault.bump,
+        close = bot
+    )]
+    pub vault: Box<Account<'info, Vault>>,
+
+    /// CHECK: Meteora position
+    #[account(mut, constraint = meteora_position.key() == position.meteora_position @ CoreError::InvalidPosition)]
+    pub meteora_position: AccountInfo<'info>,
+
+    /// CHECK: DLMM pool
+    #[account(mut, constraint = lb_pair.key() == position.lb_pair @ CoreError::InvalidPool)]
+    pub lb_pair: AccountInfo<'info>,
+
+    /// CHECK: Bitmap ext
+    pub bin_array_bitmap_ext: AccountInfo<'info>,
+
+    /// CHECK: Bin array lower
+    #[account(mut)]
+    pub bin_array_lower: AccountInfo<'info>,
+
+    /// CHECK: Bin array upper
+    #[account(mut)]
+    pub bin_array_upper: AccountInfo<'info>,
+
+    /// CHECK: Reserve X
+    #[account(mut)]
+    pub reserve_x: AccountInfo<'info>,
+
+    /// CHECK: Reserve Y
+    #[account(mut)]
+    pub reserve_y: AccountInfo<'info>,
+
+    /// CHECK: Token X mint
+    pub token_x_mint: UncheckedAccount<'info>,
+    /// CHECK: Token Y mint
+    pub token_y_mint: UncheckedAccount<'info>,
+
+    /// CHECK: Event authority
+    pub event_authority: AccountInfo<'info>,
+
+    /// CHECK: DLMM program
+    #[account(constraint = dlmm_program.key() == METEORA_DLMM_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub dlmm_program: AccountInfo<'info>,
+
+    #[account(mut, constraint = vault_token_x.owner == vault.key() @ CoreError::InvalidTokenOwner)]
+    pub vault_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(mut, constraint = vault_token_y.owner == vault.key() @ CoreError::InvalidTokenOwner)]
+    pub vault_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(mut, constraint = rover_token_x.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
+    pub rover_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(mut, constraint = rover_token_y.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
+    pub rover_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// CHECK: Token X program
+    pub token_x_program: AccountInfo<'info>,
+    /// CHECK: Token Y program
+    pub token_y_program: AccountInfo<'info>,
+
+    /// CHECK: Memo program
+    pub memo_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]

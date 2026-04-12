@@ -117,7 +117,8 @@
       "buyToken": "CRANK",
       "quoteToken": "SOL",
       "example": "/buy CRANK 20kmc to 10kmc 2 SOL",
-      "syncEnabled": true
+      "syncEnabled": true,
+      "pumpswapPool": "GpQ5UTPHSD5SQsqpxbYxXd75JAmex3tu4Dq292FZ4Pqh"
     }
   ]
 }

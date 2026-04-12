@@ -372,8 +372,7 @@ export class RelayServer {
   // Protocol PnL aggregator
   private pnlAggregator: ProtocolPnlAggregator | null = null;
 
-  // Price syncer stats provider
-  private syncerStatsProvider: (() => Record<string, any>) | null = null;
+
 
   // Feed persistence
   private feedCachePath = './feed-cache.json';
@@ -402,9 +401,6 @@ export class RelayServer {
     this.healthProvider = provider;
   }
 
-  setSyncerStatsProvider(provider: () => Record<string, any>): void {
-    this.syncerStatsProvider = provider;
-  }
 
   /** Start the protocol PnL aggregator that scans all position histories periodically */
   startPnlAggregator(getRoverAuthority?: () => string | null): void {
@@ -565,8 +561,6 @@ export class RelayServer {
         case '/api/protocol-pnl':
           this.handleProtocolPnl(res);
           return true;
-        case '/api/syncer':
-          return this.handleSyncer(res);
         default:
           if (path.startsWith('/api/pools/')) {
             const address = path.slice('/api/pools/'.length);
@@ -655,6 +649,8 @@ export class RelayServer {
           totalBins,
           filledBins,
           fillPercent: totalBins > 0 ? Math.round((filledBins / totalBins) * 100) : 0,
+          initialAmount: pos.initialAmount !== undefined ? pos.initialAmount.toString() : null,
+          harvestedAmount: pos.harvestedAmount !== undefined ? pos.harvestedAmount.toString() : null,
         });
       }
     }
@@ -782,15 +778,6 @@ export class RelayServer {
       events: this.feedEvents.slice(-50),
       timestamp: Date.now(),
     });
-  }
-
-  private handleSyncer(res: ServerResponse): boolean {
-    if (!this.syncerStatsProvider) {
-      this.json(res, 503, { error: 'Price syncer not enabled' });
-      return true;
-    }
-    this.json(res, 200, this.syncerStatsProvider());
-    return true;
   }
 
   private handleProtocolPnl(res: ServerResponse): void {

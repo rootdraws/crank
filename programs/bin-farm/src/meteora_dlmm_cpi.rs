@@ -160,10 +160,13 @@ pub fn bin_id_to_array_index(bin_id: i32) -> i64 {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn bitmap_meta(account: &AccountInfo) -> AccountMeta {
-    if account.is_writable {
-        AccountMeta::new(account.key(), false)
-    } else {
+    // When no bitmap extension exists, the DLMM program ID is passed as placeholder.
+    // Executables can't be writable. Real bitmap extensions must be writable for
+    // AddLiquidityByStrategy2 / RemoveLiquidityByRange2.
+    if account.executable {
         AccountMeta::new_readonly(account.key(), false)
+    } else {
+        AccountMeta::new(account.key(), false)
     }
 }
 
