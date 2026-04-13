@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "programs/bank-mint",
+    "programs/bank-distributor",
     "programs/bin-farm",
     "programs/gauge-voter",
     "programs/merkle-distributor",

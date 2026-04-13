@@ -15,7 +15,7 @@ export async function handleDeposit(interaction: ChatInputCommandInteraction, ct
 
   const withdrawAddr = ctx.walletService.getWithdrawAddress(userId);
 
-  let content = `**Deposit address:**\n\`${address}\`\n\nSend **SOL** to this address. Minimum **0.25 SOL** to open positions.\n\nTo trade tokens, use \`/buy\` — you'll be prompted to enable each token on your vault.\n`;
+  let content = `**Deposit address:**\n\`${address}\`\n\nSend **SOL** to this address. Minimum **0.05 SOL** to open positions.\n\nTo trade tokens, use \`/buy\` — you'll be prompted to enable each token on your vault.\n`;
 
   if (withdrawAddr) {
     content += `\nWithdrawals → \`${withdrawAddr.slice(0, 4)}...${withdrawAddr.slice(-4)}\` (enforced on-chain)`;

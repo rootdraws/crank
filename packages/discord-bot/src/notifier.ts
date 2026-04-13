@@ -69,6 +69,7 @@ export class DiscordNotifier {
     txSig?: string;
   }): Promise<void> {
     const userId = this.walletService.getUserIdForVault(data.owner);
+    const actorId = userId?.replace('discord:', '');
 
     // amount_out is whichever side is nonzero (the converted output).
     // Note: BigInt('0') is 0n but '0' is truthy, so nullish-coalesce on strings
@@ -100,8 +101,7 @@ export class DiscordNotifier {
       : (poolConfig?.quoteToken ?? 'SOL');
 
     // DM the position owner
-    if (userId) {
-      const discordUserId = userId.replace('discord:', '');
+    if (actorId) {
       const dmText = formatHarvestDM({
         poolName,
         side: data.side,
@@ -111,7 +111,7 @@ export class DiscordNotifier {
         totalHarvested,
         txSig: data.txSig,
       });
-      await this.sendDM(discordUserId, dmText);
+      await this.sendDM(actorId, dmText);
     }
 
     // Post to feed channel
@@ -122,6 +122,7 @@ export class DiscordNotifier {
         amountOut,
         tokenSymbol,
         txSig: data.txSig ?? '',
+        actorId,
       });
       await this.sendToFeed(feedText);
     }
@@ -135,6 +136,7 @@ export class DiscordNotifier {
     txSig?: string;
   }): Promise<void> {
     const userId = this.walletService.getUserIdForVault(data.owner);
+    const actorId = userId?.replace('discord:', '');
 
     this.walletService.closePosition(data.positionPDA);
 
@@ -145,8 +147,7 @@ export class DiscordNotifier {
       ? (poolConfig?.buyToken ?? 'TOKEN')
       : (poolConfig?.quoteToken ?? 'SOL');
 
-    if (userId) {
-      const discordUserId = userId.replace('discord:', '');
+    if (actorId) {
       const dmText = formatClosedDM({
         poolName,
         side: data.side,
@@ -154,7 +155,7 @@ export class DiscordNotifier {
         tokenSymbol,
         txSig: data.txSig,
       });
-      await this.sendDM(discordUserId, dmText);
+      await this.sendDM(actorId, dmText);
     }
 
     if (this.feedChannel) {
@@ -166,6 +167,7 @@ export class DiscordNotifier {
         amountOut: '—',
         tokenSymbol,
         txSig: data.txSig ?? '',
+        actorId,
       });
       await this.sendToFeed(feedText);
     }
@@ -208,7 +210,9 @@ export class DiscordNotifier {
   private async sendToFeed(text: string): Promise<void> {
     if (!this.feedChannel) return;
     try {
-      await this.feedChannel.send({ content: text, flags: 1 << 2 });
+      // allowedMentions suppresses the ping — handle still renders as a clickable link.
+      // Owner already gets a DM; feed mention is attribution, not notification.
+      await this.feedChannel.send({ content: text, flags: 1 << 2, allowedMentions: { parse: [] } });
     } catch (e: any) {
       console.warn(`[notifier] Failed to post to feed: ${e.message}`);
     }

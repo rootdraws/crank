@@ -245,7 +245,10 @@ export async function handleClose(interaction: ChatInputCommandInteraction, ctx:
       try {
         const feedChannel = await ctx.client.channels.fetch(ctx.feedChannelId) as TextChannel;
         if (feedChannel) {
-          await feedChannel.send(formatFeedClosed(closeParams));
+          await feedChannel.send({
+            content: formatFeedClosed({ ...closeParams, actorId: interaction.user.id }),
+            allowedMentions: { parse: [] },
+          });
         }
       } catch { /* best-effort */ }
     }

@@ -7,16 +7,16 @@
  */
 
 export * from './adminConfigEvent';
+export * from './burnCurveInitializedEvent';
+export * from './burnEnabledEvent';
 export * from './claimFeesEvent';
 export * from './closeEvent';
 export * from './emergencyCloseEvent';
 export * from './feeAppliedEvent';
-export * from './feeChangeCancelledEvent';
-export * from './feeChangeProposedEvent';
 export * from './harvestEvent';
 export * from './poolAllocation';
 export * from './positionOpenedEvent';
 export * from './roverOpenedEvent';
-export * from './roverSweptEvent';
 export * from './side';
+export * from './sweepCurveEvent';
 export * from './vaultCreatedEvent';

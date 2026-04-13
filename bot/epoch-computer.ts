@@ -19,7 +19,7 @@ import {
 import { Program, BN } from '@coral-xyz/anchor';
 import {
   getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction,
-  createSyncNativeInstruction, createCloseAccountInstruction,
+  createSyncNativeInstruction,
   NATIVE_MINT, TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { WalletService } from '../packages/core-sdk/wallet-service';
@@ -41,6 +41,8 @@ if (selfTest !== KECCAK_TEST_HASH) {
 
 const EPOCH_VAULT_ID = new PublicKey('7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN');
 const MERKLE_DIST_ID = new PublicKey('DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV');
+const BANK_DIST_ID = new PublicKey('9sqcwp65VGxkbLG3KN85BrzZz2Q77xnfbpPcBfn1kj7M');
+const BANK_MINT_PK = new PublicKey('BtHc83DaTbbtmZwqy7WNUgDM7jUXVULcAtuPYgx2J1TA');
 const BIN_FARM_ID = new PublicKey('8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia');
 const UNWRAP_WSOL_DISC = Buffer.from([0xbe, 0xf1, 0xf6, 0x3b, 0x58, 0xff, 0xd3, 0x35]);
 
@@ -429,72 +431,58 @@ async function executeOnChainPipeline(config: EpochComputerConfig, progress: Epo
     [Buffer.from('distributor')], MERKLE_DIST_ID
   );
   const wsolVault = getAssociatedTokenAddressSync(NATIVE_MINT, distPDA, true, TOKEN_PROGRAM_ID);
-  const botWsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, bot, false, TOKEN_PROGRAM_ID);
 
-  // Stage: drain vault
+  // Stage: drain vault directly into distributor WSOL vault (non-custodial).
+  // system_program::transfer deposits lamports onto the WSOL ATA; sync_native
+  // (next stage) promotes them into the SPL token amount. Nothing touches the
+  // bot wallet.
   if (progress.stage === 'tree_built') {
-    // Check vault balance before draining — if a prior attempt drained but crashed
-    // before saving progress, the vault is already empty. Skip to next stage.
-    const vaultBalance = await connection.getBalance(bridgeVault);
-    if (vaultBalance < Number(available)) {
-      logger.info(`[epoch] Vault already drained (balance ${vaultBalance}), skipping drain`);
-    } else {
-      logger.info('[epoch] Draining vault...');
-      const drainSig = await epochVaultProgram.methods
-        .drainVault(availableBN)
-        .accounts({
-          authority: bot,
-          config: vaultConfig,
-          bridgeVault: bridgeVault,
-          destination: bot,
-        })
-        .signers([botKeypair])
-        .rpc();
-      logger.info(`[epoch] Vault drained: ${drainSig}`);
-    }
+    const distWsolBefore = await connection.getTokenAccountBalance(wsolVault).catch(() => null);
+    const distVaultLamportsBefore = await connection.getBalance(wsolVault);
+    logger.info(
+      `[epoch] Draining ${available} lamports from bridge_vault → distributor WSOL vault (lamports pre=${distVaultLamportsBefore}, wsol=${distWsolBefore?.value.amount ?? 'n/a'})`,
+    );
+    const drainSig = await epochVaultProgram.methods
+      .drainVault(availableBN)
+      .accounts({
+        authority: bot,
+        config: vaultConfig,
+        bridgeVault: bridgeVault,
+        destination: wsolVault,
+      })
+      .signers([botKeypair])
+      .rpc();
+    logger.info(`[epoch] Vault drained to distributor WSOL vault: ${drainSig}`);
     progress.stage = 'drained';
     saveProgress(progress);
   }
 
-  // Stage: wrap SOL → WSOL
+  // Stage: sync_native to promote the deposited lamports into the SPL WSOL
+  // token balance. After this, distributor.vault.amount reflects the new
+  // funding and new_epoch can compute the delta authoritatively.
   if (progress.stage === 'drained') {
-    const wrapTx = new Transaction();
-    wrapTx.add(createAssociatedTokenAccountIdempotentInstruction(bot, botWsolAta, bot, NATIVE_MINT, TOKEN_PROGRAM_ID));
-    wrapTx.add(SystemProgram.transfer({ fromPubkey: bot, toPubkey: botWsolAta, lamports: available }));
-    wrapTx.add(createSyncNativeInstruction(botWsolAta, TOKEN_PROGRAM_ID));
-
-    const wrapSig = await sendAndConfirmTransaction(connection, wrapTx, [botKeypair], { commitment: 'confirmed' });
-    logger.info(`[epoch] SOL wrapped to WSOL: ${wrapSig}`);
-    progress.stage = 'wrapped';
+    const syncTx = new Transaction();
+    syncTx.add(createSyncNativeInstruction(wsolVault, TOKEN_PROGRAM_ID));
+    const syncSig = await sendAndConfirmTransaction(connection, syncTx, [botKeypair], { commitment: 'confirmed' });
+    logger.info(`[epoch] sync_native on distributor WSOL vault: ${syncSig}`);
+    progress.stage = 'wrapped'; // reuse existing stage name for compat
     saveProgress(progress);
   }
 
-  // Stage: publish new_epoch on-chain
+  // Stage: publish new_epoch on-chain. Non-custodial — no transfer happens.
+  // The on-chain ix reads vault.amount + total_claimed - total_funded.
   if (progress.stage === 'wrapped') {
-    logger.info('[epoch] Calling new_epoch...');
+    logger.info('[epoch] Calling new_epoch (non-custodial)...');
     const newEpochSig = await distributorProgram.methods
-      .newEpoch(merkleRoot, availableBN, ipfsCid)
+      .newEpoch(merkleRoot, ipfsCid)
       .accounts({
         distributor: distPDA,
         authority: bot,
-        mint: NATIVE_MINT,
         vault: wsolVault,
-        funderAta: botWsolAta,
-        tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([botKeypair])
       .rpc();
     logger.info(`[epoch] new_epoch TX: ${newEpochSig}`);
-
-    // Close bot WSOL ATA (return remaining dust as SOL)
-    try {
-      const closeTx = new Transaction().add(
-        createCloseAccountInstruction(botWsolAta, bot, bot, [], TOKEN_PROGRAM_ID)
-      );
-      await sendAndConfirmTransaction(connection, closeTx, [botKeypair], { commitment: 'confirmed' });
-    } catch (e: any) {
-      logger.warn(`[epoch] Bot WSOL ATA close failed (non-fatal): ${e.message?.slice(0, 80)}`);
-    }
     progress.stage = 'published';
     saveProgress(progress);
   }
@@ -650,3 +638,207 @@ async function claimForUser(
   const claimSig = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: false, maxRetries: 3 });
   await connection.confirmTransaction({ signature: claimSig, blockhash, lastValidBlockHeight }, 'confirmed');
 }
+
+// ─── BANK Epoch ───────────────────────────────────────────────────────────
+//
+// Mirrors runEpoch() for BANK. Differences from SOL flow:
+//   - No drain (BANK lives in bot's BANK ATA via rover_burn_and_mint).
+//   - No wrap/unwrap (BANK is a standard SPL token, not native).
+//   - Talks to bank-distributor program (separate PDA, same seeds).
+//   - Separate state file (epoch-state-bank.json) and tree files.
+//
+// Trader weights are computed from the same `harvests` table as the SOL tree,
+// using the same `computeShares` function — traders get pro-rata BANK by
+// harvest-volume, identical to their SOL share weighting.
+
+const MIN_BANK_EPOCH_UNITS = 1_000n; // 0.001 BANK (6 decimals) min to trigger epoch
+const MIN_BANK_CLAIM_UNITS = 100n;   // min claimable per user
+
+function loadBankEpochState(): EpochState {
+  const filePath = path.join(EPOCH_DATA_DIR, 'epoch-state-bank.json');
+  if (fs.existsSync(filePath)) {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  }
+  return { lastEpoch: 0, cumulativeEntitlements: {}, lastProcessedHarvestIndex: 0, lastEpochTimestamp: 0 };
+}
+
+function saveBankEpochState(state: EpochState): void {
+  if (!fs.existsSync(EPOCH_DATA_DIR)) fs.mkdirSync(EPOCH_DATA_DIR, { recursive: true });
+  fs.writeFileSync(
+    path.join(EPOCH_DATA_DIR, 'epoch-state-bank.json'),
+    JSON.stringify(state, null, 2)
+  );
+}
+
+export interface BankEpochConfig {
+  connection: Connection;
+  botKeypair: Keypair;
+  walletService: WalletService;
+  bankDistributorProgram: Program;
+}
+
+export async function runBankEpoch(config: BankEpochConfig): Promise<EpochResult> {
+  const { connection, botKeypair, walletService, bankDistributorProgram } = config;
+  const bot = botKeypair.publicKey;
+
+  // 1. Read bank-distributor vault balance and compute this-epoch delta
+  // (mirrors on-chain new_epoch math for logging — on-chain is authoritative).
+  const [bankDist] = PublicKey.findProgramAddressSync([Buffer.from('distributor')], BANK_DIST_ID);
+  const bankVault = getAssociatedTokenAddressSync(BANK_MINT_PK, bankDist, true, TOKEN_PROGRAM_ID);
+
+  const vaultInfo = await connection.getAccountInfo(bankVault);
+  if (!vaultInfo || vaultInfo.data.length < 72) {
+    logger.info('[bank-epoch] bank-distributor vault missing — skipping');
+    return { ran: false };
+  }
+  const vaultBalance = vaultInfo.data.readBigUInt64LE(64);
+
+  // Fetch distributor state for total_amount_funded + total_amount_claimed
+  const distState = await bankDistributorProgram.account.distributor.fetch(bankDist);
+  const totalFunded = BigInt(distState.totalAmountFunded.toString());
+  const totalClaimed = BigInt(distState.totalAmountClaimed.toString());
+  const amount = vaultBalance + totalClaimed - totalFunded;
+
+  if (amount < MIN_BANK_EPOCH_UNITS) {
+    logger.info(
+      `[bank-epoch] delta ${amount} (vault=${vaultBalance} funded=${totalFunded} claimed=${totalClaimed}) < ${MIN_BANK_EPOCH_UNITS} — skipping`,
+    );
+    return { ran: false };
+  }
+
+  // 2. Compute shares from harvests (same weighting as SOL tree)
+  const state = loadBankEpochState();
+  const shares = computeShares(walletService, amount, state);
+  if (shares.length === 0) {
+    logger.info('[bank-epoch] No eligible users — skipping');
+    return { ran: false };
+  }
+
+  logger.info(`[bank-epoch] ${shares.length} users, distributing ${amount} BANK units`);
+
+  // 3. Update cumulative entitlements
+  const updatedEntitlements = { ...state.cumulativeEntitlements };
+  for (const s of shares) {
+    const prev = BigInt(updatedEntitlements[s.wallet] || '0');
+    updatedEntitlements[s.wallet] = (prev + s.share).toString();
+  }
+
+  // 4. Build Merkle tree
+  const wallets = Object.keys(updatedEntitlements).sort();
+  const leafHashes: Buffer[] = [];
+  const leafData: Leaf[] = [];
+  for (let i = 0; i < wallets.length; i++) {
+    const wallet = wallets[i];
+    const cumAmount = BigInt(updatedEntitlements[wallet]);
+    leafHashes.push(hashLeaf(BigInt(i), new PublicKey(wallet), cumAmount));
+    leafData.push({ index: i, wallet, cumulative_amount: cumAmount.toString(), proof: [] });
+  }
+  const { root, proofs } = buildMerkleTree(leafHashes);
+  for (let i = 0; i < leafData.length; i++) {
+    leafData[i].proof = proofs[i].map(p => Array.from(p));
+  }
+
+  const newEpochNum = state.lastEpoch + 1;
+  const treeJson = { leaves: leafData, epoch: newEpochNum, amount: Number(amount) };
+  const treePath = path.join(EPOCH_DATA_DIR, `epoch-${newEpochNum}-bank.json`);
+  if (!fs.existsSync(EPOCH_DATA_DIR)) fs.mkdirSync(EPOCH_DATA_DIR, { recursive: true });
+  fs.writeFileSync(treePath, JSON.stringify(treeJson, null, 2));
+  logger.info(`[bank-epoch] Tree saved: ${treePath}`);
+
+  // 5. Pin to IPFS (non-fatal)
+  let ipfsCid = `local-bank-epoch-${newEpochNum}`;
+  const pinataJwt = process.env.PINATA_JWT;
+  if (pinataJwt) {
+    try {
+      const resp = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${pinataJwt}` },
+        body: JSON.stringify({ pinataContent: treeJson, pinataMetadata: { name: `crank-bank-epoch-${newEpochNum}` } }),
+      });
+      const result = await resp.json() as any;
+      ipfsCid = result.IpfsHash || ipfsCid;
+      logger.info(`[bank-epoch] Tree pinned: ${ipfsCid}`);
+    } catch (e: any) {
+      logger.warn(`[bank-epoch] IPFS upload failed (non-fatal): ${e.message}`);
+    }
+  }
+
+  // 6. Publish merkle root — vault is already funded by rover_burn_and_mint.
+  // new_epoch reads vault.amount + total_claimed - total_funded on-chain.
+  const merkleRoot = Array.from(root);
+  await bankDistributorProgram.methods
+    .newEpoch(merkleRoot, ipfsCid)
+    .accounts({
+      distributor: bankDist,
+      authority: bot,
+      vault: bankVault,
+    })
+    .signers([botKeypair])
+    .rpc();
+  logger.info(`[bank-epoch] new_epoch published (epoch ${newEpochNum})`);
+
+  // 7. Auto-claim BANK for each user. No wrap/unwrap — claims deposit BANK
+  //    directly into each claimant's (vault PDA's) BANK ATA.
+  let claimCount = 0;
+  for (const leaf of leafData) {
+    const claimantPubkey = new PublicKey(leaf.wallet);
+    const [claimStatus] = PublicKey.findProgramAddressSync(
+      [Buffer.from('claim_status'), bankDist.toBuffer(), claimantPubkey.toBuffer()],
+      BANK_DIST_ID,
+    );
+
+    // Already claimed?
+    let prevClaimed = 0n;
+    try {
+      const csInfo = await connection.getAccountInfo(claimStatus);
+      if (csInfo && csInfo.data.length >= 16) {
+        prevClaimed = csInfo.data.readBigUInt64LE(8);
+      }
+    } catch { /* not yet initialized */ }
+
+    const claimable = BigInt(leaf.cumulative_amount) - prevClaimed;
+    if (claimable < MIN_BANK_CLAIM_UNITS) continue;
+
+    const claimantBankAta = getAssociatedTokenAddressSync(BANK_MINT_PK, claimantPubkey, true, TOKEN_PROGRAM_ID);
+
+    try {
+      // Create claimant BANK ATA + claim in one tx
+      const preIx = createAssociatedTokenAccountIdempotentInstruction(
+        bot, claimantBankAta, claimantPubkey, BANK_MINT_PK, TOKEN_PROGRAM_ID,
+      );
+      const proof = leaf.proof.map((p: number[]) => Array.from(Buffer.from(p)));
+      await bankDistributorProgram.methods
+        .claim(new BN(leaf.index), new BN(leaf.cumulative_amount), proof)
+        .accounts({
+          payer: bot,
+          distributor: bankDist,
+          mint: BANK_MINT_PK,
+          vault: bankVault,
+          claimant: claimantPubkey,
+          claimantAta: claimantBankAta,
+          claimStatus,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .preInstructions([preIx])
+        .signers([botKeypair])
+        .rpc();
+      claimCount++;
+      if (claimCount > 0) await new Promise(r => setTimeout(r, 500));
+    } catch (e: any) {
+      logger.warn(`[bank-epoch] Claim failed for ${leaf.wallet.slice(0, 8)}…: ${e.message?.slice(0, 80)}`);
+    }
+  }
+  logger.info(`[bank-epoch] Auto-claim: ${claimCount}/${leafData.length} users`);
+
+  // 8. Finalize state
+  const wsData = (walletService as any).data as any;
+  state.lastEpoch = newEpochNum;
+  state.cumulativeEntitlements = updatedEntitlements;
+  state.lastProcessedHarvestIndex = (wsData.harvests || []).length;
+  state.lastEpochTimestamp = Date.now();
+  saveBankEpochState(state);
+
+  return { ran: true, epoch: newEpochNum, amountSol: Number(amount) / 1e6, userCount: leafData.length };
+}
+

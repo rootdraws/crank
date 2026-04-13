@@ -32,29 +32,60 @@ When pitching — point at real numbers.
 
 ## HIGH PRIORITY
 
-### On-Chain Program Upgrades (2 Remaining Audit Fixes)
-**bin-farm deployed 2026-04-11** — `user_vault` mut fix on OpenPositionV2 + ClaimFees. IDL + Codama regenerated. Deploy sig: `44uPp47eWPc3BeKwGdUV9kSB2iYsCdaePuqg8DxUqe4HVwtr7ZNCeLy6cKJCBwh1tgyEqmHED2wMBM8r4xHrLgKp`. Audit L-03 (`total_positions` decrement) still needs a separate deploy.
+### Audit-v2 Follow-ups (post 2026-04-13 amendment)
+Several HIGH findings from `audit-v2.md` remain open after the Capture the Bag amendment. Non-custodial distribution mitigated v2-H-08 but the rest still apply. See audit-v2.md addendum for per-finding status.
 
-**gauge-voter** (audit M-03):
+**v2-C-01** (critical): `/start` accepts any wallet address with no ownership proof.
+- [ ] Require signed nonce — user signs `"crank.money:start:<userId>:<nonce>"` with wallet
+- [ ] Verify via `nacl.sign.detached.verify` before calling `createVault`
+- [ ] Short-term mitigation: dedupe-owner check in `registerUser` (also closes v2-H-05)
+
+**v2-H-01**: `update_gas_lamports` is unbounded and has no timelock.
+- [ ] Cap: `require!(gas_lamports <= 10_000_000)` (0.01 SOL)
+- [ ] Per-op cap in `deduct_gas` itself: `MAX_PER_OP_GAS` const
+- [ ] 24hr timelock (propose/apply) matching `set_revenue_dest`
+
+**v2-H-02**: `wrap_sol_in_vault` destination WSOL ATA not constrained.
+- [ ] Add `constraint = vault_wsol_ata.owner == user_vault.key() && mint == NATIVE_MINT`
+
+**v2-H-03**: Permissionless `harvest_bins` fires `deduct_gas` on zero-yield calls.
+- [ ] Gate `deduct_gas` on `amount_out > 0`, or skip when `keeper_tip_bps` path triggers
+
+**v2-H-05**: `wallet-service.registerUser` allows multiple Discord IDs to bind the same owner wallet.
+- [ ] Add `ownerIndex` reverse lookup, reject if already bound
+
+**v2-H-06**: Relay Bearer auth fails open if `RELAY_AUTH_TOKEN` unset + non-constant-time compare.
+- [ ] Require env var set at startup (fail-closed)
+- [ ] Use `crypto.timingSafeEqual` for token comparison
+
+**v2-H-07**: `/ws` WebSocket has zero auth.
+- [ ] Require Bearer token on upgrade request
+
+**v2-H-09**: `apply-emergency-close.ts` reads non-existent `data.owner` field.
+- [ ] Fix to `data.userVault` + refresh accounts context
+
+**v2-C-02**: `propose_emergency_close` can target any user position (still open).
+- [ ] Restrict to positions on pools flagged `is_deprecated` OR require user co-sign
+
+### On-Chain Program Upgrades (v1 carryover)
+**gauge-voter** (audit v1 M-03):
 - [ ] Build: `anchor build -p gauge_voter`
 - [ ] Upgrade: `anchor upgrade --program-id DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA --provider.cluster mainnet target/deploy/gauge_voter.so`
 - Change: owner check on `remaining_accounts` in `vote()`
 
-**merkle-distributor** (audit L-04):
-- [ ] Build: `anchor build -p merkle_distributor`
-- [ ] Upgrade: `anchor upgrade --program-id DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV --provider.cluster mainnet target/deploy/merkle_distributor.so`
-- Change: `update_mint` now requires `old_vault` account with `amount == 0`
+**merkle-distributor** (audit v1 L-04):
+- [ ] Verify L-04 (`update_mint` drain check) is in the 2026-04-13 non-custodial deploy. If not, include in next build.
 
-**bin-farm** (audit L-03 — remaining):
+**bin-farm** (audit v1 L-03 — remaining):
 - [ ] Add `total_positions` decrement on all 3 close paths
 - [ ] Build + deploy
 
 ### Keypair Separation (Audit C-02)
-Single keypair controls everything. Server compromise = total loss.
+Single keypair controls all 6 program upgrade authorities + `Config.bot`. Non-custodial distribution pipeline eliminates reward-token custody, but upgrade authority and skim destination are still single-key. Server compromise = protocol loss.
 
-- [ ] Generate a new minimal bot-signer keypair
+- [ ] Generate a new minimal bot-signer keypair (tx signing only, no upgrade authority)
 - [ ] Call `update_bot(NEW_BOT_PUBKEY)` on bin-farm
-- [ ] Transfer program admin authority to cold wallet (Ledger)
+- [ ] Transfer all 6 program upgrade authorities to cold wallet (Ledger)
 - [ ] Deploy new bot keypair to droplet
 - [ ] Old keypair becomes cold admin only
 
@@ -76,6 +107,12 @@ Jupiter routes buys through DLMM organically. Pools track within ~2 bins. Syncer
 ### Activate @libraryofCrank + CRM
 - [ ] Outreach targets, responses, opportunities tracking
 - [ ] Path to 100 communities
+- [ ] `Publisher` abstraction (Discord webhook + X) — deferred until `/crank-crm` actually exists; no point abstracting vaporware
+
+### Community Gating Follow-Ups
+- [ ] Flip `CRANK_ROLE_PRUNE_DRY_RUN=false` once candidate list is trustworthy (currently 0 candidates)
+- [ ] Auto-grant crank role on first `/buy` or `/sell` (replace manual role-granting)
+- [ ] `/leaderboard` — add filter by pool/token and per-user rank stripe at bottom
 
 ### Dexter / x402 Integration
 - [ ] Evaluate Dexter SDK
@@ -120,6 +157,33 @@ Offer crank.money's harvester as a skill/API for other LP bots.
 Continue conversation. Ship analytics first.
 
 ---
+
+## DONE (2026-04-13 Session — Capture the Bag Amendment + Non-Custodial Distribution)
+
+- [x] **Curve-driven `sweep_rover`** — replaced 40/40/20 hardcoded split with supply-responsive curve. Reads `crank_mint.supply` + `RoverAuthority.initial_crank_supply` + `burn_enabled`. `burn_ratio = min(1.0, (supply/initial)/0.75)`, `protocol_skim = 0.20×(1−burn_ratio)`. Three destinations: `burn_sol_vault` / `bridge_vault` / `Config.bot`.
+- [x] **Fee bump 30 → 50 bps** via new direct `set_fee_bps(u16)` admin setter. Old `propose_fee`/`apply_fee`/`cancel_pending_fee` timelock instructions deleted.
+- [x] **New bin-farm instructions:** `initialize_burn_curve` (one-shot snapshot + creates `burn_sol_vault` PDA), `set_burn_enabled` (kill switch), `wrap_burn_sol` (move SOL from burn_sol_vault → rover WSOL ATA), `open_rover_bid_position` (buy-side BidAsk on CRANK/SOL), `rover_burn_and_mint` (CPI bank-mint + forward BANK to distributor vault).
+- [x] **`RoverAuthority` struct extended in-place** — added `initial_crank_supply: u64` + `burn_enabled: bool` carved from `_reserved: [u8; 32]`. No realloc needed.
+- [x] **`BurnSolVault` account type + PDA** — `[b"burn_sol_vault"]`, bin-farm-owned, holds staged SOL between sweep and bid placement.
+- [x] **`bank-distributor` program deployed** at `9sqcwp65VGxkbLG3KN85BrzZz2Q77xnfbpPcBfn1kj7M` — byte-identical to merkle-distributor with different `declare_id!`. Parallel BANK distribution to the SOL distributor.
+- [x] **Non-custodial `new_epoch` rewrite (both distributors)** — removed `funder_ata`, `mint`, `token_program`, `epoch_amount` param. Computes `epoch_amount = vault.amount + total_claimed − total_funded` on-chain. Authority signs intent only; no transfer. Reward tokens never touch operator keypair.
+- [x] **SOL pipeline non-custodial** — `drain_vault(destination = distributor WSOL vault)` + SPL `sync_native` in place. Bot WSOL ATA no longer created or closed.
+- [x] **BANK pipeline non-custodial** — `rover_burn_and_mint` forwards BANK directly to bank-distributor vault ATA. No bot BANK ATA intermediary.
+- [x] **Keeper 6-step → 8-step sequence** — added `crankOpenRoverBids` (wrap_burn_sol + open_rover_bid_position) and `crankRoverBurnAndMint` between sweep and epoch distribution. `crankEpochDistribution` now runs both SOL + BANK trees. `crankOpenFeeRovers` skips CRANK mint (handled by rover_burn_and_mint).
+- [x] **`runBankEpoch` in epoch-computer.ts** — mirrors runEpoch shape for BANK. Separate state file `epoch-state-bank.json`. Same `computeShares` weighting as SOL tree.
+- [x] **`compute_curve` ppb helper** in bin-farm + TS mirror in `packages/core-sdk/burn-curve.ts`. 16 new vitest cases (reference values, invariants, kill switch, edge cases) — all passing.
+- [x] **`/burn status` Discord subcommand** — `/burn` (no args) or `/burn status` renders live curve state: CRANK supply, initial supply, burn_ratio, protocol_skim, trader_sol_frac, kill switch.
+- [x] **`scripts/init-burn-curve.ts`** — one-shot bootstrap (`--execute`). Calls initialize_burn_curve, set_fee_bps(50), bank-distributor init + vault ATA, creates rover + bot BANK ATAs.
+- [x] **Mainnet activation** — all of the above shipped and verified. Curve live with `initial_crank_supply = 1,935,388,154,207,285`, `burn_enabled = true`. First BANK epoch fired (64.4M BANK distributed to lone trader, auto-claimed).
+- [x] **UX polish:** `/start` auto-creates vault CRANK ATA (Token-2022) so new users can deposit CRANK immediately without hitting the "Enable $TOKEN" button. Minimum SOL copy in `/start` + `/deposit` lowered 0.25 → 0.05 SOL (on-chain floor unchanged at 0.01 SOL).
+
+## DONE (2026-04-13 Session — Community Gating)
+
+- [x] **@handle attribution in feed** — every `harvested`/`closed` feed line prepends `<@user_id>`. `allowedMentions.parse: []` renders clickable handle without pinging (owner already DMs). `notifier.ts` + `formatter.ts` + `commands/close.ts`.
+- [x] **`/leaderboard [days]`** — top 10 by harvest volume in a rolling window (default 7d). New `walletService.getLeaderboard(sinceMs)` aggregates harvests + open positions by vault PDA, reverse-maps to user IDs via `vaultIndex`. Slash command registered.
+- [x] **Daily crank-role pruner** — keeper step 6. Strips `DISCORD_CRANK_ROLE_ID` from registered users inactive for `CRANK_ROLE_PRUNE_WINDOW_DAYS` (default 7d). Grace period: users registered within the window are treated as active. Dry-run flag `CRANK_ROLE_PRUNE_DRY_RUN=true` logs candidates without removing. `GuildMembers` intent gated behind `DISCORD_ENABLE_MEMBER_INTENT=true` — without the portal toggle, bot refuses login.
+- [x] **`#cash-out` channel allowlist** — in `DISCORD_CASHOUT_CHANNEL_ID`, only `/close /withdraw /positions /balance /help` dispatch; everything else gets an ephemeral "cash-out only" reply.
+- [x] **Deployed to mainnet droplet** — env vars set, slash commands re-registered (13 total, global propagation ≤1hr), dry-run first keeper tick: 17 role members, 0 prune candidates. Pruner verified working before being flipped live.
 
 ## DONE (2026-04-12 Session)
 

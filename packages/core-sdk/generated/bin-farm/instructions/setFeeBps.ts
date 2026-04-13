@@ -15,6 +15,8 @@ import {
   getProgramDerivedAddress,
   getStructDecoder,
   getStructEncoder,
+  getU16Decoder,
+  getU16Encoder,
   transformEncoder,
   type AccountMeta,
   type AccountSignerMeta,
@@ -33,27 +35,27 @@ import {
 import { BIN_FARM_PROGRAM_ADDRESS } from '../programs';
 import { getAccountMetaFactory, type ResolvedAccount } from '../shared';
 
-export const APPLY_FEE_DISCRIMINATOR = new Uint8Array([
-  59, 156, 222, 176, 105, 28, 247, 64,
+export const SET_FEE_BPS_DISCRIMINATOR = new Uint8Array([
+  2, 161, 245, 141, 111, 32, 39, 198,
 ]);
 
-export function getApplyFeeDiscriminatorBytes() {
-  return fixEncoderSize(getBytesEncoder(), 8).encode(APPLY_FEE_DISCRIMINATOR);
+export function getSetFeeBpsDiscriminatorBytes() {
+  return fixEncoderSize(getBytesEncoder(), 8).encode(SET_FEE_BPS_DISCRIMINATOR);
 }
 
-export type ApplyFeeInstruction<
+export type SetFeeBpsInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
-  TAccountCaller extends string | AccountMeta<string> = string,
+  TAccountAuthority extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
-      TAccountCaller extends string
-        ? ReadonlySignerAccount<TAccountCaller> &
-            AccountSignerMeta<TAccountCaller>
-        : TAccountCaller,
+      TAccountAuthority extends string
+        ? ReadonlySignerAccount<TAccountAuthority> &
+            AccountSignerMeta<TAccountAuthority>
+        : TAccountAuthority,
       TAccountConfig extends string
         ? WritableAccount<TAccountConfig>
         : TAccountConfig,
@@ -61,63 +63,74 @@ export type ApplyFeeInstruction<
     ]
   >;
 
-export type ApplyFeeInstructionData = { discriminator: ReadonlyUint8Array };
+export type SetFeeBpsInstructionData = {
+  discriminator: ReadonlyUint8Array;
+  newFeeBps: number;
+};
 
-export type ApplyFeeInstructionDataArgs = {};
+export type SetFeeBpsInstructionDataArgs = { newFeeBps: number };
 
-export function getApplyFeeInstructionDataEncoder(): FixedSizeEncoder<ApplyFeeInstructionDataArgs> {
+export function getSetFeeBpsInstructionDataEncoder(): FixedSizeEncoder<SetFeeBpsInstructionDataArgs> {
   return transformEncoder(
-    getStructEncoder([['discriminator', fixEncoderSize(getBytesEncoder(), 8)]]),
-    (value) => ({ ...value, discriminator: APPLY_FEE_DISCRIMINATOR })
+    getStructEncoder([
+      ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
+      ['newFeeBps', getU16Encoder()],
+    ]),
+    (value) => ({ ...value, discriminator: SET_FEE_BPS_DISCRIMINATOR })
   );
 }
 
-export function getApplyFeeInstructionDataDecoder(): FixedSizeDecoder<ApplyFeeInstructionData> {
+export function getSetFeeBpsInstructionDataDecoder(): FixedSizeDecoder<SetFeeBpsInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
+    ['newFeeBps', getU16Decoder()],
   ]);
 }
 
-export function getApplyFeeInstructionDataCodec(): FixedSizeCodec<
-  ApplyFeeInstructionDataArgs,
-  ApplyFeeInstructionData
+export function getSetFeeBpsInstructionDataCodec(): FixedSizeCodec<
+  SetFeeBpsInstructionDataArgs,
+  SetFeeBpsInstructionData
 > {
   return combineCodec(
-    getApplyFeeInstructionDataEncoder(),
-    getApplyFeeInstructionDataDecoder()
+    getSetFeeBpsInstructionDataEncoder(),
+    getSetFeeBpsInstructionDataDecoder()
   );
 }
 
-export type ApplyFeeAsyncInput<
-  TAccountCaller extends string = string,
+export type SetFeeBpsAsyncInput<
+  TAccountAuthority extends string = string,
   TAccountConfig extends string = string,
 > = {
-  caller: TransactionSigner<TAccountCaller>;
+  authority: TransactionSigner<TAccountAuthority>;
   config?: Address<TAccountConfig>;
+  newFeeBps: SetFeeBpsInstructionDataArgs['newFeeBps'];
 };
 
-export async function getApplyFeeInstructionAsync<
-  TAccountCaller extends string,
+export async function getSetFeeBpsInstructionAsync<
+  TAccountAuthority extends string,
   TAccountConfig extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
-  input: ApplyFeeAsyncInput<TAccountCaller, TAccountConfig>,
+  input: SetFeeBpsAsyncInput<TAccountAuthority, TAccountConfig>,
   config?: { programAddress?: TProgramAddress }
 ): Promise<
-  ApplyFeeInstruction<TProgramAddress, TAccountCaller, TAccountConfig>
+  SetFeeBpsInstruction<TProgramAddress, TAccountAuthority, TAccountConfig>
 > {
   // Program address.
   const programAddress = config?.programAddress ?? BIN_FARM_PROGRAM_ADDRESS;
 
   // Original accounts.
   const originalAccounts = {
-    caller: { value: input.caller ?? null, isWritable: false },
+    authority: { value: input.authority ?? null, isWritable: false },
     config: { value: input.config ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
     ResolvedAccount
   >;
+
+  // Original args.
+  const args = { ...input };
 
   // Resolve default values.
   if (!accounts.config.value) {
@@ -132,36 +145,43 @@ export async function getApplyFeeInstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.caller),
+      getAccountMeta(accounts.authority),
       getAccountMeta(accounts.config),
     ],
-    data: getApplyFeeInstructionDataEncoder().encode({}),
+    data: getSetFeeBpsInstructionDataEncoder().encode(
+      args as SetFeeBpsInstructionDataArgs
+    ),
     programAddress,
-  } as ApplyFeeInstruction<TProgramAddress, TAccountCaller, TAccountConfig>);
+  } as SetFeeBpsInstruction<
+    TProgramAddress,
+    TAccountAuthority,
+    TAccountConfig
+  >);
 }
 
-export type ApplyFeeInput<
-  TAccountCaller extends string = string,
+export type SetFeeBpsInput<
+  TAccountAuthority extends string = string,
   TAccountConfig extends string = string,
 > = {
-  caller: TransactionSigner<TAccountCaller>;
+  authority: TransactionSigner<TAccountAuthority>;
   config: Address<TAccountConfig>;
+  newFeeBps: SetFeeBpsInstructionDataArgs['newFeeBps'];
 };
 
-export function getApplyFeeInstruction<
-  TAccountCaller extends string,
+export function getSetFeeBpsInstruction<
+  TAccountAuthority extends string,
   TAccountConfig extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
-  input: ApplyFeeInput<TAccountCaller, TAccountConfig>,
+  input: SetFeeBpsInput<TAccountAuthority, TAccountConfig>,
   config?: { programAddress?: TProgramAddress }
-): ApplyFeeInstruction<TProgramAddress, TAccountCaller, TAccountConfig> {
+): SetFeeBpsInstruction<TProgramAddress, TAccountAuthority, TAccountConfig> {
   // Program address.
   const programAddress = config?.programAddress ?? BIN_FARM_PROGRAM_ADDRESS;
 
   // Original accounts.
   const originalAccounts = {
-    caller: { value: input.caller ?? null, isWritable: false },
+    authority: { value: input.authority ?? null, isWritable: false },
     config: { value: input.config ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
@@ -169,37 +189,46 @@ export function getApplyFeeInstruction<
     ResolvedAccount
   >;
 
+  // Original args.
+  const args = { ...input };
+
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.caller),
+      getAccountMeta(accounts.authority),
       getAccountMeta(accounts.config),
     ],
-    data: getApplyFeeInstructionDataEncoder().encode({}),
+    data: getSetFeeBpsInstructionDataEncoder().encode(
+      args as SetFeeBpsInstructionDataArgs
+    ),
     programAddress,
-  } as ApplyFeeInstruction<TProgramAddress, TAccountCaller, TAccountConfig>);
+  } as SetFeeBpsInstruction<
+    TProgramAddress,
+    TAccountAuthority,
+    TAccountConfig
+  >);
 }
 
-export type ParsedApplyFeeInstruction<
+export type ParsedSetFeeBpsInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
   TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    caller: TAccountMetas[0];
+    authority: TAccountMetas[0];
     config: TAccountMetas[1];
   };
-  data: ApplyFeeInstructionData;
+  data: SetFeeBpsInstructionData;
 };
 
-export function parseApplyFeeInstruction<
+export function parseSetFeeBpsInstruction<
   TProgram extends string,
   TAccountMetas extends readonly AccountMeta[],
 >(
   instruction: Instruction<TProgram> &
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
-): ParsedApplyFeeInstruction<TProgram, TAccountMetas> {
+): ParsedSetFeeBpsInstruction<TProgram, TAccountMetas> {
   if (instruction.accounts.length < 2) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
@@ -212,7 +241,7 @@ export function parseApplyFeeInstruction<
   };
   return {
     programAddress: instruction.programAddress,
-    accounts: { caller: getNextAccount(), config: getNextAccount() },
-    data: getApplyFeeInstructionDataDecoder().decode(instruction.data),
+    accounts: { authority: getNextAccount(), config: getNextAccount() },
+    data: getSetFeeBpsInstructionDataDecoder().decode(instruction.data),
   };
 }

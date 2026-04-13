@@ -19,6 +19,8 @@ import {
   getAddressEncoder,
   getArrayDecoder,
   getArrayEncoder,
+  getBooleanDecoder,
+  getBooleanEncoder,
   getBytesDecoder,
   getBytesEncoder,
   getI64Decoder,
@@ -61,6 +63,8 @@ export type RoverAuthority = {
   pendingRevenueDest: Address;
   revenueDestChangeAt: bigint;
   traderDest: Address;
+  initialCrankSupply: bigint;
+  burnEnabled: boolean;
   reserved: Array<number>;
 };
 
@@ -71,6 +75,8 @@ export type RoverAuthorityArgs = {
   pendingRevenueDest: Address;
   revenueDestChangeAt: number | bigint;
   traderDest: Address;
+  initialCrankSupply: number | bigint;
+  burnEnabled: boolean;
   reserved: Array<number>;
 };
 
@@ -84,7 +90,9 @@ export function getRoverAuthorityEncoder(): FixedSizeEncoder<RoverAuthorityArgs>
       ['pendingRevenueDest', getAddressEncoder()],
       ['revenueDestChangeAt', getI64Encoder()],
       ['traderDest', getAddressEncoder()],
-      ['reserved', getArrayEncoder(getU8Encoder(), { size: 32 })],
+      ['initialCrankSupply', getU64Encoder()],
+      ['burnEnabled', getBooleanEncoder()],
+      ['reserved', getArrayEncoder(getU8Encoder(), { size: 23 })],
     ]),
     (value) => ({ ...value, discriminator: ROVER_AUTHORITY_DISCRIMINATOR })
   );
@@ -99,7 +107,9 @@ export function getRoverAuthorityDecoder(): FixedSizeDecoder<RoverAuthority> {
     ['pendingRevenueDest', getAddressDecoder()],
     ['revenueDestChangeAt', getI64Decoder()],
     ['traderDest', getAddressDecoder()],
-    ['reserved', getArrayDecoder(getU8Decoder(), { size: 32 })],
+    ['initialCrankSupply', getU64Decoder()],
+    ['burnEnabled', getBooleanDecoder()],
+    ['reserved', getArrayDecoder(getU8Decoder(), { size: 23 })],
   ]);
 }
 

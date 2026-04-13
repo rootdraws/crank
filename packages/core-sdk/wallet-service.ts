@@ -347,6 +347,63 @@ export class WalletService {
     return total;
   }
 
+  // ─── Activity Queries (leaderboard + role pruner) ───────────────────────
+
+  isActiveWithin(userId: string, sinceMs: number): boolean {
+    const user = this.data.users[userId];
+    if (!user) return false;
+    // Grace period: if the user registered within the window, treat as active.
+    // Protects newcomers who joined the trading floor but haven't placed a
+    // trade yet — they get `windowDays` to open a position before being boot-eligible.
+    if (user.created_at >= sinceMs) return true;
+    for (const p of Object.values(this.data.positions)) {
+      if (p.user_id === userId && p.status === 'open') return true;
+    }
+    for (const h of this.data.harvests) {
+      if (h.vault_pda === user.vault_pda && h.created_at >= sinceMs) return true;
+    }
+    return false;
+  }
+
+  /** Aggregated per-user activity since `sinceMs`. Sorted by harvest volume desc. */
+  getLeaderboard(sinceMs: number): Array<{
+    userId: string;
+    vaultPda: string;
+    lastActiveMs: number;
+    harvestCount: number;
+    harvestVolume: bigint;
+    openPositions: number;
+  }> {
+    const byVault = new Map<string, { count: number; volume: bigint; lastMs: number; open: number }>();
+    const ensure = (vaultPda: string) =>
+      byVault.get(vaultPda) ?? { count: 0, volume: 0n, lastMs: 0, open: 0 };
+
+    for (const h of this.data.harvests) {
+      if (h.created_at < sinceMs) continue;
+      const e = ensure(h.vault_pda);
+      e.count += 1;
+      e.volume += BigInt(h.amount_out);
+      if (h.created_at > e.lastMs) e.lastMs = h.created_at;
+      byVault.set(h.vault_pda, e);
+    }
+    for (const p of Object.values(this.data.positions)) {
+      if (p.status !== 'open') continue;
+      const e = ensure(p.vault_pda);
+      e.open += 1;
+      if (p.created_at > e.lastMs) e.lastMs = p.created_at;
+      byVault.set(p.vault_pda, e);
+    }
+
+    const results: Array<{ userId: string; vaultPda: string; lastActiveMs: number; harvestCount: number; harvestVolume: bigint; openPositions: number }> = [];
+    for (const [vaultPda, s] of byVault) {
+      const userId = this.data.vaultIndex[vaultPda];
+      if (!userId) continue;
+      results.push({ userId, vaultPda, lastActiveMs: s.lastMs, harvestCount: s.count, harvestVolume: s.volume, openPositions: s.open });
+    }
+    results.sort((a, b) => (b.harvestVolume > a.harvestVolume ? 1 : b.harvestVolume < a.harvestVolume ? -1 : 0));
+    return results;
+  }
+
   close(): void {
     this.flush();
     if (this.saveTimer) clearInterval(this.saveTimer);

@@ -84,13 +84,23 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('burn')
-    .setDescription('Burn CRANK → mint BANK 1:1')
+    .setDescription('Burn CRANK → mint BANK 1:1, or /burn status for protocol burn-curve state')
     .addStringOption(opt =>
-      opt.setName('amount').setDescription('Amount of CRANK to burn').setRequired(true)),
+      opt.setName('amount').setDescription('Amount of CRANK to burn (or "status" for curve state)').setRequired(false)),
 
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show all CrankBot commands'),
+
+  new SlashCommandBuilder()
+    .setName('leaderboard')
+    .setDescription('Top traders by harvest volume in a rolling window')
+    .addIntegerOption(opt =>
+      opt.setName('days')
+        .setDescription('Window in days (default 7)')
+        .setMinValue(1)
+        .setMaxValue(90)
+        .setRequired(false)),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST().setToken(TOKEN);

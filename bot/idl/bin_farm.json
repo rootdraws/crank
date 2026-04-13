@@ -178,49 +178,6 @@
       "args": []
     },
     {
-      "name": "apply_fee",
-      "docs": [
-        "Step 2: Apply a previously proposed fee change. Permissionless — anyone can call",
-        "once the timelock has expired. This ensures the change happens on schedule."
-      ],
-      "discriminator": [
-        59,
-        156,
-        222,
-        176,
-        105,
-        28,
-        247,
-        64
-      ],
-      "accounts": [
-        {
-          "name": "caller",
-          "signer": true
-        },
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "apply_revenue_dest",
       "docs": [
         "Apply a previously proposed revenue_dest change. Permissionless after 24hr."
@@ -321,45 +278,6 @@
         189,
         206,
         218
-      ],
-      "accounts": [
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "cancel_pending_fee",
-      "discriminator": [
-        36,
-        129,
-        126,
-        217,
-        77,
-        252,
-        83,
-        220
       ],
       "accounts": [
         {
@@ -1472,6 +1390,121 @@
       ]
     },
     {
+      "name": "initialize_burn_curve",
+      "docs": [
+        "One-shot: snapshot CRANK supply at curve activation, enable burn,",
+        "and create the burn_sol_vault PDA that stages SOL for buy-side bids.",
+        "Admin only. Errors if already initialized (initial_crank_supply > 0).",
+        "Snapshot is read directly from the passed CRANK mint account."
+      ],
+      "discriminator": [
+        179,
+        28,
+        210,
+        186,
+        75,
+        145,
+        191,
+        14
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_authority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  118,
+                  101,
+                  114,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crank_mint",
+          "docs": [
+            "CRANK SPL mint — supply read here for the snapshot."
+          ],
+          "address": "Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump"
+        },
+        {
+          "name": "burn_sol_vault",
+          "docs": [
+            "Burn SOL staging vault. Bin-farm-owned PDA — sweep_rover credits via direct",
+            "lamport ADD, wrap_burn_sol direct-debits to fund DLMM bid positions."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  114,
+                  110,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initialize_rover",
       "docs": [
         "Initialize the rover authority PDA. Admin only. Called once.",
@@ -2018,6 +2051,201 @@
       ]
     },
     {
+      "name": "open_rover_bid_position",
+      "docs": [
+        "Open a buy-side BidAsk DLMM position from rover_authority's WSOL ATA.",
+        "Mirrors `open_fee_rover` but: (1) deposits below active_id (buy side),",
+        "(2) Y-only (SOL/WSOL) deposit, (3) source ATA is rover's WSOL.",
+        "Bot-gated. Bot pays rent for Position + Vault PDAs."
+      ],
+      "discriminator": [
+        122,
+        47,
+        120,
+        4,
+        204,
+        111,
+        210,
+        236
+      ],
+      "accounts": [
+        {
+          "name": "bot",
+          "docs": [
+            "Bot-gated — pays rent for Position + Vault PDAs"
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_authority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  118,
+                  101,
+                  114,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_wsol_account",
+          "docs": [
+            "Source: rover_authority's WSOL ATA, pre-funded by wrap_burn_sol + sync_native."
+          ],
+          "writable": true
+        },
+        {
+          "name": "lb_pair",
+          "writable": true
+        },
+        {
+          "name": "meteora_position",
+          "docs": [
+            "New position keypair (bot generates)"
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bin_array_bitmap_ext"
+        },
+        {
+          "name": "reserve_x",
+          "writable": true
+        },
+        {
+          "name": "reserve_y",
+          "writable": true
+        },
+        {
+          "name": "bin_array_lower",
+          "writable": true
+        },
+        {
+          "name": "bin_array_upper",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "meteora_position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "meteora_position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_token_x",
+          "writable": true
+        },
+        {
+          "name": "vault_token_y",
+          "writable": true
+        },
+        {
+          "name": "token_x_mint"
+        },
+        {
+          "name": "token_y_mint"
+        },
+        {
+          "name": "token_x_program"
+        },
+        {
+          "name": "token_y_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "bin_step",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "open_rover_position",
       "docs": [
         "Anyone deposits tokens into a sell-side DLMM position owned by rover_authority.",
@@ -2303,56 +2531,6 @@
       ]
     },
     {
-      "name": "propose_fee",
-      "docs": [
-        "Fee changes use a 24-hour timelock.",
-        "Step 1: propose_fee sets pending_fee_bps and fee_change_at.",
-        "Step 2: apply_fee (permissionless) applies it after the delay.",
-        "Users can see pending changes on-chain and close positions before they take effect."
-      ],
-      "discriminator": [
-        103,
-        204,
-        172,
-        134,
-        248,
-        252,
-        27,
-        170
-      ],
-      "accounts": [
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        }
-      ],
-      "args": [
-        {
-          "name": "new_fee_bps",
-          "type": "u16"
-        }
-      ]
-    },
-    {
       "name": "propose_revenue_dest",
       "discriminator": [
         66,
@@ -2420,6 +2598,251 @@
         {
           "name": "new_revenue_dest",
           "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "rover_burn_and_mint",
+      "docs": [
+        "Burn CRANK accumulated on rover_authority → mint BANK → forward to",
+        "bank-distributor vault for daily Merkle distribution.",
+        "",
+        "Two-step inside one instruction:",
+        "1. CPI bank-mint::burn_and_mint with rover_authority as `user`.",
+        "Burns rover's CRANK ATA, mints BANK to rover's BANK ATA.",
+        "2. transfer_checked from rover's BANK ATA → bank_distributor_vault.",
+        "",
+        "Bot-gated. The full balance of rover's CRANK ATA is burned; caller",
+        "passes `amount` for explicit auditability."
+      ],
+      "discriminator": [
+        80,
+        8,
+        65,
+        207,
+        236,
+        195,
+        180,
+        109
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Bot-gated."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_authority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  118,
+                  101,
+                  114,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bank_config",
+          "writable": true
+        },
+        {
+          "name": "crank_mint",
+          "writable": true,
+          "address": "Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump"
+        },
+        {
+          "name": "bank_mint",
+          "writable": true
+        },
+        {
+          "name": "rover_crank_ata",
+          "writable": true
+        },
+        {
+          "name": "rover_bank_ata",
+          "writable": true
+        },
+        {
+          "name": "bank_distributor_vault",
+          "writable": true
+        },
+        {
+          "name": "crank_token_program"
+        },
+        {
+          "name": "bank_token_program"
+        },
+        {
+          "name": "bank_mint_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_burn_enabled",
+      "docs": [
+        "Toggle the burn kill switch. Admin only.",
+        "When false, sweep_rover clamps burn_ratio to 0 and routes all SOL",
+        "80% trader / 20% protocol regardless of supply position on the curve."
+      ],
+      "discriminator": [
+        212,
+        123,
+        17,
+        60,
+        84,
+        35,
+        243,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_authority",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  118,
+                  101,
+                  114,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "set_fee_bps",
+      "docs": [
+        "Direct admin-gated fee setter. Replaces the prior propose/apply timelock.",
+        "Defensively clears any in-flight pending_fee state from the prior pattern."
+      ],
+      "discriminator": [
+        2,
+        161,
+        245,
+        141,
+        111,
+        32,
+        39,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_fee_bps",
+          "type": "u16"
         }
       ]
     },
@@ -2501,8 +2924,10 @@
     {
       "name": "sweep_rover",
       "docs": [
-        "Sweep SOL from rover_authority — 40% holders, 40% traders, 20% bot.",
-        "Permissionless — anyone can call."
+        "Sweep SOL from rover_authority via the curve.",
+        "Splits into burn_sol (→ burn_sol_vault), trader_sol (→ trader_dest),",
+        "protocol_sol (→ Config.bot). Permissionless — anyone can call.",
+        "Errors if the burn curve has not been initialized."
       ],
       "discriminator": [
         199,
@@ -2571,8 +2996,41 @@
           }
         },
         {
-          "name": "revenue_dest",
-          "writable": true
+          "name": "crank_mint",
+          "docs": [
+            "CRANK SPL mint — supply read here for the burn curve."
+          ],
+          "address": "Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump"
+        },
+        {
+          "name": "burn_sol_vault",
+          "docs": [
+            "Burn SOL staging vault PDA — receives the burn portion of the curve."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  114,
+                  110,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "trader_dest",
@@ -3526,6 +3984,121 @@
       ]
     },
     {
+      "name": "wrap_burn_sol",
+      "docs": [
+        "Move SOL from burn_sol_vault to rover_authority's WSOL ATA.",
+        "Bot calls this, then calls SPL `sync_native` in the next ix of the same tx.",
+        "Direct lamport manipulation is allowed because both accounts are addressable",
+        "here: burn_sol_vault is bin-farm-owned (debit allowed), rover_wsol_account",
+        "is token-owned (credit-add allowed for any program)."
+      ],
+      "discriminator": [
+        253,
+        0,
+        187,
+        181,
+        140,
+        15,
+        4,
+        26
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Bot-gated."
+          ],
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  118,
+                  101,
+                  114,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "burn_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  114,
+                  110,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "rover_wsol_account",
+          "docs": [
+            "Rover authority's WSOL ATA. Receives lamports here; bot calls SPL",
+            "`sync_native` in the next ix to update the WSOL token balance."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "wrap_sol_in_vault",
       "docs": [
         "Wrap native SOL in user vault to WSOL in the vault's WSOL ATA.",
@@ -3614,6 +4187,19 @@
     }
   ],
   "accounts": [
+    {
+      "name": "BurnSolVault",
+      "discriminator": [
+        52,
+        50,
+        14,
+        196,
+        94,
+        123,
+        213,
+        62
+      ]
+    },
     {
       "name": "Config",
       "discriminator": [
@@ -3708,6 +4294,32 @@
       ]
     },
     {
+      "name": "BurnCurveInitializedEvent",
+      "discriminator": [
+        227,
+        214,
+        126,
+        138,
+        165,
+        121,
+        175,
+        97
+      ]
+    },
+    {
+      "name": "BurnEnabledEvent",
+      "discriminator": [
+        14,
+        161,
+        23,
+        249,
+        96,
+        109,
+        107,
+        233
+      ]
+    },
+    {
       "name": "ClaimFeesEvent",
       "discriminator": [
         99,
@@ -3760,32 +4372,6 @@
       ]
     },
     {
-      "name": "FeeChangeCancelledEvent",
-      "discriminator": [
-        134,
-        13,
-        8,
-        42,
-        95,
-        120,
-        64,
-        240
-      ]
-    },
-    {
-      "name": "FeeChangeProposedEvent",
-      "discriminator": [
-        126,
-        117,
-        155,
-        1,
-        196,
-        253,
-        159,
-        33
-      ]
-    },
-    {
       "name": "HarvestEvent",
       "discriminator": [
         33,
@@ -3825,16 +4411,16 @@
       ]
     },
     {
-      "name": "RoverSweptEvent",
+      "name": "SweepCurveEvent",
       "discriminator": [
-        169,
-        122,
-        5,
-        58,
-        70,
-        209,
-        139,
-        248
+        113,
+        171,
+        64,
+        59,
+        28,
+        127,
+        199,
+        49
       ]
     },
     {
@@ -4041,6 +4627,26 @@
       "code": 6037,
       "name": "InvalidExternalProgram",
       "msg": "Invalid external program ID"
+    },
+    {
+      "code": 6038,
+      "name": "BurnCurveAlreadyInitialized",
+      "msg": "Burn curve already initialized — initial_crank_supply is immutable"
+    },
+    {
+      "code": 6039,
+      "name": "BurnCurveNotInitialized",
+      "msg": "Burn curve not initialized — call initialize_burn_curve first"
+    },
+    {
+      "code": 6040,
+      "name": "InvalidCrankMint",
+      "msg": "CRANK mint account does not match expected mint"
+    },
+    {
+      "code": 6041,
+      "name": "InvalidBurnSolVault",
+      "msg": "Invalid burn SOL vault PDA"
     }
   ],
   "types": [
@@ -4060,6 +4666,55 @@
           {
             "name": "timestamp",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BurnCurveInitializedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "initial_crank_supply",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BurnEnabledEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "enabled",
+            "type": "bool"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BurnSolVault",
+      "docs": [
+        "Burn SOL staging vault PDA. Bin-farm-owned (so we can direct-debit lamports",
+        "without going through system_program::transfer with PDA signer + ownership",
+        "edge cases). Holds native SOL between sweep_rover and wrap_burn_sol."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
@@ -4270,38 +4925,6 @@
       }
     },
     {
-      "name": "FeeChangeCancelledEvent",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "cancelled_fee_bps",
-            "type": "u16"
-          },
-          {
-            "name": "was_effective_at",
-            "type": "i64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "FeeChangeProposedEvent",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "new_fee_bps",
-            "type": "u16"
-          },
-          {
-            "name": "effective_at",
-            "type": "i64"
-          }
-        ]
-      }
-    },
-    {
       "name": "HarvestEvent",
       "type": {
         "kind": "struct",
@@ -4490,10 +5113,21 @@
       "name": "RoverAuthority",
       "docs": [
         "Rover authority PDA — owns rover (bribe) positions.",
-        "Harvest proceeds accumulate here. sweep_rover splits SOL 40/40/20:",
-        "40% to revenue_dest (bridge_vault, BANK holders)",
-        "40% to trader_dest (trader reward pool)",
-        "20% to bot (operations)"
+        "Harvest proceeds accumulate here. sweep_rover splits SOL via the supply-driven",
+        "burn curve into three destinations:",
+        "burn_ratio        → burn_sol_vault PDA (staging for buy-side CRANK bids)",
+        "trader_sol_frac   → trader_dest (bridge_vault, distributed as SOL via Merkle)",
+        "protocol_skim     → Config.bot (operations)",
+        "",
+        "burn_ratio = min(1.0, (current_supply / initial_crank_supply) / 0.75)",
+        "protocol_skim = 0.20 * (1 - burn_ratio)",
+        "trader_sol_frac = 1 - burn_ratio - protocol_skim",
+        "",
+        "Kill switch: when burn_enabled = false, burn_ratio is clamped to 0 and",
+        "all SOL flows 80% trader / 20% protocol.",
+        "",
+        "`revenue_dest` and its timelock fields are LEGACY — held for backwards-compat",
+        "of the on-chain account layout but not referenced by sweep_rover anymore."
       ],
       "type": {
         "kind": "struct",
@@ -4523,11 +5157,19 @@
             "type": "pubkey"
           },
           {
+            "name": "initial_crank_supply",
+            "type": "u64"
+          },
+          {
+            "name": "burn_enabled",
+            "type": "bool"
+          },
+          {
             "name": "_reserved",
             "type": {
               "array": [
                 "u8",
-                32
+                23
               ]
             }
           }
@@ -4583,46 +5225,6 @@
       }
     },
     {
-      "name": "RoverSweptEvent",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "holder_share",
-            "type": "u64"
-          },
-          {
-            "name": "trader_share",
-            "type": "u64"
-          },
-          {
-            "name": "operator_share",
-            "type": "u64"
-          },
-          {
-            "name": "holder_dest",
-            "type": "pubkey"
-          },
-          {
-            "name": "trader_dest",
-            "type": "pubkey"
-          },
-          {
-            "name": "bot",
-            "type": "pubkey"
-          },
-          {
-            "name": "timestamp",
-            "type": "i64"
-          }
-        ]
-      }
-    },
-    {
       "name": "Side",
       "type": {
         "kind": "enum",
@@ -4632,6 +5234,54 @@
           },
           {
             "name": "Sell"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SweepCurveEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "total_sweepable",
+            "type": "u64"
+          },
+          {
+            "name": "burn_sol",
+            "type": "u64"
+          },
+          {
+            "name": "trader_sol",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_sol",
+            "type": "u64"
+          },
+          {
+            "name": "burn_ratio_ppb",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_skim_ppb",
+            "type": "u64"
+          },
+          {
+            "name": "crank_supply",
+            "type": "u64"
+          },
+          {
+            "name": "initial_crank_supply",
+            "type": "u64"
+          },
+          {
+            "name": "burn_enabled",
+            "type": "bool"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }

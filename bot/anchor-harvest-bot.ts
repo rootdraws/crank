@@ -607,6 +607,7 @@ class HarvestBot {
         await discordBot.start();
         this.executor.setWalletService(discordBot.walletService);
         this.keeper.setWalletService(discordBot.walletService);
+        this.keeper.setDiscordClient(discordBot.client);
         initAlerter({
           postToFeed: (text) => discordBot.notifier.postToFeed(text),
           postToOps: (text) => discordBot.notifier.postToOps(text),

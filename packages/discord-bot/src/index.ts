@@ -31,6 +31,7 @@ import { handlePools } from './commands/pools';
 import { handleVote } from './commands/vote';
 import { handleBurn } from './commands/burn';
 import { handleHelp } from './commands/help';
+import { handleLeaderboard } from './commands/leaderboard';
 import { handleEnableToken } from './commands/enable-token';
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '..', '.env') });
@@ -45,8 +46,13 @@ export interface BotContext {
   approvedPools: Set<string>;
   subscriber?: any; // GeyserSubscriber — has getPoolInfo(lbPair) for real-time activeId
   feedChannelId?: string;
+  cashoutChannelId?: string;
   client: Client;
 }
+
+// Commands allowed in the cash-out-only channel. Everything else is rejected
+// so the room stays focused on getting out (close positions, pull funds).
+const CASHOUT_ALLOWED = new Set(['close', 'withdraw', 'positions', 'balance', 'help']);
 
 interface DiscordBotConfig {
   executor?: any;
@@ -59,7 +65,7 @@ interface DiscordBotConfig {
 }
 
 export class DiscordBot {
-  private client: Client;
+  public client: Client;
   public notifier: DiscordNotifier;
   public walletService: WalletService;
   private ctx: BotContext;
@@ -68,9 +74,15 @@ export class DiscordBot {
     const token = process.env.DISCORD_TOKEN;
     if (!token) throw new Error('DISCORD_TOKEN not set');
 
-    this.client = new Client({
-      intents: [GatewayIntentBits.Guilds],
-    });
+    // Enable GuildMembers only when the operator has toggled the privileged
+    // "Server Members Intent" in the Discord developer portal. Required by
+    // the keeper's crank-role pruner; without it, pruning is a no-op but
+    // every other command still works.
+    const intents = [GatewayIntentBits.Guilds];
+    if (process.env.DISCORD_ENABLE_MEMBER_INTENT === 'true') {
+      intents.push(GatewayIntentBits.GuildMembers);
+    }
+    this.client = new Client({ intents });
 
     this.walletService = new WalletService(process.env.DB_PATH);
     this.notifier = new DiscordNotifier(this.client, this.walletService);
@@ -88,6 +100,7 @@ export class DiscordBot {
       approvedPools,
       subscriber: config.subscriber,
       feedChannelId: process.env.DISCORD_FEED_CHANNEL_ID,
+      cashoutChannelId: process.env.DISCORD_CASHOUT_CHANNEL_ID,
       client: this.client,
     };
 
@@ -124,6 +137,14 @@ export class DiscordBot {
 
       const { commandName } = interaction;
 
+      if (ctx.cashoutChannelId && interaction.channelId === ctx.cashoutChannelId && !CASHOUT_ALLOWED.has(commandName)) {
+        await interaction.reply({
+          content: 'This channel is cash-out only. Use `/close`, `/withdraw`, `/positions`, `/balance`, or `/help`.',
+          ephemeral: true,
+        });
+        return;
+      }
+
       try {
         switch (commandName) {
           case 'start':     return await handleStart(interaction, ctx);
@@ -137,7 +158,8 @@ export class DiscordBot {
           case 'pools':     return await handlePools(interaction, ctx);
           case 'vote':      return await handleVote(interaction, ctx);
           case 'burn':      return await handleBurn(interaction, ctx);
-          case 'help':      return await handleHelp(interaction, ctx);
+          case 'help':        return await handleHelp(interaction, ctx);
+          case 'leaderboard': return await handleLeaderboard(interaction, ctx);
           default:
             await interaction.reply({ content: 'Unknown command.', ephemeral: true });
         }

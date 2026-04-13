@@ -35,7 +35,7 @@ Set your range as a single-sided LP. If price moves through your range, Crank's 
 
 ### Performance Fee
 
-Zero fee on deposit. 0.3% on converted output only. LP fees can be claimed anytime at zero cost.
+Zero fee on deposit. **0.5% (50 bps) on converted output only.** LP fees can be claimed anytime at zero cost.
 
 ### Non-Custodial PDA Vaults
 
@@ -45,15 +45,22 @@ User funds live in on-chain program-derived accounts (PDAs), not bot-held keypai
 
 Every step in the revenue pipeline is permissionless. Harvest, close, sweep, distribute — all crankable by anyone. The system is resilient without our infrastructure.
 
+### Programmatic Membership
+
+The Discord trading floor is a members-only club. Every trade posts to the feed with the trader's `@handle` (rendered as a link, no ping). A `/leaderboard` command ranks recent volume in a rolling window. A daily keeper step prunes the crank role from registered users who go a full window without an open position or a harvest — idle wallets drop out, signal stays high. An optional `#cash-out` channel restricts command dispatch to `/close`, `/withdraw`, `/positions`, `/balance`, and `/help`.
+
 ## Programs
+
+Six active on-chain programs:
 
 | Program | Address | Description |
 |---------|---------|-------------|
-| **bin-farm** (core) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` | Position wrapper on Meteora DLMM. Harvest, close, rovers. `sweep_rover` splits 40/40/20. |
+| **bin-farm** (core) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` | Position wrapper on Meteora DLMM. Harvest, close, rovers. `sweep_rover` is curve-driven (supply-responsive split across burn / trader / protocol). Hosts `wrap_burn_sol`, `open_rover_bid_position`, `rover_burn_and_mint`. |
 | **bank-mint** | `FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk` | Burn $CRANK to mint $BANK 1:1. Supply cap: `bank_supply + crank_supply <= 2B`. |
 | **gauge-voter** | `DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA` | BANK holders vote on global pool weights. Admin-curated pool registry. |
-| **merkle-distributor** | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` | Cumulative SOL (WSOL) distribution via Merkle proofs. Daily epoch. Auto-claimed. |
-| **epoch-vault** | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` | SOL fee accumulator. Receives 80% from sweep_rover. Drained daily by epoch-computer. |
+| **merkle-distributor** | `DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV` | Cumulative SOL (WSOL) distribution via Merkle proofs. Daily epoch. Non-custodial `new_epoch` — vault pre-funded by `drain_vault + sync_native`. Auto-claimed. |
+| **bank-distributor** | `9sqcwp65VGxkbLG3KN85BrzZz2Q77xnfbpPcBfn1kj7M` | Parallel Merkle distributor for $BANK. Vault pre-funded by `rover_burn_and_mint`. Same `claim()` semantics as merkle-distributor. |
+| **epoch-vault** | `7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN` | SOL fee accumulator. Receives the trader SOL portion from `sweep_rover`. `drain_vault` targets the merkle-distributor WSOL vault directly (non-custodial). |
 
 ## Tokens
 
@@ -66,15 +73,43 @@ Every step in the revenue pipeline is permissionless. Harvest, close, sweep, dis
 
 Burn $CRANK to mint $BANK at a 1:1 ratio. Supply cap enforced on-chain.
 
-**Revenue flow:**
+### Supply-driven burn curve
 
-1. Protocol fees (0.3% on converted output) collected by the rover system.
-2. `sweep_rover` splits 40/40/20:
-   - **80% to bridge_vault** — accumulated SOL for daily distribution
-   - **20% Operations** — self-funding bot infrastructure
-3. Daily epoch-computer drains vault, wraps SOL → WSOL, funds Merkle distributor.
-4. Auto-claimed to user custody wallets (user pays gas). SOL just shows up.
-5. Trees pinned to IPFS for transparency.
+`sweep_rover` reads `crank_mint.supply` and a one-shot snapshot of
+`initial_crank_supply` from `RoverAuthority`, then splits accumulated SOL via:
+
+```
+remaining        = crank_mint.supply / initial_crank_supply
+burn_ratio       = min(1.0, remaining / 0.75)        // 100% burn while ≥ 75% supply
+protocol_skim    = 0.20 × (1 − burn_ratio)           // 0 → 0.20 as supply depletes
+trader_sol_frac  = 1 − burn_ratio − protocol_skim
+```
+
+**Phases:**
+- **Magnesium (100% → 75% supply).** 100% burn. Every fee SOL funds CRANK buys that get burned; BANK mints to traders. Zero protocol skim.
+- **Dimming (75% → 0% supply).** Burn fades linearly; direct SOL yield emerges; protocol skim grows 0 → 20%.
+- **Embers (0% supply).** 100% SOL yield. 80 traders / 20 protocol. Indefinite.
+
+**Kill switch:** `set_burn_enabled(false)` clamps `burn_ratio = 0` regardless of supply — 80 traders / 20 protocol until re-enabled.
+
+### Revenue flow (non-custodial)
+
+1. 50 bps fee on converted output lands in `rover_authority` ATAs.
+2. `sweep_rover` splits SOL by the curve:
+   - `burn_ratio × total` → `burn_sol_vault` PDA (bin-farm-owned)
+   - `trader_sol_frac × total` → `bridge_vault` PDA (epoch-vault)
+   - `protocol_skim × total` → `Config.bot` (operations revenue)
+3. `burn_sol_vault` → `wrap_burn_sol` + `open_rover_bid_position` — bot places buy-side DLMM bids on CRANK/SOL ~70 bins below active.
+4. As price dips, bids fill → CRANK accumulates on `rover_authority`.
+5. `rover_burn_and_mint` burns rover CRANK via CPI to bank-mint, minting BANK directly into the bank-distributor vault.
+6. Daily keeper publishes two Merkle roots:
+   - **SOL tree** — vault is `drain_vault`ed straight into the merkle-distributor WSOL vault, `sync_native`d in place.
+   - **BANK tree** — vault pre-funded by step 5.
+7. Both `new_epoch`s take `(root, ipfs_cid)` only — no token transfer. They compute `epoch_amount = vault.amount + total_claimed − total_funded` on-chain.
+8. Auto-claimed to user vault PDAs. Users' reward tokens never touch any operator keypair between mint and claim.
+9. Trees pinned to IPFS for transparency.
+
+CRANK *token* fees (from CRANK/SOL trades on the CRANK side) bypass the usual `open_fee_rover` sell-path and go straight through `rover_burn_and_mint`. Fuel is fuel.
 
 **Gauge voting:** BANK holders call `vote()` to influence how rewards are allocated across curated pools.
 
@@ -82,18 +117,19 @@ Burn $CRANK to mint $BANK at a 1:1 ratio. Supply cap enforced on-chain.
 
 ```
 crank-money/
-├── programs/           # Anchor workspace (5 active programs)
+├── programs/           # Anchor workspace (6 active programs)
 │   ├── bank-mint/
+│   ├── bank-distributor/
 │   ├── bin-farm/
 │   ├── gauge-voter/
 │   ├── merkle-distributor/
 │   └── epoch-vault/
 ├── bot/                # Crank's Harvester (off-chain infrastructure)
 ├── packages/
-│   ├── core-sdk/       # Shared SDK (pool routing, range parsing, wallet service)
-│   └── discord-bot/    # 12 slash commands (buy, sell, vote, burn, withdraw, etc.)
+│   ├── core-sdk/       # Shared SDK (pool routing, range parsing, wallet service, burn curve)
+│   └── discord-bot/    # 13 slash commands (buy, sell, vote, burn, withdraw, leaderboard, etc.)
 ├── public/             # On-chain referenced assets (token logos, metadata)
-├── scripts/            # Deploy, diagnostics, admin utilities
+├── scripts/            # Deploy, diagnostics, admin utilities (init-burn-curve.ts, etc.)
 ├── curator.json        # Pool registry + gauge map (read by bot at runtime)
 └── deploy/nginx/       # Production nginx config
 ```
@@ -102,12 +138,12 @@ crank-money/
 
 ```bash
 npm install
-anchor build
+anchor build                               # Builds all 6 programs
 solana program deploy target/deploy/bin_farm.so \
   --program-id 8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia
 ```
 
-IDL generation: `anchor idl build -p bin_farm` (repeat for each program). Codama clients: `node scripts/generate-clients.mjs`. Pin `blake3` and `borsh` to 1.5.5 after `cargo update`.
+IDL generation: `anchor idl build -p bin_farm` (repeat for each program). Codama clients: `node scripts/generate-clients.mjs` (generates clients for bin-farm, epoch-vault, bank-distributor, merkle-distributor). Pin `blake3` and `borsh` to 1.5.5 after `cargo update`.
 
 ## Run Crank's Harvester
 
@@ -121,8 +157,8 @@ npm run bot
 ## Testing
 
 ```bash
-npm test                               # Unit tests (65 tests: bin detection, Merkle proofs, share computation)
-curl http://localhost:8080/api/fees    # Live fee pipeline snapshot (rover + bridge vault + distributor WSOL)
+npm test                               # Unit tests (~60: bin detection, Merkle proofs, share computation, burn curve)
+curl http://localhost:8080/api/fees    # Live fee pipeline snapshot (rover, burn_sol_vault, bridge vault, both distributor vaults)
 npx tsx scripts/preflight-check.ts     # Verify all programs + PDAs on-chain
 npx tsx scripts/test-epoch.ts --dry-run --min-lamports 1000000  # Epoch dry-run (no on-chain action)
 npx tsx scripts/test-epoch.ts --min-lamports 1000000            # Epoch live E2E test
@@ -140,7 +176,8 @@ Adversarial security audit completed 2026-04-01 (`audit.md`). 53 findings, 33 re
 
 **On-chain:**
 - All harvests, sweeps, and distributions are permissionless. Anyone can crank them if the bot goes stale — no fund lock-up.
-- Fee split (40/40/20) is hardcoded in the program. Cannot be changed without a program upgrade.
+- Fee split is curve-driven. Parameters snapshot once at `initialize_burn_curve` and are immutable per `RoverAuthority` invariants.
+- **Distribution vaults are pre-funded by program flows** — no operator custody of reward tokens between mint and claim. `new_epoch` publishes merkle roots only; authority signs intent, not value.
 - All arithmetic uses `checked_*` operations. `clippy::integer_arithmetic` deny enforced at crate level in bin-farm.
 - Programs can be upgraded (upgrade authority held by deployer). Keypair separation to cold wallet (Ledger) planned.
 

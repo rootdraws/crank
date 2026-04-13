@@ -25,6 +25,7 @@ import {
   type Instruction,
   type InstructionWithAccounts,
   type InstructionWithData,
+  type ReadonlyAccount,
   type ReadonlyUint8Array,
   type TransactionSigner,
   type WritableAccount,
@@ -46,7 +47,9 @@ export type SweepRoverInstruction<
   TAccountCaller extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountRoverAuthority extends string | AccountMeta<string> = string,
-  TAccountRevenueDest extends string | AccountMeta<string> = string,
+  TAccountCrankMint extends string | AccountMeta<string> =
+    'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump',
+  TAccountBurnSolVault extends string | AccountMeta<string> = string,
   TAccountTraderDest extends string | AccountMeta<string> = string,
   TAccountBotDest extends string | AccountMeta<string> = string,
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -64,9 +67,12 @@ export type SweepRoverInstruction<
       TAccountRoverAuthority extends string
         ? WritableAccount<TAccountRoverAuthority>
         : TAccountRoverAuthority,
-      TAccountRevenueDest extends string
-        ? WritableAccount<TAccountRevenueDest>
-        : TAccountRevenueDest,
+      TAccountCrankMint extends string
+        ? ReadonlyAccount<TAccountCrankMint>
+        : TAccountCrankMint,
+      TAccountBurnSolVault extends string
+        ? WritableAccount<TAccountBurnSolVault>
+        : TAccountBurnSolVault,
       TAccountTraderDest extends string
         ? WritableAccount<TAccountTraderDest>
         : TAccountTraderDest,
@@ -108,7 +114,8 @@ export type SweepRoverAsyncInput<
   TAccountCaller extends string = string,
   TAccountConfig extends string = string,
   TAccountRoverAuthority extends string = string,
-  TAccountRevenueDest extends string = string,
+  TAccountCrankMint extends string = string,
+  TAccountBurnSolVault extends string = string,
   TAccountTraderDest extends string = string,
   TAccountBotDest extends string = string,
 > = {
@@ -116,7 +123,10 @@ export type SweepRoverAsyncInput<
   caller: TransactionSigner<TAccountCaller>;
   config?: Address<TAccountConfig>;
   roverAuthority?: Address<TAccountRoverAuthority>;
-  revenueDest: Address<TAccountRevenueDest>;
+  /** CRANK SPL mint — supply read here for the burn curve. */
+  crankMint?: Address<TAccountCrankMint>;
+  /** Burn SOL staging vault PDA — receives the burn portion of the curve. */
+  burnSolVault?: Address<TAccountBurnSolVault>;
   traderDest: Address<TAccountTraderDest>;
   botDest: Address<TAccountBotDest>;
 };
@@ -125,7 +135,8 @@ export async function getSweepRoverInstructionAsync<
   TAccountCaller extends string,
   TAccountConfig extends string,
   TAccountRoverAuthority extends string,
-  TAccountRevenueDest extends string,
+  TAccountCrankMint extends string,
+  TAccountBurnSolVault extends string,
   TAccountTraderDest extends string,
   TAccountBotDest extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
@@ -134,7 +145,8 @@ export async function getSweepRoverInstructionAsync<
     TAccountCaller,
     TAccountConfig,
     TAccountRoverAuthority,
-    TAccountRevenueDest,
+    TAccountCrankMint,
+    TAccountBurnSolVault,
     TAccountTraderDest,
     TAccountBotDest
   >,
@@ -145,7 +157,8 @@ export async function getSweepRoverInstructionAsync<
     TAccountCaller,
     TAccountConfig,
     TAccountRoverAuthority,
-    TAccountRevenueDest,
+    TAccountCrankMint,
+    TAccountBurnSolVault,
     TAccountTraderDest,
     TAccountBotDest
   >
@@ -158,7 +171,8 @@ export async function getSweepRoverInstructionAsync<
     caller: { value: input.caller ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
     roverAuthority: { value: input.roverAuthority ?? null, isWritable: true },
-    revenueDest: { value: input.revenueDest ?? null, isWritable: true },
+    crankMint: { value: input.crankMint ?? null, isWritable: false },
+    burnSolVault: { value: input.burnSolVault ?? null, isWritable: true },
     traderDest: { value: input.traderDest ?? null, isWritable: true },
     botDest: { value: input.botDest ?? null, isWritable: true },
   };
@@ -189,6 +203,22 @@ export async function getSweepRoverInstructionAsync<
       ],
     });
   }
+  if (!accounts.crankMint.value) {
+    accounts.crankMint.value =
+      'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump' as Address<'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump'>;
+  }
+  if (!accounts.burnSolVault.value) {
+    accounts.burnSolVault.value = await getProgramDerivedAddress({
+      programAddress,
+      seeds: [
+        getBytesEncoder().encode(
+          new Uint8Array([
+            98, 117, 114, 110, 95, 115, 111, 108, 95, 118, 97, 117, 108, 116,
+          ])
+        ),
+      ],
+    });
+  }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
@@ -196,7 +226,8 @@ export async function getSweepRoverInstructionAsync<
       getAccountMeta(accounts.caller),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.roverAuthority),
-      getAccountMeta(accounts.revenueDest),
+      getAccountMeta(accounts.crankMint),
+      getAccountMeta(accounts.burnSolVault),
       getAccountMeta(accounts.traderDest),
       getAccountMeta(accounts.botDest),
     ],
@@ -207,7 +238,8 @@ export async function getSweepRoverInstructionAsync<
     TAccountCaller,
     TAccountConfig,
     TAccountRoverAuthority,
-    TAccountRevenueDest,
+    TAccountCrankMint,
+    TAccountBurnSolVault,
     TAccountTraderDest,
     TAccountBotDest
   >);
@@ -217,7 +249,8 @@ export type SweepRoverInput<
   TAccountCaller extends string = string,
   TAccountConfig extends string = string,
   TAccountRoverAuthority extends string = string,
-  TAccountRevenueDest extends string = string,
+  TAccountCrankMint extends string = string,
+  TAccountBurnSolVault extends string = string,
   TAccountTraderDest extends string = string,
   TAccountBotDest extends string = string,
 > = {
@@ -225,7 +258,10 @@ export type SweepRoverInput<
   caller: TransactionSigner<TAccountCaller>;
   config: Address<TAccountConfig>;
   roverAuthority: Address<TAccountRoverAuthority>;
-  revenueDest: Address<TAccountRevenueDest>;
+  /** CRANK SPL mint — supply read here for the burn curve. */
+  crankMint?: Address<TAccountCrankMint>;
+  /** Burn SOL staging vault PDA — receives the burn portion of the curve. */
+  burnSolVault: Address<TAccountBurnSolVault>;
   traderDest: Address<TAccountTraderDest>;
   botDest: Address<TAccountBotDest>;
 };
@@ -234,7 +270,8 @@ export function getSweepRoverInstruction<
   TAccountCaller extends string,
   TAccountConfig extends string,
   TAccountRoverAuthority extends string,
-  TAccountRevenueDest extends string,
+  TAccountCrankMint extends string,
+  TAccountBurnSolVault extends string,
   TAccountTraderDest extends string,
   TAccountBotDest extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
@@ -243,7 +280,8 @@ export function getSweepRoverInstruction<
     TAccountCaller,
     TAccountConfig,
     TAccountRoverAuthority,
-    TAccountRevenueDest,
+    TAccountCrankMint,
+    TAccountBurnSolVault,
     TAccountTraderDest,
     TAccountBotDest
   >,
@@ -253,7 +291,8 @@ export function getSweepRoverInstruction<
   TAccountCaller,
   TAccountConfig,
   TAccountRoverAuthority,
-  TAccountRevenueDest,
+  TAccountCrankMint,
+  TAccountBurnSolVault,
   TAccountTraderDest,
   TAccountBotDest
 > {
@@ -265,7 +304,8 @@ export function getSweepRoverInstruction<
     caller: { value: input.caller ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
     roverAuthority: { value: input.roverAuthority ?? null, isWritable: true },
-    revenueDest: { value: input.revenueDest ?? null, isWritable: true },
+    crankMint: { value: input.crankMint ?? null, isWritable: false },
+    burnSolVault: { value: input.burnSolVault ?? null, isWritable: true },
     traderDest: { value: input.traderDest ?? null, isWritable: true },
     botDest: { value: input.botDest ?? null, isWritable: true },
   };
@@ -274,13 +314,20 @@ export function getSweepRoverInstruction<
     ResolvedAccount
   >;
 
+  // Resolve default values.
+  if (!accounts.crankMint.value) {
+    accounts.crankMint.value =
+      'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump' as Address<'Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump'>;
+  }
+
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
       getAccountMeta(accounts.caller),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.roverAuthority),
-      getAccountMeta(accounts.revenueDest),
+      getAccountMeta(accounts.crankMint),
+      getAccountMeta(accounts.burnSolVault),
       getAccountMeta(accounts.traderDest),
       getAccountMeta(accounts.botDest),
     ],
@@ -291,7 +338,8 @@ export function getSweepRoverInstruction<
     TAccountCaller,
     TAccountConfig,
     TAccountRoverAuthority,
-    TAccountRevenueDest,
+    TAccountCrankMint,
+    TAccountBurnSolVault,
     TAccountTraderDest,
     TAccountBotDest
   >);
@@ -307,9 +355,12 @@ export type ParsedSweepRoverInstruction<
     caller: TAccountMetas[0];
     config: TAccountMetas[1];
     roverAuthority: TAccountMetas[2];
-    revenueDest: TAccountMetas[3];
-    traderDest: TAccountMetas[4];
-    botDest: TAccountMetas[5];
+    /** CRANK SPL mint — supply read here for the burn curve. */
+    crankMint: TAccountMetas[3];
+    /** Burn SOL staging vault PDA — receives the burn portion of the curve. */
+    burnSolVault: TAccountMetas[4];
+    traderDest: TAccountMetas[5];
+    botDest: TAccountMetas[6];
   };
   data: SweepRoverInstructionData;
 };
@@ -322,7 +373,7 @@ export function parseSweepRoverInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedSweepRoverInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 6) {
+  if (instruction.accounts.length < 7) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -338,7 +389,8 @@ export function parseSweepRoverInstruction<
       caller: getNextAccount(),
       config: getNextAccount(),
       roverAuthority: getNextAccount(),
-      revenueDest: getNextAccount(),
+      crankMint: getNextAccount(),
+      burnSolVault: getNextAccount(),
       traderDest: getNextAccount(),
       botDest: getNextAccount(),
     },

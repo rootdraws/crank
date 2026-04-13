@@ -8,10 +8,10 @@
 
 Yield-bearing ranged limit orders via chat bot. Not swaps — DLMM positions that earn LP fees while waiting to fill.
 
-- **0.3% fee on converted output only** (competitors charge 0.5–1% on every swap)
-- **80% revenue share** — SOL distributed daily to users via Merkle (competitors share 0%)
+- **0.5% fee on converted output only** (competitors charge 0.5–1% on every swap)
+- **100% revenue share to traders during the burn phase** — BANK (minted from burned CRANK) + SOL distributed daily via Merkle. Endgame split is 80 traders / 20 protocol as CRANK supply depletes. Competitors share 0%.
 - **Permissionless everything** — no fund lock-up, anyone can crank
-- **Non-custodial PDA vaults** — user funds on-chain, server compromise can't steal
+- **Non-custodial PDA vaults + non-custodial distribution pipeline** — user funds on-chain, server compromise can't steal, and reward tokens never touch an operator keypair between mint and claim
 
 Competitors (Trojan, Bonkbot, Banana Gun, Maestro, GMGN, Bloom, MEVX, BankrBot) are swap bots. HawkFi and MetEngine are the closest — LP automation — but neither does community treasury LP with Merkle distribution. That segment is open.
 

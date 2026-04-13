@@ -123,6 +123,8 @@ export class MonkeKeeper {
   private priorityIxs: any[] = [];
   // Optional pool registry from subscriber
   private getWatchedPools?: () => string[];
+  // Discord client for member pruning (injected after bot start)
+  private discordClient: any = null;
   // Relay callback: called with rover TVL data after daily cycle
   public onRoverTvlComputed?: (entries: Array<{ pool: string; tvl: number; positionCount: number; status: string }>) => void;
 
@@ -140,6 +142,10 @@ export class MonkeKeeper {
 
   setWalletService(ws: any): void {
     this.walletService = ws;
+  }
+
+  setDiscordClient(client: any): void {
+    this.discordClient = client;
   }
 
   /**
@@ -190,17 +196,28 @@ export class MonkeKeeper {
       // Step 1: Close WSOL ATA on rover_authority → unwrap to native SOL
       await this.crankCloseRoverWsol();
 
-      // Step 2: Sweep SOL from rover_authority → 40/40/20 split
+      // Step 2: Sweep SOL from rover_authority via the burn curve
+      //         → burn_sol_vault / trader_dest / Config.bot
       await this.crankSweepRover();
 
-      // Step 3: Epoch distribution — drain vault → WSOL → Merkle → auto-claim
+      // Step 2a: Open buy-side DLMM bids on CRANK/SOL from burn_sol_vault
+      await this.crankOpenRoverBids();
+
+      // Step 2b: Burn CRANK accumulated on rover (from filled bids + direct CRANK fees),
+      //          forward minted BANK to bank-distributor vault
+      await this.crankRoverBurnAndMint();
+
+      // Step 3: Epoch distribution — SOL tree (bridge_vault) + BANK tree (bank-distributor)
       await this.crankEpochDistribution();
 
-      // Step 4: Open fee rover positions from accumulated token fees
+      // Step 4: Open fee rover positions from accumulated token fees (CRANK bypassed)
       await this.crankOpenFeeRovers();
 
       // Step 5: Close exhausted rover positions (reclaim rent)
       await this.crankCloseExhaustedRovers();
+
+      // Step 6: Prune the crank role from idle Discord members (best-effort, no-op if unconfigured)
+      await this.crankPruneInactiveMembers();
 
       this.lastRunDay = today;
       this.lastRunTimestamp = Date.now();
@@ -209,17 +226,22 @@ export class MonkeKeeper {
     }
   }
 
-  // ─── CRANK: SWEEP ROVER (SOL) ───
+  // ─── CRANK: SWEEP ROVER (curve-driven) ───
 
   /**
-   * Sweep SOL from rover_authority — 40% bridge_vault (holders), 40% trader_dest (traders), 20% Config.bot (operations).
+   * Sweep SOL from rover_authority via the supply-driven burn curve.
+   * Routes to three destinations: burn_sol_vault / trader_dest (bridge_vault) / Config.bot.
+   * Shares are computed on-chain from crank_mint.supply + RoverAuthority curve state.
    */
   private async crankSweepRover(): Promise<void> {
     try {
+      const { CRANK_MINT } = await import('../packages/core-sdk/constants');
+      const { getBurnSolVaultPDA } = await import('../packages/core-sdk/pda');
+
       const [roverAuthority] = roverAuthorityPDA(this.coreProgramId);
       const roverAccount = await this.coreProgram.account.roverAuthority.fetch(roverAuthority);
-      const revenueDest = roverAccount.revenueDest as PublicKey;
       const traderDest = roverAccount.traderDest as PublicKey;
+      const [burnSolVault] = getBurnSolVaultPDA();
 
       await withRetry(
         () => this.coreProgram.methods
@@ -228,7 +250,8 @@ export class MonkeKeeper {
             caller: this.botKeypair.publicKey,
             config: coreConfigPDA(this.coreProgramId)[0],
             roverAuthority,
-            revenueDest,
+            crankMint: CRANK_MINT,
+            burnSolVault,
             traderDest,
             botDest: this.botKeypair.publicKey,
           })
@@ -238,14 +261,271 @@ export class MonkeKeeper {
         'sweep_rover'
       );
 
-      logger.info('  [keeper] ✓ sweep_rover — 40% bridge_vault, 40% trader_dest, 20% bot');
+      logger.info('  [keeper] ✓ sweep_rover — curve-driven split (burn / trader / protocol)');
     } catch (e: any) {
-      const isNothingToSweep = e.error?.errorCode?.code === 'NothingToSweep';
-      if (isNothingToSweep) {
+      const code = e.error?.errorCode?.code;
+      if (code === 'NothingToSweep') {
         logger.info('  [keeper] sweep_rover skipped — nothing to sweep');
+      } else if (code === 'BurnCurveNotInitialized') {
+        logger.warn('  [keeper] sweep_rover skipped — burn curve not initialized (run init-burn-curve.ts)');
       } else {
         logger.warn(`[keeper] sweep_rover error: ${e.message}`);
       }
+    }
+  }
+
+  // ─── CRANK: OPEN ROVER BIDS ───
+
+  /**
+   * Wrap SOL from burn_sol_vault to rover WSOL ATA, sync_native, open buy-side
+   * BidAsk DLMM position on CRANK/SOL below active. One transaction composed of:
+   *   ix 1: wrap_burn_sol
+   *   ix 2: spl_token::sync_native
+   *   ix 3: open_rover_bid_position (in a follow-up tx — CU budget)
+   *
+   * Skipped if burn_sol_vault balance < ROVER_BID_MIN_LAMPORTS.
+   */
+  private async crankOpenRoverBids(): Promise<void> {
+    try {
+      const {
+        ROVER_BID_BIN_COUNT,
+        ROVER_BID_MIN_LAMPORTS,
+        ROVER_BID_RESERVE_LAMPORTS,
+        CRANK_MINT,
+        NATIVE_MINT,
+      } = await import('../packages/core-sdk/constants');
+      const { getBurnSolVaultPDA } = await import('../packages/core-sdk/pda');
+      const {
+        getAssociatedTokenAddressSync,
+        createAssociatedTokenAccountIdempotentInstruction,
+        createSyncNativeInstruction,
+        TOKEN_PROGRAM_ID: SPL_TOKEN_ID,
+      } = await import('@solana/spl-token');
+      const { Keypair: SolKeypair } = await import('@solana/web3.js');
+      const { BN } = await import('@coral-xyz/anchor');
+      const { loadPoolRegistry } = await import('../packages/core-sdk/pool-config');
+
+      const [burnSolVault] = getBurnSolVaultPDA();
+      const burnSolVaultInfo = await this.connection.getAccountInfo(burnSolVault);
+      if (!burnSolVaultInfo) {
+        logger.info('  [keeper] open_rover_bids skipped — burn_sol_vault not initialized');
+        return;
+      }
+      const available = BigInt(burnSolVaultInfo.lamports) - ROVER_BID_RESERVE_LAMPORTS;
+      const minLamports = BigInt(process.env.ROVER_BID_MIN_LAMPORTS || ROVER_BID_MIN_LAMPORTS.toString());
+      if (available < minLamports) {
+        logger.info({ available: available.toString(), min: minLamports.toString() }, '[keeper] open_rover_bids — below threshold, waiting');
+        return;
+      }
+
+      // Resolve the CRANK/SOL pool from curator.json — prefer binStep 80.
+      const registry = loadPoolRegistry();
+      const pool = registry.find((p: any) =>
+        ((p.mintX === CRANK_MINT.toBase58() && p.mintY === NATIVE_MINT.toBase58()) ||
+         (p.mintY === CRANK_MINT.toBase58() && p.mintX === NATIVE_MINT.toBase58()))
+        && p.binStep === 80
+      );
+      if (!pool) {
+        logger.warn('  [keeper] open_rover_bids skipped — CRANK/SOL binStep-80 pool not in curator.json');
+        return;
+      }
+
+      const [roverAuthority] = roverAuthorityPDA(this.coreProgramId);
+      const roverWsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, roverAuthority, true, SPL_TOKEN_ID);
+
+      // Step A: wrap_burn_sol + sync_native in one tx
+      const wrapAmount = available;
+      const wrapTx = new Transaction();
+      wrapTx.add(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: KEEPER_PRIORITY_FEE_FLOOR }),
+      );
+      // Create WSOL ATA if missing (idempotent)
+      wrapTx.add(
+        createAssociatedTokenAccountIdempotentInstruction(
+          this.botKeypair.publicKey, roverWsolAta, roverAuthority, NATIVE_MINT, SPL_TOKEN_ID,
+        ),
+      );
+      const wrapIx = await this.coreProgram.methods
+        .wrapBurnSol(new BN(wrapAmount.toString()))
+        .accounts({
+          caller: this.botKeypair.publicKey,
+          config: coreConfigPDA(this.coreProgramId)[0],
+          roverAuthority,
+          burnSolVault,
+          roverWsolAccount: roverWsolAta,
+        })
+        .instruction();
+      wrapTx.add(wrapIx);
+      wrapTx.add(createSyncNativeInstruction(roverWsolAta, SPL_TOKEN_ID));
+
+      await withRetry(
+        () => sendAndConfirmTransaction(this.connection, wrapTx, [this.botKeypair]),
+        'wrap_burn_sol+sync_native',
+      );
+      logger.info(`  [keeper] ✓ wrap_burn_sol — ${wrapAmount} lamports wrapped on rover WSOL ATA`);
+
+      // Step B: open_rover_bid_position (separate tx — CU budget)
+      const lbPair = new PublicKey(pool.address);
+      const dlmm = await getDLMM(this.connection, lbPair);
+      await dlmm.refetchStates();
+      const activeId = dlmm.lbPair.activeId;
+      const binStep = dlmm.lbPair.binStep;
+
+      const meteoraPosition = SolKeypair.generate();
+      const width = Math.min(ROVER_BID_BIN_COUNT, Math.max(1, Math.floor(6931 / binStep)));
+      const maxBinId = activeId - 1;
+      const minBinId = maxBinId - width + 1;
+      const binIds = Array.from({ length: width }, (_, i) => minBinId + i);
+      const fakePos = { publicKey: meteoraPosition.publicKey };
+      const meteora = buildMeteoraCPIAccounts(dlmm, fakePos, binIds);
+
+      const [vaultPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('vault'), meteoraPosition.publicKey.toBuffer()],
+        this.coreProgramId,
+      );
+      const vaultTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, vaultPda, true, meteora.tokenXProgram);
+      const vaultTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, vaultPda, true, meteora.tokenYProgram);
+      const createVaultAtaX = createAssociatedTokenAccountIdempotentInstruction(
+        this.botKeypair.publicKey, vaultTokenX, vaultPda, meteora.tokenXMint, meteora.tokenXProgram,
+      );
+      const createVaultAtaY = createAssociatedTokenAccountIdempotentInstruction(
+        this.botKeypair.publicKey, vaultTokenY, vaultPda, meteora.tokenYMint, meteora.tokenYProgram,
+      );
+
+      const openTx = await this.coreProgram.methods
+        .openRoverBidPosition(new BN(wrapAmount.toString()), binStep)
+        .accounts({
+          bot: this.botKeypair.publicKey,
+          config: coreConfigPDA(this.coreProgramId)[0],
+          roverAuthority,
+          roverWsolAccount: roverWsolAta,
+          lbPair,
+          meteoraPosition: meteoraPosition.publicKey,
+          binArrayBitmapExt: meteora.binArrayBitmapExt,
+          reserveX: meteora.reserveX,
+          reserveY: meteora.reserveY,
+          binArrayLower: meteora.binArrayLower,
+          binArrayUpper: meteora.binArrayUpper,
+          position: PublicKey.findProgramAddressSync(
+            [Buffer.from('position'), meteoraPosition.publicKey.toBuffer()],
+            this.coreProgramId,
+          )[0],
+          vault: vaultPda,
+          vaultTokenX,
+          vaultTokenY,
+          tokenXMint: meteora.tokenXMint,
+          tokenYMint: meteora.tokenYMint,
+          tokenXProgram: meteora.tokenXProgram,
+          tokenYProgram: meteora.tokenYProgram,
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts([
+          { pubkey: meteora.eventAuthority, isSigner: false, isWritable: false },
+          { pubkey: meteora.dlmmProgram, isSigner: false, isWritable: false },
+        ])
+        .preInstructions([
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: KEEPER_PRIORITY_FEE_FLOOR }),
+          fixBitmapWritable(meteora.binArrayBitmapExt),
+          createVaultAtaX,
+          createVaultAtaY,
+        ])
+        .signers([this.botKeypair, meteoraPosition])
+        .transaction();
+
+      await withRetry(
+        () => sendAndConfirmTransaction(this.connection, openTx, [this.botKeypair, meteoraPosition]),
+        'open_rover_bid_position',
+      );
+      logger.info(
+        `  [keeper] ✓ open_rover_bid_position — ${width} bins [${minBinId},${maxBinId}] SOL=${wrapAmount}`,
+      );
+    } catch (e: any) {
+      logger.warn(`[keeper] open_rover_bids error: ${e.message?.slice(0, 180)}`);
+    }
+  }
+
+  // ─── CRANK: ROVER BURN AND MINT (CRANK → BANK) ───
+
+  /**
+   * Burn CRANK accumulated on rover_authority (from filled bids + direct CRANK
+   * fees) and forward the minted BANK to the bank-distributor vault.
+   * No-op if rover's CRANK ATA balance is zero.
+   */
+  private async crankRoverBurnAndMint(): Promise<void> {
+    try {
+      const { CRANK_MINT, BANK_MINT, BANK_MINT_PROGRAM_ID } = await import('../packages/core-sdk/constants');
+      const { getBankConfigPDA, getBankDistributorPDA } = await import('../packages/core-sdk/pda');
+      const {
+        getAssociatedTokenAddressSync,
+        createAssociatedTokenAccountIdempotentInstruction,
+        TOKEN_PROGRAM_ID: SPL_TOKEN_ID,
+      } = await import('@solana/spl-token');
+      const { BN } = await import('@coral-xyz/anchor');
+
+      const [roverAuthority] = roverAuthorityPDA(this.coreProgramId);
+      const [bankConfig] = getBankConfigPDA();
+      const [bankDistributor] = getBankDistributorPDA();
+
+      const roverCrankAta = getAssociatedTokenAddressSync(CRANK_MINT, roverAuthority, true, SPL_TOKEN_ID);
+      const roverBankAta = getAssociatedTokenAddressSync(BANK_MINT, roverAuthority, true, SPL_TOKEN_ID);
+      // Non-custodial path: forward minted BANK directly to the bank-distributor
+      // vault (PDA-owned). new_epoch then reads the vault balance delta and
+      // publishes the root without any further transfer. Nothing touches the
+      // bot wallet's BANK ATA.
+      const bankDistributorVaultAta = getAssociatedTokenAddressSync(
+        BANK_MINT, bankDistributor, true, SPL_TOKEN_ID,
+      );
+
+      // Check rover CRANK balance
+      const crankAcc = await this.connection.getAccountInfo(roverCrankAta);
+      if (!crankAcc || crankAcc.data.length < 72) {
+        logger.info('  [keeper] rover_burn_and_mint skipped — no rover CRANK ATA');
+        return;
+      }
+      const amount = crankAcc.data.readBigUInt64LE(64);
+      if (amount === 0n) {
+        logger.info('  [keeper] rover_burn_and_mint skipped — rover CRANK balance is 0');
+        return;
+      }
+
+      // Idempotent ATA setup: rover's BANK ATA (where bank-mint's mint_to
+      // lands, per its `authority = user` constraint — rover signs as user).
+      // The distributor vault ATA was created during init-burn-curve.
+      const preIxs = [
+        ...this.priorityIxs,
+        createAssociatedTokenAccountIdempotentInstruction(
+          this.botKeypair.publicKey, roverBankAta, roverAuthority, BANK_MINT, SPL_TOKEN_ID,
+        ),
+      ];
+
+      await withRetry(
+        () => this.coreProgram.methods
+          .roverBurnAndMint(new BN(amount.toString()))
+          .accounts({
+            caller: this.botKeypair.publicKey,
+            config: coreConfigPDA(this.coreProgramId)[0],
+            roverAuthority,
+            bankConfig,
+            crankMint: CRANK_MINT,
+            bankMint: BANK_MINT,
+            roverCrankAta,
+            roverBankAta,
+            bankDistributorVault: bankDistributorVaultAta,
+            crankTokenProgram: SPL_TOKEN_ID,
+            bankTokenProgram: SPL_TOKEN_ID,
+            bankMintProgram: BANK_MINT_PROGRAM_ID,
+          })
+          .preInstructions(preIxs)
+          .signers([this.botKeypair])
+          .rpc(),
+        'rover_burn_and_mint',
+      );
+
+      logger.info(`  [keeper] ✓ rover_burn_and_mint — burned ${amount} CRANK, BANK forwarded directly to bank-distributor vault`);
+    } catch (e: any) {
+      logger.warn(`[keeper] rover_burn_and_mint error: ${e.message?.slice(0, 180)}`);
     }
   }
 
@@ -351,6 +631,10 @@ export class MonkeKeeper {
         if (pool.mintY) allowedMints.add(pool.mintY);
       }
 
+      // CRANK is handled separately by crankRoverBurnAndMint — never sell CRANK fees for SOL.
+      const { CRANK_MINT: CRANK_MINT_CONST } = await import('../packages/core-sdk/constants');
+      const CRANK_MINT_STR = CRANK_MINT_CONST.toBase58();
+
       for (const account of allAccounts) {
         const parsed = account.account.data.parsed;
         const balance = parsed.info.tokenAmount.uiAmount;
@@ -359,6 +643,11 @@ export class MonkeKeeper {
         const mintStr = parsed.info.mint;
         const mint = new PublicKey(mintStr);
         const tokenProgramId = account.account.owner;
+
+        if (mintStr === CRANK_MINT_STR) {
+          logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] Skipping fee rover — CRANK burns via rover_burn_and_mint');
+          continue;
+        }
 
         if (!allowedMints.has(mintStr)) {
           logger.info({ mint: mintStr.slice(0, 8) }, '[keeper] Skipping fee rover — mint not in curator.json');
@@ -540,6 +829,7 @@ export class MonkeKeeper {
    * Replaces the old stake_and_forward + new_epoch + $PEGGED pipeline.
    */
   private async crankEpochDistribution(): Promise<void> {
+    // SOL tree — existing flow (bridge_vault → WSOL → merkle_distributor)
     try {
       const { runEpoch } = await import('./epoch-computer');
       const result = await runEpoch({
@@ -553,7 +843,35 @@ export class MonkeKeeper {
         await alertEpochSuccess(result.epoch, result.amountSol, result.userCount);
       }
     } catch (e: any) {
-      logger.warn(`[keeper] epoch distribution error: ${e.message?.slice(0, 150)}`);
+      logger.warn(`[keeper] SOL epoch error: ${e.message?.slice(0, 150)}`);
+    }
+
+    // BANK tree — new flow (bot BANK ATA → bank_distributor)
+    try {
+      const { runBankEpoch } = await import('./epoch-computer');
+      // Build bank-distributor Program lazily — avoids construction cost when skipped
+      const { Program: AnchorProgram } = await import('@coral-xyz/anchor');
+      const bankIdl = await import('./idl/bank_distributor.json').catch(() => null);
+      if (!bankIdl) {
+        logger.info('  [keeper] BANK epoch skipped — bank_distributor IDL not found');
+        return;
+      }
+      const provider = (this.coreProgram as any).provider;
+      const bankProgram = new AnchorProgram(
+        (bankIdl as any).default || bankIdl,
+        provider,
+      );
+      const bankResult = await runBankEpoch({
+        connection: this.connection,
+        botKeypair: this.botKeypair,
+        walletService: this.walletService,
+        bankDistributorProgram: bankProgram,
+      });
+      if (bankResult.ran) {
+        logger.info(`  [keeper] ✓ BANK epoch ${bankResult.epoch} — ${bankResult.amountSol} BANK to ${bankResult.userCount} users`);
+      }
+    } catch (e: any) {
+      logger.warn(`[keeper] BANK epoch error: ${e.message?.slice(0, 180)}`);
     }
   }
 
@@ -728,6 +1046,64 @@ export class MonkeKeeper {
       }
     } catch (e: any) {
       logger.warn(`[keeper] crankCloseExhaustedRovers error: ${e.message}`);
+    }
+  }
+
+  // ─── CRANK: PRUNE INACTIVE MEMBERS ───
+  //
+  // Removes the "crank" Discord role from users with no open position AND no
+  // harvest in the rolling window. Keeps the trading floor signal-only — idle
+  // wallets drop back to #the-lobby.
+  //
+  // No-op unless all of DISCORD_CRANK_ROLE_ID, DISCORD_GUILD_ID, and
+  // discordClient are set. Never throws.
+  private async crankPruneInactiveMembers(): Promise<void> {
+    const roleId = process.env.DISCORD_CRANK_ROLE_ID;
+    const guildId = process.env.DISCORD_GUILD_ID;
+    const dryRun = process.env.CRANK_ROLE_PRUNE_DRY_RUN === 'true';
+
+    if (!roleId || !guildId || !this.discordClient || !this.walletService) {
+      logger.info(`[keeper] prune skipped — roleId=${!!roleId} guildId=${!!guildId} client=${!!this.discordClient} ws=${!!this.walletService}`);
+      return;
+    }
+
+    try {
+      const windowDays = parseInt(process.env.CRANK_ROLE_PRUNE_WINDOW_DAYS || '7', 10);
+      const sinceMs = Date.now() - windowDays * 86_400_000;
+
+      const guild = await this.discordClient.guilds.fetch(guildId);
+      const role = await guild.roles.fetch(roleId);
+      if (!role) {
+        logger.warn(`[keeper] prune abort — crank role ${roleId} not found in guild ${guildId}`);
+        return;
+      }
+
+      // Fetch full member list to hydrate role members (role.members is a cache).
+      await guild.members.fetch();
+
+      const members = [...role.members.values()];
+      let pruned = 0;
+      let candidates = 0;
+      for (const member of members) {
+        const userId = `discord:${member.id}`;
+        if (!this.walletService.isRegistered(userId)) continue;
+        if (this.walletService.isActiveWithin(userId, sinceMs)) continue;
+        candidates += 1;
+        if (dryRun) {
+          logger.info(`[keeper] prune DRY — would remove from ${member.user?.tag || member.id}`);
+          continue;
+        }
+        try {
+          await member.roles.remove(role, `inactive ${windowDays}d — no position, no fills`);
+          pruned += 1;
+        } catch (e: any) {
+          logger.warn(`[keeper] failed to remove crank role from ${member.id}: ${e.message}`);
+        }
+      }
+
+      logger.info(`[keeper] prune done — members=${members.length} candidates=${candidates} pruned=${pruned} window=${windowDays}d dryRun=${dryRun}`);
+    } catch (e: any) {
+      logger.warn(`[keeper] crankPruneInactiveMembers error: ${e.message}`);
     }
   }
 

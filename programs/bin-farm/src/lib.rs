@@ -16,7 +16,7 @@
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program;
-use anchor_spl::token_interface::{TokenAccount as ITokenAccount, TransferChecked, transfer_checked, CloseAccount, close_account};
+use anchor_spl::token_interface::{TokenAccount as ITokenAccount, TransferChecked, transfer_checked, CloseAccount, close_account, Mint};
 
 mod meteora_dlmm_cpi;
 use meteora_dlmm_cpi::*;
@@ -41,6 +41,65 @@ pub const TOKEN_2022_PROGRAM_ID: Pubkey =
 
 pub const BANK_MINT_PROGRAM_ID: Pubkey =
     solana_program::pubkey!("FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk");
+
+/// CRANK SPL mint. Used by sweep_rover to read current supply for the burn curve.
+pub const CRANK_MINT: Pubkey =
+    solana_program::pubkey!("Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump");
+
+/// BANK SPL mint decimals. Hardcoded for transfer_checked in rover_burn_and_mint
+/// (bank_mint passed as AccountInfo for CPI compat — decimals not exposed).
+pub const BANK_MINT_DECIMALS: u8 = 6;
+
+/// Burn curve breakpoint: while remaining_supply >= 75% of initial, burn_ratio = 100%.
+/// Below 75%, burn_ratio decays linearly to 0 at supply = 0.
+pub const BURN_CURVE_BREAKPOINT_PPB: u128 = 750_000_000; // 0.75 in parts-per-billion
+
+/// Maximum protocol skim — 20% of fees at endgame (supply = 0).
+pub const MAX_PROTOCOL_SKIM_PPB: u128 = 200_000_000; // 0.20 in parts-per-billion
+
+pub const PPB_SCALE: u128 = 1_000_000_000;
+
+/// Pure curve math. Returns `(burn_ratio_ppb, protocol_skim_ppb)` given current
+/// CRANK supply, initial supply, and the kill switch.
+///
+/// burn_ratio:    1.0 while remaining ≥ 0.75; linearly decays to 0 at remaining = 0
+/// protocol_skim: 0.20 × (1 − burn_ratio)
+///
+/// All math in u128 ppb (parts per billion). Safe across realistic supply ranges
+/// (CRANK total is < 2B with 6 decimals = 2e15 base units, fits in u64).
+pub fn compute_curve(
+    current_supply: u64,
+    initial_supply: u64,
+    burn_enabled: bool,
+) -> (u128, u128) {
+    if !burn_enabled || initial_supply == 0 {
+        // Kill switch: no burn, max protocol skim
+        return (0, MAX_PROTOCOL_SKIM_PPB);
+    }
+    let current = current_supply as u128;
+    let initial = initial_supply as u128;
+    // Clamp current to initial (post-init mints would otherwise push remaining > 1)
+    let current = if current > initial { initial } else { current };
+    let remaining_ppb = current
+        .saturating_mul(PPB_SCALE)
+        .checked_div(initial)
+        .unwrap_or(0);
+    let burn_ratio_ppb = if remaining_ppb >= BURN_CURVE_BREAKPOINT_PPB {
+        PPB_SCALE
+    } else {
+        // Linear decay: burn_ratio = remaining / 0.75
+        remaining_ppb
+            .saturating_mul(PPB_SCALE)
+            .checked_div(BURN_CURVE_BREAKPOINT_PPB)
+            .unwrap_or(0)
+    };
+    let inv_burn_ppb = PPB_SCALE.saturating_sub(burn_ratio_ppb);
+    let protocol_skim_ppb = inv_burn_ppb
+        .saturating_mul(MAX_PROTOCOL_SKIM_PPB)
+        .checked_div(PPB_SCALE)
+        .unwrap_or(0);
+    (burn_ratio_ppb, protocol_skim_ppb)
+}
 
 pub const GAUGE_VOTER_PROGRAM_ID: Pubkey =
     solana_program::pubkey!("DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA");
@@ -1114,58 +1173,20 @@ pub mod bin_farm {
         Ok(())
     }
 
-    /// Fee changes use a 24-hour timelock.
-    /// Step 1: propose_fee sets pending_fee_bps and fee_change_at.
-    /// Step 2: apply_fee (permissionless) applies it after the delay.
-    /// Users can see pending changes on-chain and close positions before they take effect.
-    pub fn propose_fee(ctx: Context<AdminOnly>, new_fee_bps: u16) -> Result<()> {
+    /// Direct admin-gated fee setter. Replaces the prior propose/apply timelock.
+    /// Defensively clears any in-flight pending_fee state from the prior pattern.
+    pub fn set_fee_bps(ctx: Context<AdminOnly>, new_fee_bps: u16) -> Result<()> {
         require!(new_fee_bps <= 1000, CoreError::FeeTooHigh);
         let config = &mut ctx.accounts.config;
-        if config.fee_change_at > 0 {
-            emit!(FeeChangeCancelledEvent {
-                cancelled_fee_bps: config.pending_fee_bps,
-                was_effective_at: config.fee_change_at,
-            });
-        }
-        config.pending_fee_bps = new_fee_bps;
-        config.fee_change_at = Clock::get()?.unix_timestamp
-            .checked_add(86_400) // 24 hours
-            .ok_or(CoreError::Overflow)?;
-        msg!("Fee change proposed: {} bps, effective at {}", new_fee_bps, config.fee_change_at);
-        emit!(FeeChangeProposedEvent {
-            new_fee_bps,
-            effective_at: config.fee_change_at,
-        });
-        Ok(())
-    }
-
-    /// Step 2: Apply a previously proposed fee change. Permissionless — anyone can call
-    /// once the timelock has expired. This ensures the change happens on schedule.
-    pub fn apply_fee(ctx: Context<ApplyFee>) -> Result<()> {
-        let config = &mut ctx.accounts.config;
-        require!(config.fee_change_at > 0, CoreError::NoPendingFeeChange);
-        require!(
-            Clock::get()?.unix_timestamp >= config.fee_change_at,
-            CoreError::FeeTimelockNotExpired
-        );
         let old_fee = config.fee_bps;
-        config.fee_bps = config.pending_fee_bps;
+        config.fee_bps = new_fee_bps;
         config.pending_fee_bps = 0;
         config.fee_change_at = 0;
-        msg!("Fee applied: {} bps → {} bps", old_fee, config.fee_bps);
+        msg!("Fee set: {} bps → {} bps", old_fee, new_fee_bps);
         emit!(FeeAppliedEvent {
             old_fee_bps: old_fee,
-            new_fee_bps: config.fee_bps,
+            new_fee_bps,
         });
-        Ok(())
-    }
-
-    pub fn cancel_pending_fee(ctx: Context<AdminOnly>) -> Result<()> {
-        let config = &mut ctx.accounts.config;
-        require!(config.fee_change_at > 0, CoreError::NoPendingFeeChange);
-        config.pending_fee_bps = 0;
-        config.fee_change_at = 0;
-        msg!("Pending fee change cancelled");
         Ok(())
     }
 
@@ -1323,7 +1344,9 @@ pub mod bin_farm {
         rover.pending_revenue_dest = Pubkey::default();
         rover.revenue_dest_change_at = 0;
         rover.trader_dest = Pubkey::default();
-        rover._reserved = [0u8; 32];
+        rover.initial_crank_supply = 0;
+        rover.burn_enabled = false;
+        rover._reserved = [0u8; 23];
 
         msg!("Rover authority initialized. revenue_dest={}", revenue_dest);
         Ok(())
@@ -1342,6 +1365,46 @@ pub mod bin_farm {
         emit!(AdminConfigEvent {
             field: "trader_dest".into(),
             authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        Ok(())
+    }
+
+    /// One-shot: snapshot CRANK supply at curve activation, enable burn,
+    /// and create the burn_sol_vault PDA that stages SOL for buy-side bids.
+    /// Admin only. Errors if already initialized (initial_crank_supply > 0).
+    /// Snapshot is read directly from the passed CRANK mint account.
+    pub fn initialize_burn_curve(ctx: Context<InitializeBurnCurve>) -> Result<()> {
+        let rover = &mut ctx.accounts.rover_authority;
+        require!(rover.initial_crank_supply == 0, CoreError::BurnCurveAlreadyInitialized);
+        let supply = ctx.accounts.crank_mint.supply;
+        require!(supply > 0, CoreError::ZeroAmount);
+        rover.initial_crank_supply = supply;
+        rover.burn_enabled = true;
+        ctx.accounts.burn_sol_vault.bump = ctx.bumps.burn_sol_vault;
+        msg!(
+            "Burn curve initialized: initial_crank_supply={} burn_enabled=true",
+            supply
+        );
+        emit!(BurnCurveInitializedEvent {
+            initial_crank_supply: supply,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        Ok(())
+    }
+
+    /// Toggle the burn kill switch. Admin only.
+    /// When false, sweep_rover clamps burn_ratio to 0 and routes all SOL
+    /// 80% trader / 20% protocol regardless of supply position on the curve.
+    pub fn set_burn_enabled(
+        ctx: Context<UpdateRoverDistPool>,
+        enabled: bool,
+    ) -> Result<()> {
+        let rover = &mut ctx.accounts.rover_authority;
+        rover.burn_enabled = enabled;
+        msg!("Burn enabled: {}", enabled);
+        emit!(BurnEnabledEvent {
+            enabled,
             timestamp: Clock::get()?.unix_timestamp,
         });
         Ok(())
@@ -1536,46 +1599,69 @@ pub mod bin_farm {
         Ok(())
     }
 
-    /// Sweep SOL from rover_authority — 40% holders, 40% traders, 20% bot.
-    /// Permissionless — anyone can call.
+    /// Sweep SOL from rover_authority via the curve.
+    /// Splits into burn_sol (→ burn_sol_vault), trader_sol (→ trader_dest),
+    /// protocol_sol (→ Config.bot). Permissionless — anyone can call.
+    /// Errors if the burn curve has not been initialized.
     pub fn sweep_rover(ctx: Context<SweepRover>) -> Result<()> {
         let is_authorized_bot = ctx.accounts.caller.key() == ctx.accounts.config.bot;
         if is_authorized_bot {
             ctx.accounts.config.last_bot_sweep_slot = Clock::get()?.slot;
         }
 
+        let rover = &ctx.accounts.rover_authority;
+        require!(rover.initial_crank_supply > 0, CoreError::BurnCurveNotInitialized);
+
         let rover_lamports = ctx.accounts.rover_authority.to_account_info().lamports();
         let rent = Rent::get()?.minimum_balance(RoverAuthority::SIZE);
         let sweepable = rover_lamports.saturating_sub(rent);
-
         require!(sweepable > 0, CoreError::NothingToSweep);
 
-        let holder_share = sweepable.checked_mul(40).ok_or(CoreError::Overflow)?
-            .checked_div(100).ok_or(CoreError::Overflow)?;
-        let trader_share = sweepable.checked_mul(40).ok_or(CoreError::Overflow)?
-            .checked_div(100).ok_or(CoreError::Overflow)?;
-        let operator_share = sweepable.checked_sub(holder_share).ok_or(CoreError::Overflow)?
-            .checked_sub(trader_share).ok_or(CoreError::Overflow)?;
+        let crank_supply = ctx.accounts.crank_mint.supply;
+        let (burn_ratio_ppb, protocol_skim_ppb) =
+            compute_curve(crank_supply, rover.initial_crank_supply, rover.burn_enabled);
+
+        let sweepable_u128 = sweepable as u128;
+        let burn_sol = sweepable_u128
+            .saturating_mul(burn_ratio_ppb)
+            .checked_div(PPB_SCALE)
+            .ok_or(CoreError::Overflow)? as u64;
+        let protocol_sol = sweepable_u128
+            .saturating_mul(protocol_skim_ppb)
+            .checked_div(PPB_SCALE)
+            .ok_or(CoreError::Overflow)? as u64;
+        // Trader share absorbs rounding remainder so all sweepable lamports leave the rover.
+        let trader_sol = sweepable
+            .checked_sub(burn_sol).ok_or(CoreError::Overflow)?
+            .checked_sub(protocol_sol).ok_or(CoreError::Overflow)?;
 
         **ctx.accounts.rover_authority.to_account_info().try_borrow_mut_lamports()? -= sweepable;
-        **ctx.accounts.revenue_dest.try_borrow_mut_lamports()? += holder_share;
-        **ctx.accounts.trader_dest.try_borrow_mut_lamports()? += trader_share;
-        **ctx.accounts.bot_dest.try_borrow_mut_lamports()? += operator_share;
+        if burn_sol > 0 {
+            **ctx.accounts.burn_sol_vault.to_account_info().try_borrow_mut_lamports()? += burn_sol;
+        }
+        if trader_sol > 0 {
+            **ctx.accounts.trader_dest.try_borrow_mut_lamports()? += trader_sol;
+        }
+        if protocol_sol > 0 {
+            **ctx.accounts.bot_dest.try_borrow_mut_lamports()? += protocol_sol;
+        }
 
-        emit!(RoverSweptEvent {
-            amount: sweepable,
-            holder_share,
-            trader_share,
-            operator_share,
-            holder_dest: ctx.accounts.revenue_dest.key(),
-            trader_dest: ctx.accounts.trader_dest.key(),
-            bot: ctx.accounts.bot_dest.key(),
+        emit!(SweepCurveEvent {
+            total_sweepable: sweepable,
+            burn_sol,
+            trader_sol,
+            protocol_sol,
+            burn_ratio_ppb: burn_ratio_ppb as u64,
+            protocol_skim_ppb: protocol_skim_ppb as u64,
+            crank_supply,
+            initial_crank_supply: rover.initial_crank_supply,
+            burn_enabled: rover.burn_enabled,
             timestamp: Clock::get()?.unix_timestamp,
         });
 
         msg!(
-            "Swept {} lamports — {} holders, {} traders, {} bot",
-            sweepable, holder_share, trader_share, operator_share
+            "Swept {} lamports — burn={} trader={} protocol={} (burn_ratio_ppb={} skim_ppb={})",
+            sweepable, burn_sol, trader_sol, protocol_sol, burn_ratio_ppb, protocol_skim_ppb
         );
         Ok(())
     }
@@ -1909,6 +1995,198 @@ pub mod bin_farm {
         Ok(())
     }
 
+    /// Move SOL from burn_sol_vault to rover_authority's WSOL ATA.
+    /// Bot calls this, then calls SPL `sync_native` in the next ix of the same tx.
+    /// Direct lamport manipulation is allowed because both accounts are addressable
+    /// here: burn_sol_vault is bin-farm-owned (debit allowed), rover_wsol_account
+    /// is token-owned (credit-add allowed for any program).
+    pub fn wrap_burn_sol(ctx: Context<WrapBurnSol>, amount: u64) -> Result<()> {
+        require!(amount > 0, CoreError::ZeroAmount);
+
+        let rent = Rent::get()?.minimum_balance(BurnSolVault::SIZE);
+        let available = ctx.accounts.burn_sol_vault.to_account_info().lamports()
+            .saturating_sub(rent);
+        require!(amount <= available, CoreError::InsufficientBalance);
+
+        // sync_native must be called AFTER this ix (separate ix in same tx) — same
+        // pattern as wrap_sol_in_vault. CPI to sync_native here would observe a
+        // mid-instruction lamport delta and fail.
+        **ctx.accounts.burn_sol_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
+        **ctx.accounts.rover_wsol_account.to_account_info().try_borrow_mut_lamports()? += amount;
+
+        msg!("Wrapped {} lamports from burn_sol_vault → rover WSOL ATA", amount);
+        Ok(())
+    }
+
+    /// Open a buy-side BidAsk DLMM position from rover_authority's WSOL ATA.
+    /// Mirrors `open_fee_rover` but: (1) deposits below active_id (buy side),
+    /// (2) Y-only (SOL/WSOL) deposit, (3) source ATA is rover's WSOL.
+    /// Bot-gated. Bot pays rent for Position + Vault PDAs.
+    pub fn open_rover_bid_position<'info>(
+        ctx: Context<'_, '_, 'info, 'info, OpenRoverBidPosition<'info>>,
+        amount: u64,
+        bin_step: u16,
+    ) -> Result<()> {
+        require!(amount > 0, CoreError::ZeroAmount);
+        require!(bin_step >= MIN_ROVER_BIN_STEP, CoreError::RoverBinStepTooSmall);
+
+        // Validate vault_token_y owner = vault PDA
+        {
+            let data = ctx.accounts.vault_token_y.try_borrow_data()?;
+            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
+            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
+            require!(owner == ctx.accounts.vault.key(), CoreError::InvalidTokenOwner);
+        }
+
+        // Read active_id from on-chain lb_pair
+        let active_id = {
+            let data = ctx.accounts.lb_pair.try_borrow_data()?;
+            require!(data.len() >= 80, CoreError::InvalidPool);
+            i32::from_le_bytes(data[76..80].try_into().map_err(|_| CoreError::Overflow)?)
+        };
+        require!(active_id > -443636 && active_id < 443636, CoreError::InvalidBinRange);
+
+        // Overflow accounts: event_authority, dlmm_program
+        require!(ctx.remaining_accounts.len() >= 2, CoreError::NoBinsProvided);
+        let event_authority = ctx.remaining_accounts[0].to_account_info();
+        let dlmm_program = ctx.remaining_accounts[1].to_account_info();
+        require!(dlmm_program.key() == METEORA_DLMM_PROGRAM_ID, CoreError::InvalidProgram);
+
+        // BUY SIDE: bins below active_id
+        let width = core::cmp::min(70_i32, core::cmp::max(1_i32, 6931_i32 / (bin_step as i32)));
+        let max_bin_id = active_id.checked_sub(1).ok_or(CoreError::Overflow)?;
+        let min_bin_id = max_bin_id
+            .checked_sub(width.checked_sub(1).ok_or(CoreError::Overflow)?)
+            .ok_or(CoreError::Overflow)?;
+        let max_active_bin_slippage = 10;
+
+        // Transfer WSOL from rover_wsol_account → vault_token_y (rover_authority signs)
+        let rover_signer_seeds: &[&[u8]] = &[b"rover_authority", &[ctx.accounts.rover_authority.bump]];
+        let rover_signer = &[rover_signer_seeds];
+
+        {
+            let transfer_ix = anchor_lang::solana_program::instruction::Instruction {
+                program_id: *ctx.accounts.token_y_program.key,
+                accounts: vec![
+                    anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_wsol_account.key(), false),
+                    anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_token_y.key(), false),
+                    anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.rover_authority.key(), true),
+                ],
+                data: {
+                    let mut d = vec![3u8];
+                    d.extend_from_slice(&amount.to_le_bytes());
+                    d
+                },
+            };
+            anchor_lang::solana_program::program::invoke_signed(
+                &transfer_ix,
+                &[
+                    ctx.accounts.rover_wsol_account.to_account_info(),
+                    ctx.accounts.vault_token_y.to_account_info(),
+                    ctx.accounts.rover_authority.to_account_info(),
+                    ctx.accounts.token_y_program.to_account_info(),
+                ],
+                rover_signer,
+            )?;
+        }
+
+        // Vault PDA signs Meteora CPIs
+        let meteora_pos_key = ctx.accounts.meteora_position.key();
+        let vault_seeds: &[&[u8]] = &[b"vault", meteora_pos_key.as_ref(), &[ctx.bumps.vault]];
+        let signer = &[vault_seeds];
+
+        // Initialize Meteora position (vault PDA = owner)
+        initialize_position2(
+            &[
+                ctx.accounts.bot.to_account_info(),
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.lb_pair.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+                event_authority.clone(),
+                dlmm_program.clone(),
+            ],
+            min_bin_id,
+            width,
+            signer,
+        )?;
+
+        // Add buy-side liquidity: amount_y only (WSOL/SOL deposited)
+        let liquidity_params = LiquidityParameterByStrategy {
+            amount_x: 0,
+            amount_y: amount,
+            active_id,
+            max_active_bin_slippage,
+            strategy_parameters: StrategyParameters::bid_ask_imbalanced(min_bin_id, max_bin_id),
+        };
+        add_liquidity_by_strategy2(
+            &[
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.lb_pair.to_account_info(),
+                ctx.accounts.bin_array_bitmap_ext.to_account_info(),
+                ctx.accounts.vault_token_x.to_account_info(),
+                ctx.accounts.vault_token_y.to_account_info(),
+                ctx.accounts.reserve_x.to_account_info(),
+                ctx.accounts.reserve_y.to_account_info(),
+                ctx.accounts.token_x_mint.to_account_info(),
+                ctx.accounts.token_y_mint.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.token_x_program.to_account_info(),
+                ctx.accounts.token_y_program.to_account_info(),
+                event_authority,
+                dlmm_program,
+            ],
+            liquidity_params,
+            RemainingAccountsInfo::empty_hooks(),
+            signer,
+            &[ctx.accounts.bin_array_lower.to_account_info(), ctx.accounts.bin_array_upper.to_account_info()],
+        )?;
+
+        // Position metadata — owner is rover_authority, side is Buy
+        let position_key = ctx.accounts.position.key();
+        let rover_key = ctx.accounts.rover_authority.key();
+        let lb_pair_key = ctx.accounts.lb_pair.key();
+        let created_at = Clock::get()?.unix_timestamp;
+
+        let position = &mut ctx.accounts.position;
+        position.user_vault = rover_key;
+        position.lb_pair = lb_pair_key;
+        position.meteora_position = ctx.accounts.meteora_position.key();
+        position.side = Side::Buy;
+        position.min_bin_id = min_bin_id;
+        position.max_bin_id = max_bin_id;
+        position.initial_amount = amount;
+        position.harvested_amount = 0;
+        position.created_at = created_at;
+        position.bump = ctx.bumps.position;
+
+        let vault = &mut ctx.accounts.vault;
+        vault.position = ctx.accounts.meteora_position.key();
+        vault.bump = ctx.bumps.vault;
+
+        let config = &mut ctx.accounts.config;
+        config.total_positions = config.total_positions.saturating_add(1);
+
+        let rover = &mut ctx.accounts.rover_authority;
+        rover.total_rover_positions = rover.total_rover_positions.saturating_add(1);
+
+        emit!(RoverOpenedEvent {
+            depositor: ctx.accounts.bot.key(),
+            lb_pair: lb_pair_key,
+            position: position_key,
+            token_mint: ctx.accounts.token_y_mint.key(),
+            amount,
+            active_id,
+            bin_step,
+            min_bin_id,
+            max_bin_id,
+            timestamp: created_at,
+        });
+
+        msg!("Rover bid opened: {} bins [{},{}] sol={}", width, min_bin_id, max_bin_id, amount);
+        Ok(())
+    }
+
     // ============ USER VAULT INSTRUCTIONS ============
 
     /// Create a vault PDA for a user. Anyone can pay rent. The vault is
@@ -2149,6 +2427,81 @@ pub mod bin_farm {
         )?;
 
         msg!("Vault burned {} CRANK → minted BANK", amount);
+        Ok(())
+    }
+
+    /// Burn CRANK accumulated on rover_authority → mint BANK → forward to
+    /// bank-distributor vault for daily Merkle distribution.
+    ///
+    /// Two-step inside one instruction:
+    ///   1. CPI bank-mint::burn_and_mint with rover_authority as `user`.
+    ///      Burns rover's CRANK ATA, mints BANK to rover's BANK ATA.
+    ///   2. transfer_checked from rover's BANK ATA → bank_distributor_vault.
+    ///
+    /// Bot-gated. The full balance of rover's CRANK ATA is burned; caller
+    /// passes `amount` for explicit auditability.
+    pub fn rover_burn_and_mint(ctx: Context<RoverBurnAndMint>, amount: u64) -> Result<()> {
+        require!(amount > 0, CoreError::ZeroAmount);
+        require!(
+            ctx.accounts.bank_mint_program.key() == BANK_MINT_PROGRAM_ID,
+            CoreError::InvalidExternalProgram
+        );
+
+        let rover_seeds: &[&[u8]] = &[b"rover_authority", &[ctx.accounts.rover_authority.bump]];
+        let rover_signer = &[rover_seeds];
+
+        // Step 1: CPI burn_and_mint
+        let mut data = vec![0xcbu8, 0x8e, 0x42, 0x51, 0xc7, 0xaa, 0x43, 0x82];
+        data.extend_from_slice(&amount.to_le_bytes());
+
+        let ix = anchor_lang::solana_program::instruction::Instruction {
+            program_id: BANK_MINT_PROGRAM_ID,
+            accounts: vec![
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_authority.key(), true),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.bank_config.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.crank_mint.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.bank_mint.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_crank_ata.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_bank_ata.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.crank_token_program.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.bank_token_program.key(), false),
+            ],
+            data,
+        };
+
+        anchor_lang::solana_program::program::invoke_signed(
+            &ix,
+            &[
+                ctx.accounts.rover_authority.to_account_info(),
+                ctx.accounts.bank_config.to_account_info(),
+                ctx.accounts.crank_mint.to_account_info(),
+                ctx.accounts.bank_mint.to_account_info(),
+                ctx.accounts.rover_crank_ata.to_account_info(),
+                ctx.accounts.rover_bank_ata.to_account_info(),
+                ctx.accounts.crank_token_program.to_account_info(),
+                ctx.accounts.bank_token_program.to_account_info(),
+                ctx.accounts.bank_mint_program.to_account_info(),
+            ],
+            rover_signer,
+        )?;
+
+        // Step 2: forward BANK to bank-distributor vault (rover_authority signs)
+        transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.bank_token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.rover_bank_ata.to_account_info(),
+                    mint: ctx.accounts.bank_mint.to_account_info(),
+                    to: ctx.accounts.bank_distributor_vault.to_account_info(),
+                    authority: ctx.accounts.rover_authority.to_account_info(),
+                },
+                rover_signer,
+            ),
+            amount,
+            BANK_MINT_DECIMALS,
+        )?;
+
+        msg!("Rover burned {} CRANK → minted BANK → forwarded to distributor vault", amount);
         Ok(())
     }
 
@@ -2450,21 +2803,35 @@ pub struct CloseEvent {
 }
 
 #[event]
-pub struct FeeChangeProposedEvent {
-    pub new_fee_bps: u16,
-    pub effective_at: i64,
-}
-
-#[event]
 pub struct FeeAppliedEvent {
     pub old_fee_bps: u16,
     pub new_fee_bps: u16,
 }
 
 #[event]
-pub struct FeeChangeCancelledEvent {
-    pub cancelled_fee_bps: u16,
-    pub was_effective_at: i64,
+pub struct BurnCurveInitializedEvent {
+    pub initial_crank_supply: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct BurnEnabledEvent {
+    pub enabled: bool,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct SweepCurveEvent {
+    pub total_sweepable: u64,
+    pub burn_sol: u64,
+    pub trader_sol: u64,
+    pub protocol_sol: u64,
+    pub burn_ratio_ppb: u64,
+    pub protocol_skim_ppb: u64,
+    pub crank_supply: u64,
+    pub initial_crank_supply: u64,
+    pub burn_enabled: bool,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -2581,24 +2948,52 @@ impl UserVault {
 }
 
 /// Rover authority PDA — owns rover (bribe) positions.
-/// Harvest proceeds accumulate here. sweep_rover splits SOL 40/40/20:
-///   40% to revenue_dest (bridge_vault, BANK holders)
-///   40% to trader_dest (trader reward pool)
-///   20% to bot (operations)
+/// Harvest proceeds accumulate here. sweep_rover splits SOL via the supply-driven
+/// burn curve into three destinations:
+///   burn_ratio        → burn_sol_vault PDA (staging for buy-side CRANK bids)
+///   trader_sol_frac   → trader_dest (bridge_vault, distributed as SOL via Merkle)
+///   protocol_skim     → Config.bot (operations)
+///
+/// burn_ratio = min(1.0, (current_supply / initial_crank_supply) / 0.75)
+/// protocol_skim = 0.20 * (1 - burn_ratio)
+/// trader_sol_frac = 1 - burn_ratio - protocol_skim
+///
+/// Kill switch: when burn_enabled = false, burn_ratio is clamped to 0 and
+/// all SOL flows 80% trader / 20% protocol.
+///
+/// `revenue_dest` and its timelock fields are LEGACY — held for backwards-compat
+/// of the on-chain account layout but not referenced by sweep_rover anymore.
 #[account]
 pub struct RoverAuthority {
-    pub revenue_dest: Pubkey,              // Where holder share goes (bridge_vault PDA — 40%)
+    pub revenue_dest: Pubkey,              // LEGACY (was holder share dest; unused in curve model)
     pub total_rover_positions: u64,        // Lifetime count
     pub bump: u8,
-    pub pending_revenue_dest: Pubkey,      // Timelocked: proposed new revenue_dest
-    pub revenue_dest_change_at: i64,       // Timelocked: timestamp when pending can be applied (0 = none)
-    // Carved from _reserved: trader reward destination (40%)
-    pub trader_dest: Pubkey,
-    pub _reserved: [u8; 32],
+    pub pending_revenue_dest: Pubkey,      // LEGACY
+    pub revenue_dest_change_at: i64,       // LEGACY
+    pub trader_dest: Pubkey,               // Trader SOL share destination (bridge_vault)
+    // Carved from _reserved (post-amendment):
+    pub initial_crank_supply: u64,         // Snapshot of crank_mint.supply at curve init (immutable after init)
+    pub burn_enabled: bool,                // Kill switch — when false, sweep_rover skips burn portion
+    pub _reserved: [u8; 23],               // 32 - 8 (u64) - 1 (bool) = 23 bytes remaining
 }
 
 impl RoverAuthority {
-    pub const SIZE: usize = 8 + 32 + 8 + 1 + 32 + 8 + 32 + 32;
+    // 8 (disc) + 32 (revenue_dest) + 8 (total_rover_positions) + 1 (bump)
+    // + 32 (pending_revenue_dest) + 8 (revenue_dest_change_at) + 32 (trader_dest)
+    // + 8 (initial_crank_supply) + 1 (burn_enabled) + 23 (_reserved)
+    pub const SIZE: usize = 8 + 32 + 8 + 1 + 32 + 8 + 32 + 8 + 1 + 23;
+}
+
+/// Burn SOL staging vault PDA. Bin-farm-owned (so we can direct-debit lamports
+/// without going through system_program::transfer with PDA signer + ownership
+/// edge cases). Holds native SOL between sweep_rover and wrap_burn_sol.
+#[account]
+pub struct BurnSolVault {
+    pub bump: u8,
+}
+
+impl BurnSolVault {
+    pub const SIZE: usize = 8 + 1;
 }
 
 // ============ CONTEXTS ============
@@ -3297,6 +3692,52 @@ pub struct UnwrapWsolInVault<'info> {
 // ============ CPI WRAPPER CONTEXTS ============
 
 #[derive(Accounts)]
+pub struct RoverBurnAndMint<'info> {
+    /// Bot-gated.
+    #[account(mut, constraint = caller.key() == config.bot @ CoreError::Unauthorized)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(mut, seeds = [b"rover_authority"], bump = rover_authority.bump)]
+    pub rover_authority: Box<Account<'info, RoverAuthority>>,
+
+    /// CHECK: bank-mint BankConfig PDA
+    #[account(mut)]
+    pub bank_config: AccountInfo<'info>,
+
+    /// CHECK: CRANK mint
+    #[account(mut, address = CRANK_MINT @ CoreError::InvalidCrankMint)]
+    pub crank_mint: AccountInfo<'info>,
+
+    /// CHECK: BANK mint
+    #[account(mut)]
+    pub bank_mint: AccountInfo<'info>,
+
+    /// CHECK: Rover's CRANK ATA — source of burn
+    #[account(mut)]
+    pub rover_crank_ata: AccountInfo<'info>,
+
+    /// CHECK: Rover's BANK ATA — receives minted BANK before forwarding
+    #[account(mut)]
+    pub rover_bank_ata: AccountInfo<'info>,
+
+    /// CHECK: Bank distributor vault — final BANK destination for daily Merkle distribution
+    #[account(mut)]
+    pub bank_distributor_vault: AccountInfo<'info>,
+
+    /// CHECK: Token program for CRANK
+    pub crank_token_program: AccountInfo<'info>,
+
+    /// CHECK: Token program for BANK
+    pub bank_token_program: AccountInfo<'info>,
+
+    /// CHECK: bank-mint program (validated against BANK_MINT_PROGRAM_ID)
+    pub bank_mint_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
 pub struct VaultBurnAndMint<'info> {
     #[account(mut)]
     pub caller: Signer<'info>,
@@ -3378,15 +3819,6 @@ pub struct VaultVote<'info> {
 pub struct AdminOnly<'info> {
     #[account(constraint = authority.key() == config.authority @ CoreError::Unauthorized)]
     pub authority: Signer<'info>,
-
-    #[account(mut, seeds = [b"config"], bump = config.bump)]
-    pub config: Account<'info, Config>,
-}
-
-/// Permissionless fee application — anyone can apply after timelock expires
-#[derive(Accounts)]
-pub struct ApplyFee<'info> {
-    pub caller: Signer<'info>,
 
     #[account(mut, seeds = [b"config"], bump = config.bump)]
     pub config: Account<'info, Config>,
@@ -3606,6 +4038,44 @@ pub struct UpdateRoverDistPool<'info> {
     pub rover_authority: Account<'info, RoverAuthority>,
 }
 
+/// Initialize the burn curve. One-shot. Snapshots CRANK supply, enables burn,
+/// creates the burn_sol_vault PDA. Admin only.
+#[derive(Accounts)]
+pub struct InitializeBurnCurve<'info> {
+    #[account(
+        mut,
+        constraint = authority.key() == config.authority @ CoreError::Unauthorized,
+    )]
+    pub authority: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"rover_authority"],
+        bump = rover_authority.bump
+    )]
+    pub rover_authority: Account<'info, RoverAuthority>,
+
+    /// CRANK SPL mint — supply read here for the snapshot.
+    #[account(address = CRANK_MINT @ CoreError::InvalidCrankMint)]
+    pub crank_mint: InterfaceAccount<'info, Mint>,
+
+    /// Burn SOL staging vault. Bin-farm-owned PDA — sweep_rover credits via direct
+    /// lamport ADD, wrap_burn_sol direct-debits to fund DLMM bid positions.
+    #[account(
+        init,
+        payer = authority,
+        space = BurnSolVault::SIZE,
+        seeds = [b"burn_sol_vault"],
+        bump,
+    )]
+    pub burn_sol_vault: Box<Account<'info, BurnSolVault>>,
+
+    pub system_program: Program<'info, System>,
+}
+
 /// Permissionless apply for revenue_dest after 24hr timelock
 #[derive(Accounts)]
 pub struct ApplyRevenueDest<'info> {
@@ -3635,15 +4105,19 @@ pub struct SweepRover<'info> {
     )]
     pub rover_authority: Account<'info, RoverAuthority>,
 
-    /// CHECK: Revenue destination — bridge_vault PDA (40% to BANK holders)
+    /// CRANK SPL mint — supply read here for the burn curve.
+    #[account(address = CRANK_MINT @ CoreError::InvalidCrankMint)]
+    pub crank_mint: Box<InterfaceAccount<'info, Mint>>,
+
+    /// Burn SOL staging vault PDA — receives the burn portion of the curve.
     #[account(
         mut,
-        constraint = revenue_dest.key() == rover_authority.revenue_dest @ CoreError::InvalidPool,
-        constraint = !revenue_dest.executable @ CoreError::InvalidDistPool
+        seeds = [b"burn_sol_vault"],
+        bump = burn_sol_vault.bump,
     )]
-    pub revenue_dest: AccountInfo<'info>,
+    pub burn_sol_vault: Box<Account<'info, BurnSolVault>>,
 
-    /// CHECK: Trader reward destination (40% to traders)
+    /// CHECK: Trader reward destination (SOL portion — bridge_vault PDA)
     #[account(
         mut,
         constraint = trader_dest.key() == rover_authority.trader_dest @ CoreError::InvalidTraderDest,
@@ -3652,7 +4126,7 @@ pub struct SweepRover<'info> {
     )]
     pub trader_dest: AccountInfo<'info>,
 
-    /// CHECK: Operator destination — bot keypair from Config (20% to operations)
+    /// CHECK: Operator destination — bot keypair from Config (protocol skim)
     #[account(
         mut,
         constraint = bot_dest.key() == config.bot @ CoreError::InvalidBot,
@@ -3778,7 +4252,107 @@ pub struct CloseRoverPosition<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(amount: u64, bin_step: u16)]
+pub struct WrapBurnSol<'info> {
+    /// Bot-gated.
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump,
+        constraint = caller.key() == config.bot @ CoreError::Unauthorized)]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(seeds = [b"rover_authority"], bump = rover_authority.bump)]
+    pub rover_authority: Box<Account<'info, RoverAuthority>>,
+
+    #[account(mut, seeds = [b"burn_sol_vault"], bump = burn_sol_vault.bump)]
+    pub burn_sol_vault: Box<Account<'info, BurnSolVault>>,
+
+    /// Rover authority's WSOL ATA. Receives lamports here; bot calls SPL
+    /// `sync_native` in the next ix to update the WSOL token balance.
+    #[account(mut,
+        constraint = rover_wsol_account.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
+    pub rover_wsol_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+}
+
+#[derive(Accounts)]
+pub struct OpenRoverBidPosition<'info> {
+    /// Bot-gated — pays rent for Position + Vault PDAs
+    #[account(mut, constraint = bot.key() == config.bot @ CoreError::Unauthorized)]
+    pub bot: Signer<'info>,
+
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(mut, seeds = [b"rover_authority"], bump = rover_authority.bump)]
+    pub rover_authority: Box<Account<'info, RoverAuthority>>,
+
+    /// Source: rover_authority's WSOL ATA, pre-funded by wrap_burn_sol + sync_native.
+    #[account(mut,
+        constraint = rover_wsol_account.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
+    pub rover_wsol_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    // --- Meteora accounts ---
+    /// CHECK: Validated by Meteora CPI
+    #[account(mut)]
+    pub lb_pair: AccountInfo<'info>,
+
+    /// New position keypair (bot generates)
+    #[account(mut)]
+    pub meteora_position: Signer<'info>,
+
+    /// CHECK: Bitmap extension
+    pub bin_array_bitmap_ext: AccountInfo<'info>,
+
+    /// CHECK: Pool reserve X
+    #[account(mut)]
+    pub reserve_x: AccountInfo<'info>,
+
+    /// CHECK: Pool reserve Y
+    #[account(mut)]
+    pub reserve_y: AccountInfo<'info>,
+
+    /// CHECK: Bin array lower
+    #[account(mut)]
+    pub bin_array_lower: AccountInfo<'info>,
+
+    /// CHECK: Bin array upper
+    #[account(mut)]
+    pub bin_array_upper: AccountInfo<'info>,
+
+    // --- crank.money accounts ---
+    #[account(init, payer = bot, space = Position::SIZE,
+        seeds = [b"position", meteora_position.key().as_ref()], bump)]
+    pub position: Box<Account<'info, Position>>,
+
+    #[account(init, payer = bot, space = Vault::SIZE,
+        seeds = [b"vault", meteora_position.key().as_ref()], bump)]
+    pub vault: Box<Account<'info, Vault>>,
+
+    /// CHECK: Vault token X account (CRANK side — receives filled CRANK)
+    #[account(mut)]
+    pub vault_token_x: AccountInfo<'info>,
+
+    /// CHECK: Vault token Y account (WSOL side — bid liquidity)
+    #[account(mut)]
+    pub vault_token_y: AccountInfo<'info>,
+
+    /// CHECK: Token X mint (CRANK)
+    pub token_x_mint: AccountInfo<'info>,
+
+    /// CHECK: Token Y mint (WSOL)
+    pub token_y_mint: AccountInfo<'info>,
+
+    /// CHECK: Token X program
+    pub token_x_program: AccountInfo<'info>,
+
+    /// CHECK: Token Y program
+    pub token_y_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+
+    // event_authority + dlmm_program via remaining_accounts (BPF stack)
+}
+
+#[derive(Accounts)]
 pub struct OpenFeeRover<'info> {
     /// Bot-gated — pays rent for Position + Vault PDAs
     #[account(
@@ -3876,17 +4450,6 @@ pub struct RoverOpenedEvent {
     pub timestamp: i64,
 }
 
-#[event]
-pub struct RoverSweptEvent {
-    pub amount: u64,
-    pub holder_share: u64,
-    pub trader_share: u64,
-    pub operator_share: u64,
-    pub holder_dest: Pubkey,
-    pub trader_dest: Pubkey,
-    pub bot: Pubkey,
-    pub timestamp: i64,
-}
 
 // ============ ERRORS ============
 
@@ -3968,4 +4531,12 @@ pub enum CoreError {
     UnauthorizedCaller,
     #[msg("Invalid external program ID")]
     InvalidExternalProgram,
+    #[msg("Burn curve already initialized — initial_crank_supply is immutable")]
+    BurnCurveAlreadyInitialized,
+    #[msg("Burn curve not initialized — call initialize_burn_curve first")]
+    BurnCurveNotInitialized,
+    #[msg("CRANK mint account does not match expected mint")]
+    InvalidCrankMint,
+    #[msg("Invalid burn SOL vault PDA")]
+    InvalidBurnSolVault,
 }

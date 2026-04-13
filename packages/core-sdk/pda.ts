@@ -11,6 +11,7 @@ import {
   BANK_MINT_PROGRAM_ID,
   GAUGE_VOTER_PROGRAM_ID,
   MERKLE_DISTRIBUTOR_PROGRAM_ID,
+  BANK_DISTRIBUTOR_PROGRAM_ID,
   EPOCH_VAULT_PROGRAM_ID,
   METEORA_DLMM_PROGRAM_ID,
 } from './constants';
@@ -81,6 +82,13 @@ export function getRoverAuthorityPDA(): [PublicKey, number] {
   );
 }
 
+export function getBurnSolVaultPDA(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('burn_sol_vault')],
+    BIN_FARM_PROGRAM_ID
+  );
+}
+
 // ─── bank_mint PDAs ───────────────────────────────────────────────────────
 
 export function getBankConfigPDA(): [PublicKey, number] {
@@ -106,7 +114,7 @@ export function getPoolGaugePDA(lbPair: PublicKey): [PublicKey, number] {
   );
 }
 
-// ─── merkle_distributor PDAs ──────────────────────────────────────────────
+// ─── merkle_distributor PDAs (SOL) ────────────────────────────────────────
 
 export function getDistributorPDA(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
@@ -119,6 +127,22 @@ export function getClaimStatusPDA(distributor: PublicKey, claimant: PublicKey): 
   return PublicKey.findProgramAddressSync(
     [Buffer.from('claim_status'), distributor.toBuffer(), claimant.toBuffer()],
     MERKLE_DISTRIBUTOR_PROGRAM_ID
+  );
+}
+
+// ─── bank_distributor PDAs (BANK) — same seeds, different program ────────
+
+export function getBankDistributorPDA(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('distributor')],
+    BANK_DISTRIBUTOR_PROGRAM_ID
+  );
+}
+
+export function getBankClaimStatusPDA(distributor: PublicKey, claimant: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('claim_status'), distributor.toBuffer(), claimant.toBuffer()],
+    BANK_DISTRIBUTOR_PROGRAM_ID
   );
 }
 

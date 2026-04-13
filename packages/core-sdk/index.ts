@@ -14,3 +14,4 @@ export * from './pool-config';
 export * from './range-parser';
 export * from './pool-router';
 export * from './price-source';
+export * from './burn-curve';

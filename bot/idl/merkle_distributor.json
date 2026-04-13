@@ -54,7 +54,8 @@
       "name": "claim",
       "docs": [
         "Claim accumulated rewards. Anyone can call on behalf of the claimant",
-        "(bot auto-claims for custody wallets using user's SOL for tx fee).",
+        "(bot auto-claims for user vault PDAs; bot pays tx fee, reimbursed via",
+        "deduct_gas on the bundled bin-farm unwrap_wsol_in_vault instruction).",
         "",
         "`cumulative_amount` is the total lifetime entitlement from the current tree.",
         "The program pays out `cumulative_amount - already_claimed`."
@@ -253,9 +254,11 @@
     {
       "name": "new_epoch",
       "docs": [
-        "Upload a new Merkle root for the next epoch.",
-        "The bot calls this daily at 4:20 PM CST after computing rewards.",
-        "Funds the vault with this epoch's $PEGGED in the same transaction."
+        "Publish a new Merkle root. Non-custodial:",
+        "the vault is pre-funded by program flows (drain_vault + sync_native",
+        "for SOL), so this instruction never moves tokens — it only records",
+        "the root and computes this epoch's amount as the delta that appeared",
+        "in the vault since last epoch."
       ],
       "discriminator": [
         145,
@@ -294,31 +297,20 @@
         },
         {
           "name": "authority",
-          "writable": true,
           "signer": true,
           "relations": [
             "distributor"
           ]
         },
         {
-          "name": "mint",
-          "relations": [
-            "distributor"
-          ]
-        },
-        {
           "name": "vault",
-          "writable": true,
+          "docs": [
+            "Read-only: balance is read to compute the epoch delta. Pre-funded by",
+            "drain_vault + sync_native. No transfer happens here."
+          ],
           "relations": [
             "distributor"
           ]
-        },
-        {
-          "name": "funder_ata",
-          "writable": true
-        },
-        {
-          "name": "token_program"
         }
       ],
       "args": [
@@ -330,10 +322,6 @@
               32
             ]
           }
-        },
-        {
-          "name": "epoch_amount",
-          "type": "u64"
         },
         {
           "name": "ipfs_cid",
@@ -490,8 +478,9 @@
     {
       "name": "update_mint",
       "docs": [
-        "Update the distribution mint (e.g. PEGGED → WSOL) and vault ATA.",
-        "Authority-gated. The new vault must be an ATA owned by the distributor PDA."
+        "Update the distribution mint and vault ATA. Authority-gated.",
+        "Authority-gated. The new vault must be an ATA owned by the distributor PDA.",
+        "Old vault must be drained first to prevent stranding funds."
       ],
       "discriminator": [
         212,
@@ -533,6 +522,12 @@
           "signer": true,
           "relations": [
             "distributor"
+          ]
+        },
+        {
+          "name": "old_vault",
+          "docs": [
+            "Current vault — must be drained (amount == 0) before mint can be changed."
           ]
         },
         {
@@ -662,6 +657,11 @@
       "code": 6010,
       "name": "NoPendingAuthority",
       "msg": "No pending authority transfer"
+    },
+    {
+      "code": 6011,
+      "name": "VaultNotDrained",
+      "msg": "Old vault must be drained before updating mint"
     }
   ],
   "types": [

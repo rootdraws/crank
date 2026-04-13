@@ -1,6 +1,36 @@
 import { ChatInputCommandInteraction } from 'discord.js';
-import { PublicKey, SystemProgram } from '@solana/web3.js';
+import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+} from '@solana/spl-token';
+import { CRANK_MINT, TOKEN_2022_PROGRAM_ID } from '@crankbot/core-sdk';
 import type { BotContext } from '../index';
+
+/**
+ * Pre-create the vault's CRANK ATA so users can deposit CRANK immediately
+ * without hitting the "Enable $TOKEN" button flow. crank.money is
+ * CRANK-centric — every vault needs this ATA anyway. Non-blocking: any error
+ * is logged and swallowed so vault creation still reports success.
+ */
+async function ensureCrankAta(ctx: BotContext, vaultPda: PublicKey): Promise<void> {
+  try {
+    const ata = getAssociatedTokenAddressSync(CRANK_MINT, vaultPda, true, TOKEN_2022_PROGRAM_ID);
+    const info = await ctx.connection.getAccountInfo(ata);
+    if (info) return;
+    const tx = new Transaction().add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        ctx.botKeypair.publicKey, ata, vaultPda, CRANK_MINT, TOKEN_2022_PROGRAM_ID,
+      ),
+    );
+    tx.feePayer = ctx.botKeypair.publicKey;
+    tx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+    tx.sign(ctx.botKeypair);
+    await ctx.connection.sendRawTransaction(tx.serialize());
+  } catch (e: any) {
+    console.error('[start] Failed to pre-create CRANK ATA:', e.message?.slice(0, 120));
+  }
+}
 
 export async function handleStart(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
   const userId = `discord:${interaction.user.id}`;
@@ -37,12 +67,14 @@ export async function handleStart(interaction: ChatInputCommandInteraction, ctx:
         })
         .rpc();
 
+      await ensureCrankAta(ctx, existingVault);
+
       await interaction.editReply({
         content:
           `Vault initialized!\n\n` +
           `**Deposit address:** \`${existingVault.toBase58()}\`\n` +
           `**Withdraw wallet:** \`${ownerWallet.toBase58()}\`\n\n` +
-          `Send at least **0.25 SOL** to your deposit address, then use \`/buy\` to open positions.\n` +
+          `Send at least **0.05 SOL** to your deposit address, then use \`/buy\` to open positions.\n` +
           `All withdrawals go to your wallet automatically — enforced on-chain.`,
       });
       return;
@@ -102,6 +134,8 @@ export async function handleStart(interaction: ChatInputCommandInteraction, ctx:
 
     // On-chain succeeded — now save locally
     ctx.walletService.registerUser(userId, ownerWallet);
+
+    await ensureCrankAta(ctx, vaultPda);
 
     await interaction.editReply({
       content:

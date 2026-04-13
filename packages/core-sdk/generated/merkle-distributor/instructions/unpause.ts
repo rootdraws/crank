@@ -30,97 +30,90 @@ import {
   type TransactionSigner,
   type WritableAccount,
 } from '@solana/kit';
-import { BIN_FARM_PROGRAM_ADDRESS } from '../programs';
+import { MERKLE_DISTRIBUTOR_PROGRAM_ADDRESS } from '../programs';
 import { getAccountMetaFactory, type ResolvedAccount } from '../shared';
 
-export const CANCEL_PENDING_FEE_DISCRIMINATOR = new Uint8Array([
-  36, 129, 126, 217, 77, 252, 83, 220,
+export const UNPAUSE_DISCRIMINATOR = new Uint8Array([
+  169, 144, 4, 38, 10, 141, 188, 255,
 ]);
 
-export function getCancelPendingFeeDiscriminatorBytes() {
-  return fixEncoderSize(getBytesEncoder(), 8).encode(
-    CANCEL_PENDING_FEE_DISCRIMINATOR
-  );
+export function getUnpauseDiscriminatorBytes() {
+  return fixEncoderSize(getBytesEncoder(), 8).encode(UNPAUSE_DISCRIMINATOR);
 }
 
-export type CancelPendingFeeInstruction<
-  TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
+export type UnpauseInstruction<
+  TProgram extends string = typeof MERKLE_DISTRIBUTOR_PROGRAM_ADDRESS,
+  TAccountDistributor extends string | AccountMeta<string> = string,
   TAccountAuthority extends string | AccountMeta<string> = string,
-  TAccountConfig extends string | AccountMeta<string> = string,
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
+      TAccountDistributor extends string
+        ? WritableAccount<TAccountDistributor>
+        : TAccountDistributor,
       TAccountAuthority extends string
         ? ReadonlySignerAccount<TAccountAuthority> &
             AccountSignerMeta<TAccountAuthority>
         : TAccountAuthority,
-      TAccountConfig extends string
-        ? WritableAccount<TAccountConfig>
-        : TAccountConfig,
       ...TRemainingAccounts,
     ]
   >;
 
-export type CancelPendingFeeInstructionData = {
-  discriminator: ReadonlyUint8Array;
-};
+export type UnpauseInstructionData = { discriminator: ReadonlyUint8Array };
 
-export type CancelPendingFeeInstructionDataArgs = {};
+export type UnpauseInstructionDataArgs = {};
 
-export function getCancelPendingFeeInstructionDataEncoder(): FixedSizeEncoder<CancelPendingFeeInstructionDataArgs> {
+export function getUnpauseInstructionDataEncoder(): FixedSizeEncoder<UnpauseInstructionDataArgs> {
   return transformEncoder(
     getStructEncoder([['discriminator', fixEncoderSize(getBytesEncoder(), 8)]]),
-    (value) => ({ ...value, discriminator: CANCEL_PENDING_FEE_DISCRIMINATOR })
+    (value) => ({ ...value, discriminator: UNPAUSE_DISCRIMINATOR })
   );
 }
 
-export function getCancelPendingFeeInstructionDataDecoder(): FixedSizeDecoder<CancelPendingFeeInstructionData> {
+export function getUnpauseInstructionDataDecoder(): FixedSizeDecoder<UnpauseInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
   ]);
 }
 
-export function getCancelPendingFeeInstructionDataCodec(): FixedSizeCodec<
-  CancelPendingFeeInstructionDataArgs,
-  CancelPendingFeeInstructionData
+export function getUnpauseInstructionDataCodec(): FixedSizeCodec<
+  UnpauseInstructionDataArgs,
+  UnpauseInstructionData
 > {
   return combineCodec(
-    getCancelPendingFeeInstructionDataEncoder(),
-    getCancelPendingFeeInstructionDataDecoder()
+    getUnpauseInstructionDataEncoder(),
+    getUnpauseInstructionDataDecoder()
   );
 }
 
-export type CancelPendingFeeAsyncInput<
+export type UnpauseAsyncInput<
+  TAccountDistributor extends string = string,
   TAccountAuthority extends string = string,
-  TAccountConfig extends string = string,
 > = {
+  distributor?: Address<TAccountDistributor>;
   authority: TransactionSigner<TAccountAuthority>;
-  config?: Address<TAccountConfig>;
 };
 
-export async function getCancelPendingFeeInstructionAsync<
+export async function getUnpauseInstructionAsync<
+  TAccountDistributor extends string,
   TAccountAuthority extends string,
-  TAccountConfig extends string,
-  TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
+  TProgramAddress extends Address = typeof MERKLE_DISTRIBUTOR_PROGRAM_ADDRESS,
 >(
-  input: CancelPendingFeeAsyncInput<TAccountAuthority, TAccountConfig>,
+  input: UnpauseAsyncInput<TAccountDistributor, TAccountAuthority>,
   config?: { programAddress?: TProgramAddress }
 ): Promise<
-  CancelPendingFeeInstruction<
-    TProgramAddress,
-    TAccountAuthority,
-    TAccountConfig
-  >
+  UnpauseInstruction<TProgramAddress, TAccountDistributor, TAccountAuthority>
 > {
   // Program address.
-  const programAddress = config?.programAddress ?? BIN_FARM_PROGRAM_ADDRESS;
+  const programAddress =
+    config?.programAddress ?? MERKLE_DISTRIBUTOR_PROGRAM_ADDRESS;
 
   // Original accounts.
   const originalAccounts = {
+    distributor: { value: input.distributor ?? null, isWritable: true },
     authority: { value: input.authority ?? null, isWritable: false },
-    config: { value: input.config ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -128,11 +121,13 @@ export async function getCancelPendingFeeInstructionAsync<
   >;
 
   // Resolve default values.
-  if (!accounts.config.value) {
-    accounts.config.value = await getProgramDerivedAddress({
+  if (!accounts.distributor.value) {
+    accounts.distributor.value = await getProgramDerivedAddress({
       programAddress,
       seeds: [
-        getBytesEncoder().encode(new Uint8Array([99, 111, 110, 102, 105, 103])),
+        getBytesEncoder().encode(
+          new Uint8Array([100, 105, 115, 116, 114, 105, 98, 117, 116, 111, 114])
+        ),
       ],
     });
   }
@@ -140,45 +135,42 @@ export async function getCancelPendingFeeInstructionAsync<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.distributor),
       getAccountMeta(accounts.authority),
-      getAccountMeta(accounts.config),
     ],
-    data: getCancelPendingFeeInstructionDataEncoder().encode({}),
+    data: getUnpauseInstructionDataEncoder().encode({}),
     programAddress,
-  } as CancelPendingFeeInstruction<
+  } as UnpauseInstruction<
     TProgramAddress,
-    TAccountAuthority,
-    TAccountConfig
+    TAccountDistributor,
+    TAccountAuthority
   >);
 }
 
-export type CancelPendingFeeInput<
+export type UnpauseInput<
+  TAccountDistributor extends string = string,
   TAccountAuthority extends string = string,
-  TAccountConfig extends string = string,
 > = {
+  distributor: Address<TAccountDistributor>;
   authority: TransactionSigner<TAccountAuthority>;
-  config: Address<TAccountConfig>;
 };
 
-export function getCancelPendingFeeInstruction<
+export function getUnpauseInstruction<
+  TAccountDistributor extends string,
   TAccountAuthority extends string,
-  TAccountConfig extends string,
-  TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
+  TProgramAddress extends Address = typeof MERKLE_DISTRIBUTOR_PROGRAM_ADDRESS,
 >(
-  input: CancelPendingFeeInput<TAccountAuthority, TAccountConfig>,
+  input: UnpauseInput<TAccountDistributor, TAccountAuthority>,
   config?: { programAddress?: TProgramAddress }
-): CancelPendingFeeInstruction<
-  TProgramAddress,
-  TAccountAuthority,
-  TAccountConfig
-> {
+): UnpauseInstruction<TProgramAddress, TAccountDistributor, TAccountAuthority> {
   // Program address.
-  const programAddress = config?.programAddress ?? BIN_FARM_PROGRAM_ADDRESS;
+  const programAddress =
+    config?.programAddress ?? MERKLE_DISTRIBUTOR_PROGRAM_ADDRESS;
 
   // Original accounts.
   const originalAccounts = {
+    distributor: { value: input.distributor ?? null, isWritable: true },
     authority: { value: input.authority ?? null, isWritable: false },
-    config: { value: input.config ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -188,38 +180,38 @@ export function getCancelPendingFeeInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
+      getAccountMeta(accounts.distributor),
       getAccountMeta(accounts.authority),
-      getAccountMeta(accounts.config),
     ],
-    data: getCancelPendingFeeInstructionDataEncoder().encode({}),
+    data: getUnpauseInstructionDataEncoder().encode({}),
     programAddress,
-  } as CancelPendingFeeInstruction<
+  } as UnpauseInstruction<
     TProgramAddress,
-    TAccountAuthority,
-    TAccountConfig
+    TAccountDistributor,
+    TAccountAuthority
   >);
 }
 
-export type ParsedCancelPendingFeeInstruction<
-  TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
+export type ParsedUnpauseInstruction<
+  TProgram extends string = typeof MERKLE_DISTRIBUTOR_PROGRAM_ADDRESS,
   TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    authority: TAccountMetas[0];
-    config: TAccountMetas[1];
+    distributor: TAccountMetas[0];
+    authority: TAccountMetas[1];
   };
-  data: CancelPendingFeeInstructionData;
+  data: UnpauseInstructionData;
 };
 
-export function parseCancelPendingFeeInstruction<
+export function parseUnpauseInstruction<
   TProgram extends string,
   TAccountMetas extends readonly AccountMeta[],
 >(
   instruction: Instruction<TProgram> &
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
-): ParsedCancelPendingFeeInstruction<TProgram, TAccountMetas> {
+): ParsedUnpauseInstruction<TProgram, TAccountMetas> {
   if (instruction.accounts.length < 2) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
@@ -232,7 +224,7 @@ export function parseCancelPendingFeeInstruction<
   };
   return {
     programAddress: instruction.programAddress,
-    accounts: { authority: getNextAccount(), config: getNextAccount() },
-    data: getCancelPendingFeeInstructionDataDecoder().decode(instruction.data),
+    accounts: { distributor: getNextAccount(), authority: getNextAccount() },
+    data: getUnpauseInstructionDataDecoder().decode(instruction.data),
   };
 }

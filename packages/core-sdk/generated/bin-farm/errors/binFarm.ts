@@ -90,17 +90,29 @@ export const BIN_FARM_ERROR__INVALID_VAULT_OWNER = 0x1793; // 6035
 export const BIN_FARM_ERROR__UNAUTHORIZED_CALLER = 0x1794; // 6036
 /** InvalidExternalProgram: Invalid external program ID */
 export const BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM = 0x1795; // 6037
+/** BurnCurveAlreadyInitialized: Burn curve already initialized — initial_crank_supply is immutable */
+export const BIN_FARM_ERROR__BURN_CURVE_ALREADY_INITIALIZED = 0x1796; // 6038
+/** BurnCurveNotInitialized: Burn curve not initialized — call initialize_burn_curve first */
+export const BIN_FARM_ERROR__BURN_CURVE_NOT_INITIALIZED = 0x1797; // 6039
+/** InvalidCrankMint: CRANK mint account does not match expected mint */
+export const BIN_FARM_ERROR__INVALID_CRANK_MINT = 0x1798; // 6040
+/** InvalidBurnSolVault: Invalid burn SOL vault PDA */
+export const BIN_FARM_ERROR__INVALID_BURN_SOL_VAULT = 0x1799; // 6041
 
 export type BinFarmError =
   | typeof BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE
   | typeof BIN_FARM_ERROR__BOT_NOT_STALE
   | typeof BIN_FARM_ERROR__BOT_PAUSED
+  | typeof BIN_FARM_ERROR__BURN_CURVE_ALREADY_INITIALIZED
+  | typeof BIN_FARM_ERROR__BURN_CURVE_NOT_INITIALIZED
   | typeof BIN_FARM_ERROR__EMERGENCY_CLOSE_TIMELOCK_NOT_EXPIRED
   | typeof BIN_FARM_ERROR__FEE_TIMELOCK_NOT_EXPIRED
   | typeof BIN_FARM_ERROR__FEE_TOO_HIGH
   | typeof BIN_FARM_ERROR__INSUFFICIENT_BALANCE
   | typeof BIN_FARM_ERROR__INVALID_BIN_RANGE
   | typeof BIN_FARM_ERROR__INVALID_BOT
+  | typeof BIN_FARM_ERROR__INVALID_BURN_SOL_VAULT
+  | typeof BIN_FARM_ERROR__INVALID_CRANK_MINT
   | typeof BIN_FARM_ERROR__INVALID_DIST_POOL
   | typeof BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM
   | typeof BIN_FARM_ERROR__INVALID_MINT_DATA
@@ -137,12 +149,16 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE]: `Bin ID outside position range`,
     [BIN_FARM_ERROR__BOT_NOT_STALE]: `Bot is still active — permissionless harvest not yet available`,
     [BIN_FARM_ERROR__BOT_PAUSED]: `Bot close operations are paused`,
+    [BIN_FARM_ERROR__BURN_CURVE_ALREADY_INITIALIZED]: `Burn curve already initialized — initial_crank_supply is immutable`,
+    [BIN_FARM_ERROR__BURN_CURVE_NOT_INITIALIZED]: `Burn curve not initialized — call initialize_burn_curve first`,
     [BIN_FARM_ERROR__EMERGENCY_CLOSE_TIMELOCK_NOT_EXPIRED]: `Emergency close timelock not expired (24 hours required)`,
     [BIN_FARM_ERROR__FEE_TIMELOCK_NOT_EXPIRED]: `Fee timelock not expired (24 hours required)`,
     [BIN_FARM_ERROR__FEE_TOO_HIGH]: `Fee too high (max 10%)`,
     [BIN_FARM_ERROR__INSUFFICIENT_BALANCE]: `Insufficient vault balance for withdrawal`,
     [BIN_FARM_ERROR__INVALID_BIN_RANGE]: `Invalid bin range (min must be <= max)`,
     [BIN_FARM_ERROR__INVALID_BOT]: `Invalid bot destination`,
+    [BIN_FARM_ERROR__INVALID_BURN_SOL_VAULT]: `Invalid burn SOL vault PDA`,
+    [BIN_FARM_ERROR__INVALID_CRANK_MINT]: `CRANK mint account does not match expected mint`,
     [BIN_FARM_ERROR__INVALID_DIST_POOL]: `dist_pool cannot be the null address`,
     [BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM]: `Invalid external program ID`,
     [BIN_FARM_ERROR__INVALID_MINT_DATA]: `Invalid mint account data (too short to read decimals)`,

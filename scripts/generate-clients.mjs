@@ -6,6 +6,8 @@ import { readFileSync } from "fs";
 const idls = [
   { name: "bin_farm", path: "bot/idl/bin_farm.json", dir: "packages/core-sdk/generated/bin-farm" },
   { name: "epoch_vault", path: "bot/idl/epoch_vault.json", dir: "packages/core-sdk/generated/epoch-vault" },
+  { name: "bank_distributor", path: "bot/idl/bank_distributor.json", dir: "packages/core-sdk/generated/bank-distributor" },
+  { name: "merkle_distributor", path: "bot/idl/merkle_distributor.json", dir: "packages/core-sdk/generated/merkle-distributor" },
 ];
 
 for (const { name, path, dir } of idls) {

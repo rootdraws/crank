@@ -271,8 +271,10 @@ export function formatFeedHarvested(params: {
   amountOut: string;
   tokenSymbol: string;
   txSig: string;
+  actorId?: string;
 }): string {
-  return `harvested · ${params.poolName} ${params.side.toLowerCase()} · [${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig})`;
+  const prefix = params.actorId ? `<@${params.actorId}> ` : '';
+  return `${prefix}harvested · ${params.poolName} ${params.side.toLowerCase()} · [${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig})`;
 }
 
 export function formatFeedClosed(params: {
@@ -286,6 +288,7 @@ export function formatFeedClosed(params: {
   displayMode?: 'price' | 'mc';
   supply?: number;
   quoteTokenUsdPrice?: number;
+  actorId?: string;
 }): string {
   const qUsd = params.quoteTokenUsdPrice ?? 1;
   let range: string;
@@ -297,7 +300,8 @@ export function formatFeedClosed(params: {
   const amountPart = params.amountOut !== '—'
     ? `[${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig}) returned`
     : `[closed](${SOLSCAN_TX}${params.txSig})`;
-  return `closed · ${params.side} ${params.poolName} ${range} · ${amountPart}`;
+  const prefix = params.actorId ? `<@${params.actorId}> ` : '';
+  return `${prefix}closed · ${params.side} ${params.poolName} ${range} · ${amountPart}`;
 }
 
 // ─── Error Messages (orangutan voice) ──────────────────────────────────────

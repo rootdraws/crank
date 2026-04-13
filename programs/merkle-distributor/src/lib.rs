@@ -48,43 +48,35 @@ pub mod merkle_distributor {
         Ok(())
     }
 
-    /// Upload a new Merkle root for the next epoch.
-    /// The bot calls this daily at 4:20 PM CST after computing rewards.
-    /// Funds the vault with this epoch's WSOL in the same transaction.
+    /// Publish a new Merkle root. Non-custodial:
+    /// the vault is pre-funded by program flows (drain_vault + sync_native
+    /// for SOL), so this instruction never moves tokens — it only records
+    /// the root and computes this epoch's amount as the delta that appeared
+    /// in the vault since last epoch.
     pub fn new_epoch(
         ctx: Context<NewEpoch>,
         merkle_root: [u8; 32],
-        epoch_amount: u64,
         ipfs_cid: String,
     ) -> Result<()> {
-        require!(epoch_amount > 0, DistributorError::ZeroAmount);
         require!(ipfs_cid.len() <= MAX_IPFS_CID_LEN, DistributorError::CidTooLong);
 
-        // Transfer epoch's WSOL from funder to vault
-        transfer_checked(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.funder_ata.to_account_info(),
-                    to: ctx.accounts.vault.to_account_info(),
-                    mint: ctx.accounts.mint.to_account_info(),
-                    authority: ctx.accounts.authority.to_account_info(),
-                },
-            ),
-            epoch_amount,
-            ctx.accounts.mint.decimals,
-        )?;
-
+        let vault_balance = ctx.accounts.vault.amount;
         let dist = &mut ctx.accounts.distributor;
+
+        let new_total_funded = vault_balance
+            .checked_add(dist.total_amount_claimed)
+            .ok_or(DistributorError::Overflow)?;
+        let epoch_amount = new_total_funded
+            .checked_sub(dist.total_amount_funded)
+            .ok_or(DistributorError::Overflow)?;
+        require!(epoch_amount > 0, DistributorError::ZeroAmount);
+
         dist.current_epoch = dist
             .current_epoch
             .checked_add(1)
             .ok_or(DistributorError::Overflow)?;
         dist.merkle_root = merkle_root;
-        dist.total_amount_funded = dist
-            .total_amount_funded
-            .checked_add(epoch_amount)
-            .ok_or(DistributorError::Overflow)?;
+        dist.total_amount_funded = new_total_funded;
         dist.ipfs_cid = ipfs_cid.clone();
 
         emit!(NewEpochEvent {
@@ -256,28 +248,15 @@ pub struct NewEpoch<'info> {
         seeds = [b"distributor"],
         bump = distributor.bump,
         has_one = authority @ DistributorError::Unauthorized,
-        has_one = mint @ DistributorError::MintMismatch,
         has_one = vault @ DistributorError::VaultMismatch,
     )]
     pub distributor: Account<'info, Distributor>,
 
-    #[account(mut)]
     pub authority: Signer<'info>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
-
-    #[account(mut)]
+    /// Read-only: balance is read to compute the epoch delta. Pre-funded by
+    /// drain_vault + sync_native. No transfer happens here.
     pub vault: InterfaceAccount<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        token::mint = mint,
-        token::authority = authority,
-        token::token_program = token_program,
-    )]
-    pub funder_ata: InterfaceAccount<'info, TokenAccount>,
-
-    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
