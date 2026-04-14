@@ -51,15 +51,19 @@ echo "==> Installing dependencies and restarting bot"
 ssh $SSH_OPTS "$REMOTE" "cd $REMOTE_DIR && npm install --omit=dev && pm2 restart crank-harvester"
 
 echo "==> Waiting for bot to come up..."
-sleep 15
+sleep 10
 
-echo "==> Health check"
-HEALTH=$(ssh $SSH_OPTS "$REMOTE" "curl -sf http://localhost:8080/api/stats || echo 'FAILED'")
-echo "$HEALTH"
+# Liveness check: process is up and HTTP responds.
+# /api/health is unauthenticated (other /api/* require Bearer). 200 = fully healthy,
+# 503 = process alive but gRPC still handshaking (normal for ~3–4 min post-restart).
+echo "==> Liveness check"
+HEALTH_JSON=$(ssh $SSH_OPTS "$REMOTE" "curl -s --max-time 5 http://localhost:8080/api/health" || true)
+HEALTH_CODE=$(ssh $SSH_OPTS "$REMOTE" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8080/api/health" || echo "000")
 
-if [ "$HEALTH" = "FAILED" ]; then
+if ! echo "$HEALTH_CODE" | grep -qE '^(200|503)$'; then
+    echo "HTTP $HEALTH_CODE — bot not responding"
     echo ""
-    echo "WARNING: Health check failed!"
+    echo "WARNING: Liveness check failed!"
     echo ""
     echo "Diagnostics:"
     echo "  ssh $SSH_OPTS $REMOTE 'pm2 logs crank-harvester --lines 50'"
@@ -70,6 +74,16 @@ if [ "$HEALTH" = "FAILED" ]; then
     echo "Wallet DB backup (if needed):"
     echo "  ssh $SSH_OPTS $REMOTE 'ls -la $REMOTE_DIR/data/crankbot.json.pre-deploy'"
     exit 1
+fi
+
+echo "HTTP $HEALTH_CODE — bot alive"
+echo "$HEALTH_JSON"
+
+# Surface gRPC status as a note, not a failure.
+if echo "$HEALTH_JSON" | grep -q '"grpcConnected":false'; then
+    echo ""
+    echo "NOTE: gRPC not yet connected. Handshake typically completes within 3–4 minutes."
+    echo "      Safety poll (5s fallback) covers harvests in the interim."
 fi
 
 echo ""
