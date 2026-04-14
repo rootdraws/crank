@@ -560,13 +560,14 @@ export class GeyserSubscriber extends EventEmitter {
     logger.info(`[geyser] apiKey present: ${apiKey.length > 0}, length: ${apiKey.length}`);
     logger.info(`[geyser] Subscribing: ${accountAddresses.length} pools, owner=${this.coreProgramId.toBase58().slice(0, 8)}`);
 
+    let firstMessage = true;
     await subscribe(
       config,
       request,
       (message: any) => {
-        if (!this.connected) {
-          this.connected = true;
-          logger.info(`[geyser] Connected. Watching ${this.positionsByPool.size} pools, ${this.positions.size} positions`);
+        if (firstMessage) {
+          firstMessage = false;
+          logger.info(`[geyser] First message received — stream delivering data`);
         }
 
         try {
@@ -593,6 +594,12 @@ export class GeyserSubscriber extends EventEmitter {
         this.emit('disconnected');
       },
     );
+
+    // subscribe() resolves once the gRPC handshake is complete and the stream
+    // is open. Mark connected here — previously this only flipped on first
+    // data message, which never arrives when the protocol is quiet + 0 positions.
+    this.connected = true;
+    logger.info(`[geyser] Connected. Watching ${this.positionsByPool.size} pools, ${this.positions.size} positions`);
   }
 
   /**
