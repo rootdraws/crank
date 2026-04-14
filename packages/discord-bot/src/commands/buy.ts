@@ -12,7 +12,7 @@ import {
   getPositionPDA, getVaultPDA,
   resolveMeteoraCPIAccounts, parseLbPairFull, deriveATA,
   buildSetupTx, buildWrapSolIxs, ensureBinArraysExist,
-  buildPriorityFeeIxs, kitIxToWeb3, asSigner,
+  buildPriorityFeeIxs, kitIxToWeb3, asSigner, confirmAndCheck,
   binToPrice, formatPrice,
   signAndSend, signAndSendLegacy, withUserLock,
   NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, KNOWN_TOKENS,
@@ -70,12 +70,12 @@ export async function handleOpenPosition(
   }
 
   // Check minimum SOL balance in vault for rent + gas
-  const MIN_SOL_LAMPORTS = 10_000_000; // 0.01 SOL
+  const MIN_SOL_LAMPORTS = 100_000_000; // 0.1 SOL sanity floor (wide ranges can need ~0.05 SOL refundable rent)
   const solBalance = await ctx.connection.getBalance(vaultPda);
   if (solBalance < MIN_SOL_LAMPORTS) {
     const err = formatErrorBig(
-      `vault is empty (${(solBalance / 1e9).toFixed(4)} SOL).`,
-      `Deposit SOL to \`${vaultPda.toBase58()}\``
+      `vault balance too low (${(solBalance / 1e9).toFixed(4)} SOL).`,
+      `Deposit at least 0.1 SOL to \`${vaultPda.toBase58()}\`\nRent is refundable when you \`/close\`.`
     );
     await interaction.reply({ content: err.monke, ephemeral: true });
     await interaction.followUp({ content: err.body, ephemeral: true });
@@ -210,6 +210,58 @@ export async function handleOpenPosition(
       }
     }
 
+    // Precise pre-flight: vault SOL sufficient for rent + gas + (SOL deposit if applicable)
+    // Vault pays: position account rent (~0.00185 SOL/position) + gas (0.00025 SOL/op)
+    // Bot pays: bin array init rent, priority fees
+    const POSITION_RENT_LAMPORTS = 2_000_000;   // ~0.002 SOL per position (Meteora position PDA + headroom)
+    const GAS_PER_OP_LAMPORTS = 250_000;        // 0.00025 SOL (open + eventual harvest)
+    const VAULT_BUFFER_LAMPORTS = 2_000_000;    // 0.002 SOL safety for subsequent ops
+    const isSolDeposit = side === 'Buy' && quote.toUpperCase() === 'SOL';
+    const solDepositLamports = isSolDeposit ? BigInt(Math.round(amount * 1e9)) : 0n;
+    const vaultSolNeeded = Number(solDepositLamports)
+      + positions.length * (POSITION_RENT_LAMPORTS + GAS_PER_OP_LAMPORTS)
+      + VAULT_BUFFER_LAMPORTS;
+    const vaultSolNow = await ctx.connection.getBalance(vaultPda!);
+    if (vaultSolNow < vaultSolNeeded) {
+      const shortBy = ((vaultSolNeeded - vaultSolNow) / 1e9).toFixed(4);
+      const needStr = (vaultSolNeeded / 1e9).toFixed(4);
+      const haveStr = (vaultSolNow / 1e9).toFixed(4);
+      const positionsNote = positions.length > 1 ? ` (split into ${positions.length} positions)` : '';
+      const depositNote = isSolDeposit ? ` + ${amount} SOL deposit` : '';
+      const err = formatErrorBig(
+        `not enough SOL in vault.`,
+        `Need ~${needStr} SOL${positionsNote}${depositNote}.\n` +
+        `You have ${haveStr} SOL.\n` +
+        `Deposit ${shortBy} SOL to \`${vaultPda!.toBase58()}\``
+      );
+      await interaction.editReply(`${err.monke}\n${err.body}`);
+      return;
+    }
+
+    // Pre-flight token balance for /sell (selling tokenX, the non-quote side)
+    if (side === 'Sell') {
+      const sellMint = new PublicKey(selectedPool.mintX);
+      const sellMintInfo = await ctx.connection.getAccountInfo(sellMint);
+      const sellTokenProgram = sellMintInfo && sellMintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
+        ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+      const sellAta = getAssociatedTokenAddressSync(sellMint, vaultPda!, true, sellTokenProgram);
+      let sellBalanceRaw = 0n;
+      try {
+        const bal = await ctx.connection.getTokenAccountBalance(sellAta);
+        sellBalanceRaw = BigInt(bal.value.amount);
+      } catch { /* ATA missing → 0 */ }
+      const neededRaw = BigInt(Math.round(amount * Math.pow(10, selectedPool.decimalsX)));
+      if (sellBalanceRaw < neededRaw) {
+        const have = Number(sellBalanceRaw) / Math.pow(10, selectedPool.decimalsX);
+        const err = formatErrorBig(
+          `not enough ${token} in vault.`,
+          `Selling ${amount.toLocaleString()} ${token}.\nYou have ${have.toLocaleString()} ${token}.\nDeposit ${token} to \`${vaultPda!.toBase58()}\``
+        );
+        await interaction.editReply(`${err.monke}\n${err.body}`);
+        return;
+      }
+    }
+
     // Open each position
     const sigs: string[] = [];
     const positionPDAs: PublicKey[] = [];
@@ -305,10 +357,11 @@ export async function handleOpenPosition(
 
           const tx = new Tx().add(createAtaIx, wrapIx, syncIx);
           tx.feePayer = bot.publicKey;
-          tx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+          const wrapBh = await ctx.connection.getLatestBlockhash();
+          tx.recentBlockhash = wrapBh.blockhash;
           tx.sign(bot);
           const wrapSig = await ctx.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-          await ctx.connection.confirmTransaction(wrapSig, 'confirmed');
+          await confirmAndCheck(ctx.connection, wrapSig, wrapBh.blockhash, wrapBh.lastValidBlockHeight);
         }
 
         // TX 2: open position via Anchor program methods (bot is sole signer)
@@ -373,14 +426,15 @@ export async function handleOpenPosition(
         const { Transaction: Tx2 } = await import('@solana/web3.js');
         const openTx = new Tx2().add(...(await buildPriorityFeeIxs(ctx.connection)), openIx);
         openTx.feePayer = bot.publicKey;
-        openTx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+        const openBh = await ctx.connection.getLatestBlockhash();
+        openTx.recentBlockhash = openBh.blockhash;
         openTx.sign(bot);
         // skipPreflight: wrap tx just confirmed but simulation may hit a stale RPC node
         // that doesn't see the WSOL ATA yet. Let on-chain execution be the authority.
         let sig: string;
         try {
           sig = await ctx.connection.sendRawTransaction(openTx.serialize(), { skipPreflight: true });
-          await ctx.connection.confirmTransaction(sig, 'confirmed');
+          await confirmAndCheck(ctx.connection, sig, openBh.blockhash, openBh.lastValidBlockHeight);
         } catch (openErr) {
           // If open failed after wrapping, unwrap WSOL back to SOL to avoid stuck funds
           if (isNative) {

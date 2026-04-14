@@ -7,7 +7,7 @@ import {
 import {
   getConfigPDA, getPositionPDA, getVaultPDA, getRoverAuthorityPDA,
   resolveMeteoraCPIAccounts, parseLbPairFull, deriveATA,
-  buildSetupTx, buildPriorityFeeIxs, kitIxToWeb3, asSigner,
+  buildSetupTx, buildPriorityFeeIxs, kitIxToWeb3, asSigner, confirmAndCheck,
   signAndSend, signAndSendLegacy, binToPrice, fetchDexScreenerPrice,
   SPL_MEMO_PROGRAM_ID, METEORA_DLMM_PROGRAM_ID, loadPoolRegistry,
 } from '@crankbot/core-sdk';
@@ -341,10 +341,11 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
 
   const closeTx = new Transaction().add(...(await buildPriorityFeeIxs(ctx.connection)), closeIx);
   closeTx.feePayer = bot.publicKey;
-  closeTx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+  const closeBh = await ctx.connection.getLatestBlockhash();
+  closeTx.recentBlockhash = closeBh.blockhash;
   closeTx.sign(bot);
   const sig = await ctx.connection.sendRawTransaction(closeTx.serialize(), { skipPreflight: true });
-  await ctx.connection.confirmTransaction(sig, 'confirmed');
+  await confirmAndCheck(ctx.connection, sig, closeBh.blockhash, closeBh.lastValidBlockHeight);
 
   ctx.walletService.closePosition(position.position_pda);
   return sig;

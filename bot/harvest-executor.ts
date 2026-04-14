@@ -31,6 +31,7 @@ import { EventEmitter } from 'events';
 import { buildMeteoraCPIAccounts, getDLMM, fixBitmapWritable, SPL_MEMO_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from './meteora-accounts';
 import type { HarvestJob, LbPairInfo } from './geyser-subscriber';
 import { logger } from './logger';
+import { confirmAndCheck } from '../packages/core-sdk/transactions';
 
 // Priority fee floor/cap (micro-lamports per compute unit)
 const PRIORITY_FEE_FLOOR = 10_000;
@@ -357,10 +358,11 @@ export class HarvestExecutor extends EventEmitter {
           ...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY, ix
         );
         tx.feePayer = this.botKeypair.publicKey;
-        tx.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+        const bh = await this.connection.getLatestBlockhash();
+        tx.recentBlockhash = bh.blockhash;
         tx.sign(this.botKeypair);
         const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-        await this.connection.confirmTransaction(sig, 'confirmed');
+        await confirmAndCheck(this.connection, sig, bh.blockhash, bh.lastValidBlockHeight);
         return sig;
       },
       `harvest ${key.slice(0, 8)}`
@@ -539,10 +541,11 @@ export class HarvestExecutor extends EventEmitter {
           ...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY, ix
         );
         tx.feePayer = this.botKeypair.publicKey;
-        tx.recentBlockhash = (await this.connection.getLatestBlockhash()).blockhash;
+        const bh = await this.connection.getLatestBlockhash();
+        tx.recentBlockhash = bh.blockhash;
         tx.sign(this.botKeypair);
         const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-        await this.connection.confirmTransaction(sig, 'confirmed');
+        await confirmAndCheck(this.connection, sig, bh.blockhash, bh.lastValidBlockHeight);
         return sig;
       },
       `close ${key.slice(0, 8)}`
