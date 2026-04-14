@@ -158,6 +158,16 @@ Continue conversation. Ship analytics first.
 
 ---
 
+## DONE (2026-04-14 Session — Silent-Failure Fix + Pre-Flight UX)
+
+- [x] **`confirmTransaction` → `confirmAndCheck` at 7 sites** — `confirmTransaction` does not throw on on-chain failures (only on timeouts), so txs that landed in a block but failed execution (e.g. Custom:1 "result with negative lamports" from an under-funded vault) were being reported to users as success and posted to the feed. Migrated `buy.ts` wrap + open (covers `/sell` — delegates to same handler), `close.ts`, `bot/harvest-executor.ts` (harvest + close), `bot/keeper.ts` (open_fee_rover + close_rover). Helper already existed at `packages/core-sdk/transactions.ts:234` — fetches logs + surfaces Anchor error on failure.
+- [x] **Precise pre-flight for `/buy` + `/sell`** — previously the only gate was a bare 0.01 SOL vault-balance check; wide-range splits that needed multiple positions could blow past it and fail on-chain. Now computes `positions × (rent + gas) + buffer + SOL deposit (if applicable)` after routing, reports exact shortfall + vault address to top up.
+- [x] **Token balance pre-flight for `/sell`** — reads vault's token ATA balance before sending; rejects with "Selling X, you have Y. Deposit to <vault>." rather than a silent on-chain fail.
+- [x] **Min vault SOL copy 0.05 → 0.1** in the early sanity-floor error message. Wide-range positions can need ~0.05 SOL refundable rent; 0.1 is the realistic minimum to give users headroom.
+- [x] **Rent-refund UX caveat** — error message tells users "rent is refundable when you `/close`." Accurate per program: `user_close` routes Meteora position rent to `user_vault`; bot-initiated auto-close routes to `bot`.
+- [x] **`scripts/deploy.sh` liveness check rewritten** — was hitting `/api/stats` (now Bearer-gated) with `curl -f`, so every deploy showed "FAILED" regardless of bot state. Switched to `/api/health` (unauthenticated), accepts 200 or 503 as "process alive", prints gRPC handshake as a note rather than aborting.
+- [x] **`bot/geyser-subscriber.ts` connected flag fires on stream open** — `this.connected = true` was only set inside the `onData` callback. With 0 positions and a quiet bin-farm program, no events → `connected` stayed false forever → `/api/health` falsely reported unhealthy. Now set after `subscribe()` resolves (handshake complete); first-data event logs separately.
+
 ## DONE (2026-04-13 Session — Capture the Bag Amendment + Non-Custodial Distribution)
 
 - [x] **Curve-driven `sweep_rover`** — replaced 40/40/20 hardcoded split with supply-responsive curve. Reads `crank_mint.supply` + `RoverAuthority.initial_crank_supply` + `burn_enabled`. `burn_ratio = min(1.0, (supply/initial)/0.75)`, `protocol_skim = 0.20×(1−burn_ratio)`. Three destinations: `burn_sol_vault` / `bridge_vault` / `Config.bot`.

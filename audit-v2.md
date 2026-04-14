@@ -529,6 +529,8 @@ Sub-issue of v2-H-05; covered there.
 
 `packages/discord-bot/src/commands/start.ts:92–118` — uses `.rpc()` not the `confirmAndCheck` pattern in `transactions.ts:234`. Wrap in try/catch with explicit `removeUser` compensation on partial failure.
 
+**Update (2026-04-14):** The adjacent class of silent-failure bug — code calling `confirmTransaction()` without checking `confirmation.value.err` — was hit in production when a user's `/sell` landed in a block but failed execution (Custom:1 from under-funded vault) and the bot posted a false-positive "deposited" feed message. Migrated 7 call sites to `confirmAndCheck`: `packages/discord-bot/src/commands/buy.ts` ×2 (wrap + open), `packages/discord-bot/src/commands/close.ts`, `bot/harvest-executor.ts` ×2 (harvest + close), `bot/keeper.ts` ×2 (open_fee_rover + close_rover). L-11's specific `/start` finding remains open (it also needs the `removeUser` compensation logic on top of the confirmation check).
+
 ### v2-L-12: `/close N` 1-based index unstable
 
 `packages/discord-bot/src/commands/close.ts:127–133` — list reordering between display and execute closes wrong position. Use PDA-prefix matching.
