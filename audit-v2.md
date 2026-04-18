@@ -5,7 +5,9 @@
 **Scope:** Full protocol — 5 on-chain programs, off-chain bot, SDK, Discord bot, infrastructure, Protocol-LP bot
 **Primary focus:** PDA vault instructions + `deduct_gas` (deployed unaudited 2026-04-09)
 **Commit:** `80bb9540501e449b5bf699df30ae4df7c5fdff42` (`80bb954`)
-**Companion document:** `auditv1.md` — live findings from 2026-04-01 audit (do not duplicate)
+**Companion document:** (merged 2026-04-17) — v1 live findings consolidated into this file under "Findings inherited from v1 audit" at the bottom. `auditv1.md` deleted at consolidation.
+
+**Status as of 2026-04-17:** All HIGH findings now have dispositions. Six HIGH items shipped (v2-H-01 gas cap + rent passthrough, v2-H-02 vault_wsol_ata constraints, v2-H-03 harvest_bins gas gating, v2-H-06 fail-closed Bearer auth, v2-H-07 WS auth, v2-H-09 emergency-close script fix). v2-H-08 mitigated by the 2026-04-13 non-custodial rewrite. v2-H-04 (wallet-DB rollback cumulative strand) and v2-H-05 (duplicate Discord→owner mapping) remain open as operational-discipline + small-code items. Both CRITICAL items dismissed (v2-C-01 squatting — negligible blast radius given funds are vault.owner-bound; v2-C-02 emergency close — 24hr timelock + no-theft guarantee makes griefing self-defeating). Detailed per-finding table below.
 
 ---
 
@@ -47,17 +49,17 @@ is deliberately avoided; this is an append-only update.
 
 | ID | Post-amendment status | Notes |
 |----|----------------------|-------|
-| v2-C-01 | **Still open** | `/start` unchanged; no signature proof. |
-| v2-C-02 | **Still open** | `propose_emergency_close` still targets any position. |
-| v2-H-01 | **Still open** | `update_gas_lamports` still unbounded + no timelock. |
-| v2-H-02 | **Still open** | `wrap_sol_in_vault` destination ATA still unchecked. (Note: the new `wrap_burn_sol` is for a bin-farm-owned vault only, not user vaults — less exposed but same pattern; see NEW-02 below.) |
-| v2-H-03 | **Still open** | `harvest_bins` permissionless fallback still fires `deduct_gas` on zero-yield calls. |
-| v2-H-04 | **Still open** | Wallet-DB rollback can still strand cumulative claims. The new non-custodial `new_epoch` doesn't change cumulative-entitlement semantics. |
-| v2-H-05 | **Still open** | `registerUser` still allows multiple Discord IDs → same owner wallet. |
-| v2-H-06 | **Still open** | Bearer auth fail-open + non-constant-time compare unchanged. |
-| v2-H-07 | **Still open** | `/ws` WebSocket still has no auth. |
+| v2-C-01 | **Dismissed 2026-04-17** | Squatting attacker only achieves an on-chain `CreateVault` collision on a fresh Solana wallet that has never registered. Funds remain withdrawable only to `vault.owner` via PDA-seed enforcement — no theft, no governance hijack of non-existent BANK holdings. Admin unbind is trivial when a real user collides. Accepted residual risk. |
+| v2-C-02 | **Dismissed 2026-04-17** | 24hr timelock + no-theft guarantee (funds return to UserVault PDA) make griefing self-defeating. Admin DOSing users → users leave → admin has no motive. |
+| v2-H-01 | **Shipped 2026-04-15** | Cap `require!(gas_lamports <= MAX_GAS_LAMPORTS)` where `MAX_GAS_LAMPORTS = 0.01 SOL` — `lib.rs:31, 2608`. Canary verified 2026-04-17. Rent passthrough also deployed (`MAX_RENT_DEDUCT_LAMPORTS = 0.2 SOL`, `lib.rs:36`; `open_position_v2` takes `rent_lamports` parameter; close paths refund to UserVault). |
+| v2-H-02 | **Shipped 2026-04-17** | Both `WrapSolInVault` and `UnwrapWsolInVault` now type `vault_wsol_ata` as `Box<InterfaceAccount<TokenAccount>>` with `token::mint = NATIVE_MINT` + `token::authority = user_vault`. `lib.rs:3689, 3714`. Deploy sig `58Umw5gJVcVwk9kjHB2SfBMkTrkvywtxC7WeLNU5pxReY7QM1zuuCKfC5MS8maMf2y7GxbW7BMbzqwZZ9EHSwsWg`, slot 413920154. |
+| v2-H-03 | **Shipped 2026-04-17** | `harvest_bins` gates `deduct_gas` on `is_authorized_bot && had_yield`. Permissionless keepers are compensated via `keeper_tip_bps` from fees; zero-yield calls no longer drain user vault. `lib.rs:724`. Deploy sig `3jMZEKJuNafKQgfk5z4DUtsvEToadqXDnQ4nMK84nNfbv2hXjQQ7jGbVyoAZX278vUKLgsGtsacnjyYZh4nZHjb8`, slot 413920863. |
+| v2-H-04 | **Still open** | Wallet-DB rollback can still strand cumulative claims. Mitigated operationally by per-minute S3 backups + restore procedure in `runbooks/droplet-recovery.md`. Structural fix (append-only entitlements log or pre-publish reconciliation) still pending. |
+| v2-H-05 | **Still open** | `registerUser` still allows multiple Discord IDs → same owner wallet. Lower urgency after v2-C-01 dismissal — still worth the 30-min fix. |
+| v2-H-06 | **Shipped 2026-04-17** | `initRelayAuth()` throws at `attach()` time if `RELAY_AUTH_TOKEN` is unset. `timingSafeEqual` on buffer-equal-length headers. `relay-server.ts:28–44`. Verified: 401 on no-auth / bad-auth, 200 on good auth. |
+| v2-H-07 | **Shipped 2026-04-17** | WS `upgrade` event checks `Authorization` header or `?token=` query fallback (browsers can't set headers on WS upgrade). 401 + `socket.destroy()` on fail. `relay-server.ts:464–483`. Verified: 401 on no-auth upgrade; auth'd upgrade succeeds. |
 | **v2-H-08** | **Mitigated** | The old resubmit-drain vector required passing an attacker-controlled `epoch_amount`. The new `new_epoch(root, ipfs_cid)` takes no amount argument and the on-chain vault-balance delta is idempotent across resubmissions — publishing the same root twice produces identical state transitions. The previous H-08 exploit path is dead. Resume-path operational concerns (partial writes to `epoch-progress.json`) are unchanged — still covered by v2-M-09. |
-| v2-H-09 | **Still open** | `apply-emergency-close.ts` still references `data.owner`; broken. |
+| v2-H-09 | **Shipped 2026-04-17** | `apply-emergency-close.ts` reads `data.userVault` (Anchor camelCase of `user_vault`). Added missing `owner` + `memoProgram` accounts. ATAs derived for UserVault PDA. `scripts/apply-emergency-close.ts:54, 98`. |
 | v2-M-01 … v2-M-09 | **Unchanged** | No structural changes to the affected components. |
 | v2-M-10 | **Still open + applies to rover bids** | Deterministic 2-SOL + 70-bin-below-active threshold pattern now also applies to `crankOpenRoverBids` on the CRANK/SOL pool. Same MEV-sandwichable risk class as protocol-lp. Worth calling out explicitly in any future ops runbook. |
 | v2-M-11 | **Unchanged** | IPFS CID still not locally verified against tree bytes — applies to both SOL tree and new BANK tree. |
@@ -157,17 +159,17 @@ The single-keypair concentration risk (v1 C-02) remains the dominant threat. Sev
 
 | # | Severity | Component | Title | Status |
 |---|----------|-----------|-------|--------|
-| v2-C-01 | Critical | discord-bot/start | `/start` allows claiming any wallet without signature proof | New |
-| v2-C-02 | Critical | bin-farm | `propose_emergency_close` can target any user position; bot-key compromise → mass forced close | Worsens C-02 |
-| v2-H-01 | High | bin-farm | `update_gas_lamports` unbounded + no timelock; one-shot drain vector | New |
-| v2-H-02 | High | bin-farm | `wrap_sol_in_vault` destination ATA unchecked; bypasses withdraw owner-constraint | New |
-| v2-H-03 | High | bin-farm | Permissionless `harvest_bins` fires `deduct_gas` on zero-yield calls | New |
-| v2-H-04 | High | epoch-computer | Wallet-DB / progress rollback can permanently strand user cumulative claims | New |
-| v2-H-05 | High | wallet-service | `registerUser` allows multiple Discord IDs to bind the same owner wallet | New |
-| v2-H-06 | High | relay-server | Bearer auth fails open if `RELAY_AUTH_TOKEN` unset; non-constant-time compare | New |
-| v2-H-07 | High | relay-server | `/ws` WebSocket has zero auth; leaks per-user trade events live | New |
-| v2-H-08 | High | epoch-computer | Resume path re-submits `new_epoch` without on-chain idempotency check | New |
-| v2-H-09 | High | scripts | `apply-emergency-close.ts` reads non-existent `data.owner` field — emergency rescue tool is broken | New |
+| v2-C-01 | Critical | discord-bot/start | `/start` allows claiming any wallet without signature proof | Dismissed 2026-04-17 |
+| v2-C-02 | Critical | bin-farm | `propose_emergency_close` can target any user position; bot-key compromise → mass forced close | Dismissed 2026-04-17 |
+| v2-H-01 | High | bin-farm | `update_gas_lamports` unbounded + no timelock; one-shot drain vector | Shipped 2026-04-15 |
+| v2-H-02 | High | bin-farm | `wrap_sol_in_vault` destination ATA unchecked; bypasses withdraw owner-constraint | Shipped 2026-04-17 |
+| v2-H-03 | High | bin-farm | Permissionless `harvest_bins` fires `deduct_gas` on zero-yield calls | Shipped 2026-04-17 |
+| v2-H-04 | High | epoch-computer | Wallet-DB / progress rollback can permanently strand user cumulative claims | Open (operational) |
+| v2-H-05 | High | wallet-service | `registerUser` allows multiple Discord IDs to bind the same owner wallet | Open (low urgency) |
+| v2-H-06 | High | relay-server | Bearer auth fails open if `RELAY_AUTH_TOKEN` unset; non-constant-time compare | Shipped 2026-04-17 |
+| v2-H-07 | High | relay-server | `/ws` WebSocket has zero auth; leaks per-user trade events live | Shipped 2026-04-17 |
+| v2-H-08 | High | epoch-computer | Resume path re-submits `new_epoch` without on-chain idempotency check | Mitigated 2026-04-13 |
+| v2-H-09 | High | scripts | `apply-emergency-close.ts` reads non-existent `data.owner` field — emergency rescue tool is broken | Shipped 2026-04-17 |
 | v2-M-01 | Medium | bin-farm | `vault_vote` forwards `remaining_accounts` to gauge-voter without owner check (inherits pending M-03) | Cross-ref |
 | v2-M-02 | Medium | bin-farm | `withdraw_sol` rent guard hardcodes `UserVault::SIZE` constant | New |
 | v2-M-03 | Medium | bin-farm | `vault_burn_and_mint` lacks defense-in-depth ATA owner constraints | New |
@@ -206,6 +208,8 @@ The single-keypair concentration risk (v1 C-02) remains the dominant threat. Sev
 
 ### v2-C-01: `/start` allows claiming any Solana wallet with no ownership proof
 
+**Status:** Dismissed 2026-04-17. Funds remain withdrawable only to `vault.owner` via PDA-seed enforcement — no theft, no governance hijack of non-existent BANK holdings. Admin unbind is trivial when a real user collides. Accepted residual risk.
+
 **Component:** `packages/discord-bot/src/commands/start.ts:60–118`, `packages/core-sdk/wallet-service.ts:106–130`
 **Description:** `/start wallet:<address>` validates that the string parses as a `PublicKey` (line 74) but never proves the caller controls it. The bot then signs `createVault({ owner: walletArg, … }).rpc()` (line 93–101), creating the on-chain UserVault with `owner = walletArg`, and writes the Discord-ID → owner mapping to `data/crankbot.json` via `walletService.registerUser` (line 104). `createVault` is `init` (not `init_if_needed`) — the second caller targeting the same `owner_wallet` reverts with "account already in use".
 **Impact:**
@@ -236,6 +240,8 @@ Short-term mitigation: in `registerUser`, also check `ownerIndex[ownerWallet]` a
 
 ### v2-C-02: `propose_emergency_close` can target ANY user position; with bot-key compromise it becomes mass-forced-close
 
+**Status:** Dismissed 2026-04-17. 24hr timelock + no-theft guarantee (funds return to UserVault PDA) make griefing self-defeating. Admin DOSing users → users leave → admin has no motive.
+
 **Component:** `programs/bin-farm/src/lib.rs:1186–1196` (`propose`), `:1202–1263` (`apply`), `:3398–3457` (context). Cross-ref `auditv1.md` C-02.
 **Description:** Per the comment at line 1188, `propose_emergency_close` is intentionally permitted to target user positions ("intentional for stuck positions on deprecated pools"). Authority is the bot keypair (= sole admin under v1 C-02). After a 24-hour timelock, `apply_emergency_close` is permissionless. Funds return to `position.user_vault` (correct destination), but force-closing a single-sided limit order at a controlled `activeId` realizes IL the user otherwise would not have suffered.
 **Impact:** With bot-key compromise: attacker (a) proposes emergency close on every active position in a single batch, (b) waits 24h, (c) at expiry, orchestrates a price move on the relevant pools (sandwich, dump), (d) calls `apply_emergency_close` permissionlessly during the bad price. Tokens go back to user vaults — but the user was holding a sell-the-rip waiting for a higher price; now they're sitting on token at the local bottom. Attacker extracts via separate position pre/post.
@@ -251,6 +257,8 @@ This is not a direct theft vector but realizes captured IL across the entire use
 ## High Findings
 
 ### v2-H-01: `update_gas_lamports` has no upper bound, no timelock, single-tx effect
+
+**Status:** Shipped 2026-04-15. Cap `require!(gas_lamports <= MAX_GAS_LAMPORTS)` with `MAX_GAS_LAMPORTS = 0.01 SOL` — `lib.rs:31, 2608`. Rent passthrough also deployed the same day: `MAX_RENT_DEDUCT_LAMPORTS = 0.2 SOL` (`lib.rs:36`), `open_position_v2` takes `rent_lamports` parameter, close paths refund to UserVault PDA. Canary verified 2026-04-17: user-close net bot Δ = −0.00005 SOL.
 
 **Component:** `programs/bin-farm/src/lib.rs:2223–2227`, `AdminOnly` context `:3377–3384`
 **Description:**
@@ -268,6 +276,8 @@ No upper bound. No timelock. `deduct_gas` (`:2241–2245`) computes `available =
 ---
 
 ### v2-H-02: `wrap_sol_in_vault` does not constrain the destination WSOL ATA — bypasses withdraw owner-constraint
+
+**Status:** Shipped 2026-04-17. Both `WrapSolInVault` (`lib.rs:3689`) and `UnwrapWsolInVault` (`lib.rs:3714`) now type `vault_wsol_ata` as `Box<InterfaceAccount<TokenAccount>>` with `token::mint = NATIVE_MINT` + `token::authority = user_vault`. Deploy sig `58Umw5gJVcVwk9kjHB2SfBMkTrkvywtxC7WeLNU5pxReY7QM1zuuCKfC5MS8maMf2y7GxbW7BMbzqwZZ9EHSwsWg`, slot 413920154. Bot restarted with updated IDL + Codama clients.
 
 **Component:** `programs/bin-farm/src/lib.rs:3249–3271` (context), `:2027–2028` (handler)
 **Description:** `WrapSolInVault.vault_wsol_ata` is declared as `AccountInfo` with only `#[account(mut)]`. The handler at `:2027–2028` directly debits vault lamports and credits `vault_wsol_ata` via `try_borrow_mut_lamports`. Nothing checks that the destination is a WSOL ATA whose `authority == user_vault.key()` and `mint == NATIVE_MINT`. The doc comment promises this constraint exists — the constraint is not implemented.
@@ -289,6 +299,8 @@ pub vault_wsol_ata: InterfaceAccount<'info, TokenAccount>,
 ---
 
 ### v2-H-03: Permissionless `harvest_bins` fires `deduct_gas` on zero-yield calls — griefer drains victim vault
+
+**Status:** Shipped 2026-04-17. `deduct_gas` is now gated on `is_authorized_bot && had_yield` at `lib.rs:724`. Permissionless keepers are compensated via `keeper_tip_bps` from realized fees; zero-yield calls no longer drain the user vault. Deploy sig `3jMZEKJuNafKQgfk5z4DUtsvEToadqXDnQ4nMK84nNfbv2hXjQQ7jGbVyoAZX278vUKLgsGtsacnjyYZh4nZHjb8`, slot 413920863. IDL unchanged (handler-only change).
 
 **Component:** `programs/bin-farm/src/lib.rs:318–648` (handler), `:640–644` (deduct_gas), `:2853` (BotHarvest signer)
 **Description:** `harvest_bins` allows any signer once `priority_slots` (~40s) of bot staleness has elapsed. The instruction at `:640–644` always calls `deduct_gas`, regardless of how much (if any) value was harvested. There is no early-return on `x_received == 0 && y_received == 0` — only a `msg!("warning")`.
@@ -333,6 +345,8 @@ At 1,000 active positions × 1 call/40s × 0.0001 SOL = 0.1 SOL/40s = 9 SOL/hour
 
 ### v2-H-06: Relay Bearer auth fails open if `RELAY_AUTH_TOKEN` unset; non-constant-time compare
 
+**Status:** Shipped 2026-04-17. `initRelayAuth()` throws at `attach()` time if `RELAY_AUTH_TOKEN` is unset (`relay-server.ts:30–36`). `authHeaderOk()` uses `timingSafeEqual` on buffer-equal-length headers (`:38–44`). Verified: 401 on no-auth / bad-auth, 200 on good auth. `~/crank-crm/.env` updated with the token; bot-relay.ts already sends it when present.
+
 **Component:** `bot/relay-server.ts:528–535` (and surrounding)
 **Description:** `if (authToken && path !== '/api/health') { … }` — when `RELAY_AUTH_TOKEN` is unset or empty, all 15 endpoints are open. The comparison `header !== \`Bearer ${authToken}\`` is non-constant-time. Comment ("backward compat") acknowledges the fail-open behavior. Per `claude.md`, the token IS set in production — but any env-reload bug, PM2 restart with stale environment, or rollback to an older `.env` silently degrades to fully open.
 **Impact:** Silent security downgrade. Plus narrow timing-attack surface against the token (mitigated by TLS and the high-entropy of the token, but trivially fixable).
@@ -341,6 +355,8 @@ At 1,000 active positions × 1 call/40s × 0.0001 SOL = 0.1 SOL/40s = 9 SOL/hour
 ---
 
 ### v2-H-07: `/ws` WebSocket has zero authentication; leaks per-user trade events live
+
+**Status:** Shipped 2026-04-17. WS `upgrade` handler now checks `Authorization` header OR `?token=...` query param (browsers can't set custom headers on WS upgrade, so the query fallback is required). Unauthorized upgrades receive `401 Unauthorized` + `socket.destroy()`. `relay-server.ts:464–483`. Verified: 401 on no-auth; auth'd upgrade succeeds. Per-IP connect-rate and `owner`-redaction improvements from the original recommendation remain open but lower priority now that the endpoint is gated.
 
 **Component:** `bot/relay-server.ts:441–479, 486–498`
 **Description:** WebSocket upgrade requires only `url.pathname === '/ws'` — no token, no origin check, no per-IP throttle. On connect, server sends up to 50 cached feed events. Subsequent `harvestNeeded`, `harvestExecuted`, `positionClosed`, `roverTvlUpdated`, `activeBinChanged` events broadcast in real time and include `job.owner.toBase58()` (the user's vault PDA, which deterministically reveals which Solana wallet the activity belongs to via the seed `[b"user_vault", owner_wallet]` — though one-way without further enumeration, it is a stable identifier).
@@ -362,6 +378,8 @@ At 1,000 active positions × 1 call/40s × 0.0001 SOL = 0.1 SOL/40s = 9 SOL/hour
 ---
 
 ### v2-H-09: `apply-emergency-close.ts` reads non-existent `data.owner` field — emergency rescue tool is broken
+
+**Status:** Shipped 2026-04-17. Field name corrected to `data.userVault` (Anchor camelCase of `user_vault`) at `scripts/apply-emergency-close.ts:54`. Added missing `owner` + `memoProgram` accounts to the ix call (`:98`). ATAs now derived for the UserVault PDA.
 
 **Component:** `scripts/apply-emergency-close.ts:52–54, 70–71`
 **Description:** The `Position` struct (programs/bin-farm/src/lib.rs:2531–2542) has field `user_vault`, not `owner`. The script reads `data.owner as PublicKey`. At runtime this is `undefined`; `new PublicKey(undefined)` throws. The `owner_token_x/y` ATA derivations and the `owner` account passed to the on-chain ix are all wrong. Even if the deserialize step somehow returned an `owner` field, the on-chain `ApplyEmergencyClose.owner` constraint is `owner.key() == position.user_vault` — passing anything else reverts.
@@ -760,4 +778,226 @@ The deduct_gas model is structurally sound for normal operation: bot signs and p
 
 ---
 
-*End of audit-v2.md. Companion document: `auditv1.md`.*
+## Findings inherited from v1 audit (2026-04-01)
+
+_Merge provenance: `auditv1.md` was written against commit `5194807` on 2026-04-01 (53 findings, 33 remediated before the 2026-04-08 PDA-vault migration). It was collapsed 2026-04-09 to live findings only after the migration obsoleted 8 custodial-era items (C-03, H-09, M-05, M-06, M-08, M-13, L-07, L-16). On 2026-04-17 the v1 program-upgrade sweep shipped (M-03 gauge-voter owner check — deploy sig `4U46jBDkn9y6eWmWhrLj1soQb2xdchghjf7K7AvEtdXtTk34r1TegdyBxQcUGjGfhBWakE8zjN3mNtteqVAAEbcZ`, slot 413923403; L-03 bin-farm total_positions decrement; L-04 merkle-distributor drain check) and auditv1.md was consolidated into this file. The v1 items whose remediation status or obsolescence is documented in the verification table above (C-02, H-01, H-10 — still open; C-03/H-09/M-05/M-06/M-08/M-13/L-07/L-16 — obsolete under PDA vaults; M-03/L-03/L-04 — shipped 2026-04-17) are not re-documented here. What follows is every v1 open finding whose full body text only existed in auditv1.md. Severity and wording preserved verbatim._
+
+**Unaudited surface carried over from v1 (still not audited):** PDA vault instructions added in 2026-04-08 migration (`create_vault`, `withdraw_sol`, `withdraw_token`, `wrap_sol_in_vault`, `unwrap_wsol_in_vault`, `vault_burn_and_mint`, `vault_vote`, `update_gas_lamports`, plus `deduct_gas` on 9 instructions) — these are the primary subject of audit-v2 above, so this is now covered. `close_rover_position` (bin-farm, deployed 2026-04-12) was flagged in v1 as deployed unaudited; a retroactive review is still recommended — it's touched in v2-L-03 but not fully audited.
+
+---
+
+### v1-M-01: Orphaned Per-Position Vault ATAs on Close
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Severity:** Medium
+**Component:** `programs/bin-farm/src/lib.rs` (`close_position`, `user_close`)
+**Status:** Open (verified in source 2026-04-17 — per-position Vault PDA at `lib.rs:3193` uses `close = user_vault` but ATAs inside the Vault PDA are not closed first)
+
+The **per-position** Vault PDA (seeds: `[b"vault", meteora_position.key()]`)
+holds token X and token Y ATAs during the position lifetime. On close, the
+Vault PDA is closed (rent returned), but the ATAs are not closed first. Their
+authority no longer exists — ~0.004 SOL per position (2 ATAs × ~0.002) is
+permanently locked.
+
+> Note: this is the *per-position* Vault PDA, distinct from the *per-user*
+> UserVault PDA added in the 2026-04-08 migration. UserVault ATAs persist
+> across positions and are not affected.
+
+10K positions ≈ 40 SOL stranded.
+
+**Recommendation:** Close vault ATAs before closing the Vault PDA, via
+`invoke_signed` with vault seeds.
+
+---
+
+### v1-M-02: set_trader_dest Has No Timelock
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Severity:** Medium
+**Component:** `programs/bin-farm/src/lib.rs:1252-1266`
+**Status:** Open
+
+`revenue_dest` changes use a 24-hour timelock (propose/apply). `set_trader_dest`
+takes effect immediately. A compromised authority can redirect 40% of sweep
+revenue (trader share) instantly.
+
+Combined with C-02, this is the fastest post-compromise drain vector.
+
+**Recommendation:** Add the same 24-hour propose/apply pattern.
+
+---
+
+### v1-M-04: remove_pool Does Not Redistribute Weight
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Severity:** Medium
+**Component:** `programs/gauge-voter/src/lib.rs:86-101`
+**Status:** Open
+
+When a pool is removed, its `weight_bps` vanishes. The total across remaining
+pools drops below 10,000 bps. The emitted event includes
+`redistributed_weight_bps` which is misleading — no redistribution occurs.
+Between removal and the next `vote()`, gauge weights sum to less than 10,000.
+
+Self-heals on the next `vote()` (rounding correction forces sum back to 10,000),
+but during the window, the epoch-computer would under-distribute the trader 40%.
+
+**Recommendation:** epoch-computer MUST normalize by actual weight sum, not
+assume 10,000. Alternatively, `remove_pool` should redistribute proportionally
+before closing the account.
+
+---
+
+### v1-M-09: Price Syncer Trusts Arbitrary Jupiter Swap Instructions
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Severity:** Medium
+**Component:** `bot/price-syncer.ts:441-507`
+**Status:** Open — swap execution currently disabled
+
+Price syncer fetches swap instructions from Jupiter's API and executes them
+faithfully. A compromised Jupiter endpoint could return malicious instructions
+that drain the bot wallet. Currently mitigated because swap execution is
+disabled pending direct Meteora DLMM swap integration.
+
+**Recommendation:** When re-enabled, whitelist program IDs (Jupiter, Meteora,
+SPL Token) in the deserialized instruction stream. Reject unknown targets.
+
+---
+
+### v1-L-01: Deposit Transfers Use Raw SPL Transfer
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Severity:** Low
+**Component:** `programs/bin-farm/src/lib.rs:143-157, 1332-1346, 1569-1591`
+**Status:** Open
+
+User deposits use SPL Transfer (discriminator `3`), which does not verify mint
+or decimals. All outbound transfers correctly use `transfer_checked`. Not
+exploitable (Meteora CPI validates), but inconsistent.
+
+**Fix:** `transfer_checked` for all transfers.
+
+---
+
+### v1-L-02: Emergency Close Rent Goes to Caller, Not Position Owner
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Severity:** Low
+**Component:** `programs/bin-farm/src/lib.rs:2589, 2599`
+**Status:** Open
+
+`apply_emergency_close` closes Position and Vault PDAs to `caller`, not `owner`.
+~0.004 SOL in PDA rent goes to the caller as execution incentive. Owner loses it.
+
+**Fix:** Document clearly, or send rent to owner + separate tip mechanism.
+
+---
+
+### v1-L-05: drain_vault Destination Is Unchecked
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Severity:** Low
+**Component:** `programs/epoch-vault/src/lib.rs:49-77`
+**Status:** Open
+
+Authority-gated but `destination` has no constraints. Bot can drain to ANY
+address. Documented as intentional (bot drains to itself for WSOL wrapping).
+
+**Fix:** Add `destination` field to BridgeConfig, set via timelocked admin ix.
+
+(Cross-ref: v2-L-06 flags a related footgun — `drain_vault(amount=0)` drains
+everything due to the `if amount == 0 { available }` branch.)
+
+---
+
+### v1-L-06: Gauge Voter Rounding Correction Edge Case
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Severity:** Low
+**Component:** `programs/gauge-voter/src/lib.rs:197-215`
+**Status:** Open
+
+If `total_new_bps > 10000` by more than the first pool's weight, `checked_sub`
+returns error, reverting the tx. Max rounding error = N bps where N ≤ 32.
+
+**Fix:** Adjust the largest-weight pool instead of always the first pool.
+
+---
+
+### v1 Accepted informational (I-01 – I-08)
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+Saturating counters, LP-fee-on-close by design, unconstrained rover token
+programs, `sweep_rover` not heartbeat-gated, unused `vault_bump` in `drain_vault`,
+manual `SIZE` constant, `total_burned` cosmetic undercount, `init_if_needed` on
+`ClaimStatus`. Documented, no changes planned.
+
+---
+
+### v1 Program audit notes (reviewed 2026-04-01, still current)
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**epoch-vault** — Clean. `drain_vault` uses direct lamport manipulation on the
+PDA (no CPI needed — vault is system-owned). `vault_bump` stored but unused in
+`drain_vault` — not a bug. `destination` unchecked — see v1-L-05.
+
+**merkle-distributor** — Clean. `update_mint` authority-gated, validates new
+vault ATA is owned by distributor PDA and denominated in new mint. Uses
+`transfer_checked` via `token_interface` — works with SPL Token and Token-2022.
+Cumulative accounting sound (delta from `cumulative_amount -
+claim_status.cumulative_claimed`).
+
+**gauge-voter** — Solid. PPB math uses u128 intermediates to avoid overflow.
+Rounding dust correction on first pool is correct. Flash-loan voting
+acknowledged and accepted. `remove_pool` has the v1-M-04 issue. M-03 owner
+check shipped 2026-04-17.
+
+**bank-mint** — Clean. Supply cap invariant `bank_supply + crank_supply <= 2B`
+checked on every `burn_and_mint`. PDA is sole mint authority (verified at
+initialize).
+
+**bin-farm** — 3054 lines (pre-migration); current 3971 (v2 commit `80bb954`).
+`sweep_rover` curve-driven since 2026-04-13 (see v2 addendum). PDA vault
+migration (2026-04-08) added 8 instructions + `deduct_gas` on 9 — audited in
+audit-v2 above, HIGH sweep shipped 2026-04-15 through 2026-04-17.
+
+**Cross-program:** Both `revenue_dest` and `trader_dest` historically pointed
+to `bridge_vault` (`B9gTfe...`). 40% + 40% = 80% to same account pre-amendment
+— no race. Remaining 20% → `Config.bot`. Post-2026-04-13 Capture the Bag:
+curve-driven split (burn_sol_vault / trader_dest / Config.bot).
+
+---
+
+### v1 Economic model review (2026-04-01, still current pre-amendment; see addendum for 2026-04-13 rewrite)
+
+_From auditv1.md 2026-04-01, preserved at consolidation 2026-04-17._
+
+**Fee math verified:**
+- `harvest_bins`: `(amount as u128) * fee_bps / 10_000` with u128 intermediates
+- `sweep_rover`: `holder = sweepable * 4000 / 10000`, `trader = sweepable * 4000 / 10000`, `operator = sweepable - holder - trader` (rounding dust → operator). **Superseded 2026-04-13** by `compute_curve`-driven split.
+
+**Lamport leakage points:**
+1. Orphaned per-position vault ATAs (~0.004 SOL/close) — v1-M-01
+2. Rent-exempt minimums in `rover_authority` and `bridge_vault` — by design
+
+**MEV exposure:**
+1. **Fee rovers:** Sandwichable in theory — position is small (protocol fees only), spread across 69 bins. Sandwich profit minimal vs. gas cost.
+2. **Permissionless harvest front-running:** After `priority_slots` (100 slots, ~40s), anyone can harvest and earn `keeper_tip_bps` (10%). At 0.3% (now 0.5%) fee rate, the tip is small — likely below MEV threshold. See also v2-H-03 (zero-yield permissionless drain — fixed 2026-04-17).
+3. **No sandwich risk on user positions:** Single-sided limit orders; deposit doesn't move the market. Harvest triggered by price movement that already occurred.
+
+**Flash-loan gauge voting:** Accepted by design. Incremental revenue from weight manipulation must exceed flash-loan swap fees (~0.3%) + interest. At current protocol scale, economics don't favor the attack. Reassess at higher TVL.
+
+---
+
+*End of audit-v2.md. Consolidated from auditv1.md (2026-04-01) on 2026-04-17.*

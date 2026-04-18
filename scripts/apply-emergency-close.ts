@@ -15,6 +15,7 @@ const __dirname2 = path.dirname(__filename2);
 dotenv.config({ path: path.join(__dirname2, '../bot/.env') });
 
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 
 async function main() {
   const conn = new Connection(process.env.RPC_URL!, 'confirmed');
@@ -49,7 +50,8 @@ async function main() {
   const position = await program.account.position.fetch(pendingKey);
   const data = position as any;
   const meteoraPosKey = data.meteoraPosition as PublicKey;
-  const owner = data.owner as PublicKey;
+  // Post-PDA-vault migration: tokens flow back to the UserVault PDA, not a raw wallet.
+  const userVault = data.userVault as PublicKey;
 
   const [vaultPda] = PublicKey.findProgramAddressSync([Buffer.from('vault'), meteoraPosKey.toBuffer()], CORE_ID);
 
@@ -67,13 +69,13 @@ async function main() {
 
   const vaultTokenX = getAssociatedTokenAddressSync(tokenXMint, vaultPda, true, tokenXProgram);
   const vaultTokenY = getAssociatedTokenAddressSync(tokenYMint, vaultPda, true, tokenYProgram);
-  const ownerTokenX = getAssociatedTokenAddressSync(tokenXMint, owner, true, tokenXProgram);
-  const ownerTokenY = getAssociatedTokenAddressSync(tokenYMint, owner, true, tokenYProgram);
+  const ownerTokenX = getAssociatedTokenAddressSync(tokenXMint, userVault, true, tokenXProgram);
+  const ownerTokenY = getAssociatedTokenAddressSync(tokenYMint, userVault, true, tokenYProgram);
 
-  // Ensure owner ATAs exist
+  // Ensure UserVault ATAs exist (bot pays rent; vault PDA owns the ATA).
   const createAtaIxs = [
-    createAssociatedTokenAccountIdempotentInstruction(kp.publicKey, ownerTokenX, owner, tokenXMint, tokenXProgram),
-    createAssociatedTokenAccountIdempotentInstruction(kp.publicKey, ownerTokenY, owner, tokenYMint, tokenYProgram),
+    createAssociatedTokenAccountIdempotentInstruction(kp.publicKey, ownerTokenX, userVault, tokenXMint, tokenXProgram),
+    createAssociatedTokenAccountIdempotentInstruction(kp.publicKey, ownerTokenY, userVault, tokenYMint, tokenYProgram),
   ];
 
   console.log('Executing emergency close...');
@@ -84,6 +86,7 @@ async function main() {
       config: configPDA,
       position: pendingKey,
       vault: vaultPda,
+      owner: userVault,
       vaultTokenX,
       vaultTokenY,
       ownerTokenX,
@@ -92,6 +95,7 @@ async function main() {
       tokenYMint,
       tokenXProgram,
       tokenYProgram,
+      memoProgram: MEMO_PROGRAM_ID,
       systemProgram: new PublicKey('11111111111111111111111111111111'),
     })
     .preInstructions(createAtaIxs)

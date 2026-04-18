@@ -15,12 +15,12 @@ When `DISCORD_TOKEN` is set, the harvester also starts the Discord bot — 12 sl
 | `anchor-harvest-bot.ts` | Orchestrator / main entry point. Wires modules together, boots the process, runs health server on :8080, manages graceful shutdown. Conditionally starts Discord bot if `DISCORD_TOKEN` is set. |
 | `geyser-subscriber.ts` | Helius LaserStream gRPC subscriber. Parses raw 904-byte LbPair accounts for activeId changes. Maintains in-memory position registry grouped by pool. Emits `harvestNeeded` events. Auto-reconnect with exponential backoff. |
 | `harvest-executor.ts` | Job queue that submits harvest/close transactions. Deduplicates jobs, confirms bin balances via RPC before submitting, handles Token-2022. Max 5 concurrent. Bot-signed, fee payer; vault PDAs reimburse via `deduct_gas`. Enrichment: reads token deltas from confirmed tx via `getTransaction`. Auto-unwraps WSOL after harvest/close via `unwrap_wsol_in_vault`. |
-| `keeper.ts` | Daily fee sequencer (runs once per UTC day). 5 steps: close WSOL → sweep rover (40/40/20 split) → epoch distribution (drain vault → WSOL → Merkle → auto-claim) → open fee rovers → close exhausted rovers. |
+| `keeper.ts` | Daily fee sequencer (runs once per UTC day). 8 steps: close WSOL → sweep rover (curve-driven split) → open rover bids → rover burn+mint → dual epoch distribution (SOL + BANK) → open fee rovers → close exhausted rovers → prune inactive crank-role members. |
 | `epoch-computer.ts` | Daily SOL distribution engine. Computes per-user shares from harvest fees, builds Merkle tree, drains epoch-vault, wraps WSOL, funds distributor, auto-claims for all users above threshold. |
 | `relay-server.ts` | REST API + WebSocket relay. Exposes bot state: pools, positions, pending harvests, fee pipeline, rovers, protocol PnL, activity feed. `/api/health` returns 503 when unhealthy. |
 | `alerter.ts` | Discord feed channel alerts with 5-min cooldown + dedup. Fires on: gRPC disconnect/reconnect, low bot balance, keeper failures. |
 | `meteora-accounts.ts` | Shared Meteora CPI account resolution + DLMM instance cache (10-min TTL, LRU eviction). Used by executor and keeper. |
-| `price-syncer.ts` | Price divergence detection + arb bot (disabled, pending direct Meteora swap). |
+| `price-syncer.ts` | RETIRED. Jupiter routes through DLMM organically. |
 | `logger.ts` | pino logger. |
 | `retry.ts` | Shared `withRetry()` — 3 retries, exponential backoff. |
 | `bot.test.ts` | Unit tests (vitest): LbPair byte parsing, safe bin detection, job dedup, bin contiguity. No RPC deps. |
@@ -46,14 +46,18 @@ GeyserSubscriber (gRPC stream)
 
 Keeper (daily timer)
   ├─ close WSOL on rover_authority
-  ├─ sweep_rover → 80% bridge_vault + 20% bot
-  ├─ epoch distribution → drain vault → WSOL → Merkle → auto-claim
-  ├─ open fee rovers (token fees → DLMM positions)
-  └─ close exhausted rovers
+  ├─ sweep_rover → curve-driven split (burn_sol_vault + bridge_vault + bot)
+  ├─ open rover bids (wrap_burn_sol → buy-side CRANK/SOL)
+  ├─ rover_burn_and_mint (CRANK → BANK → bank-distributor vault)
+  ├─ dual epoch distribution (SOL + BANK Merkle → auto-claim)
+  ├─ open fee rovers (non-CRANK token fees → DLMM positions)
+  ├─ close exhausted rovers
+  └─ prune inactive crank-role members
 
 DiscordBot (conditional — requires DISCORD_TOKEN)
-  ├─ 12 slash commands: start, balance, deposit, buy, sell,
-  │   positions, close, withdraw, pools, vote, burn, help
+  ├─ 14 slash commands: start, balance, deposit, buy, sell,
+  │   positions, close, withdraw, pools, vote, burn, help,
+  │   leaderboard, stats
   ├─ Pool routing: multi-pool selection, auto-split, mcap/price/pct input
   ├─ Vault PDAs: user wallet → UserVault PDA (seeded by owner wallet), no keypairs
   └─ Notifier: DM on harvest/close, feed channel posts
@@ -65,9 +69,12 @@ RelayServer (HTTP :8080)
 
 ## Fee split
 
-40/40/20 — hardcoded on-chain in `sweep_rover`:
-- 80% to `bridge_vault` (both revenue_dest + trader_dest point here) → epoch-computer drains daily → WSOL → Merkle distributor → auto-claimed to users
-- 20% to `Config.bot` (operations, self-funding)
+Curve-driven `sweep_rover` (50 bps fee, reads `crank_mint.supply` on-chain):
+- `burn_ratio × total` → `burn_sol_vault` PDA → buy-side CRANK bids → burn → mint BANK → bank-distributor
+- `trader_sol_frac × total` → `bridge_vault` → drain → WSOL → merkle-distributor → auto-claim
+- `protocol_skim × total` → `Config.bot` (self-funding ops)
+
+where `burn_ratio = min(1.0, (supply/initial)/0.75)`, `protocol_skim = 0.20×(1−burn_ratio)`.
 
 ## Deployment
 

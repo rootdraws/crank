@@ -95,11 +95,24 @@ const commands = [
   new SlashCommandBuilder()
     .setName('leaderboard')
     .setDescription('Top traders by harvest volume in a rolling window')
+    .addStringOption(opt =>
+      opt.setName('token')
+        .setDescription('Filter by token symbol (e.g. CRANK) — omit for all pools')
+        .setRequired(false))
     .addIntegerOption(opt =>
       opt.setName('days')
         .setDescription('Window in days (default 7)')
         .setMinValue(1)
         .setMaxValue(90)
+        .setRequired(false)),
+
+  new SlashCommandBuilder()
+    .setName('stats')
+    .setDescription('Protocol or personal volume stats')
+    .addStringOption(opt =>
+      opt.setName('scope')
+        .setDescription('"me" for personal (DM), "all" for protocol-wide')
+        .addChoices({ name: 'me', value: 'me' }, { name: 'all', value: 'all' })
         .setRequired(false)),
 ].map(cmd => cmd.toJSON());
 

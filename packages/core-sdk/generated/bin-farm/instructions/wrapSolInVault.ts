@@ -122,7 +122,6 @@ export type WrapSolInVaultAsyncInput<
   caller: TransactionSigner<TAccountCaller>;
   config?: Address<TAccountConfig>;
   userVault: Address<TAccountUserVault>;
-  /** Lamport credit via system_program::transfer, validated by sync_native CPI. */
   vaultWsolAta: Address<TAccountVaultWsolAta>;
   tokenProgram: Address<TAccountTokenProgram>;
   amount: WrapSolInVaultInstructionDataArgs['amount'];
@@ -216,7 +215,6 @@ export type WrapSolInVaultInput<
   caller: TransactionSigner<TAccountCaller>;
   config: Address<TAccountConfig>;
   userVault: Address<TAccountUserVault>;
-  /** Lamport credit via system_program::transfer, validated by sync_native CPI. */
   vaultWsolAta: Address<TAccountVaultWsolAta>;
   tokenProgram: Address<TAccountTokenProgram>;
   amount: WrapSolInVaultInstructionDataArgs['amount'];
@@ -297,7 +295,6 @@ export type ParsedWrapSolInVaultInstruction<
     caller: TAccountMetas[0];
     config: TAccountMetas[1];
     userVault: TAccountMetas[2];
-    /** Lamport credit via system_program::transfer, validated by sync_native CPI. */
     vaultWsolAta: TAccountMetas[3];
     tokenProgram: TAccountMetas[4];
   };

@@ -32,6 +32,7 @@ import { handleVote } from './commands/vote';
 import { handleBurn } from './commands/burn';
 import { handleHelp } from './commands/help';
 import { handleLeaderboard } from './commands/leaderboard';
+import { handleStats } from './commands/stats';
 import { handleEnableToken } from './commands/enable-token';
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '..', '.env') });
@@ -52,7 +53,7 @@ export interface BotContext {
 
 // Commands allowed in the cash-out-only channel. Everything else is rejected
 // so the room stays focused on getting out (close positions, pull funds).
-const CASHOUT_ALLOWED = new Set(['close', 'withdraw', 'positions', 'balance', 'help']);
+const CASHOUT_ALLOWED = new Set(['close', 'withdraw', 'positions', 'balance', 'help', 'stats']);
 
 interface DiscordBotConfig {
   executor?: any;
@@ -160,6 +161,7 @@ export class DiscordBot {
           case 'burn':      return await handleBurn(interaction, ctx);
           case 'help':        return await handleHelp(interaction, ctx);
           case 'leaderboard': return await handleLeaderboard(interaction, ctx);
+          case 'stats':       return await handleStats(interaction, ctx);
           default:
             await interaction.reply({ content: 'Unknown command.', ephemeral: true });
         }

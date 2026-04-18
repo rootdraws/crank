@@ -66,6 +66,25 @@ export function loadPoolRegistry(configPath?: string): PoolConfig[] {
 }
 
 /**
+ * Override the `supply` field on all mc-mode pools sharing a base mint.
+ * Used by the keeper's daily supply-refresh step to keep mcap math honest
+ * as CRANK gets burned (rover_burn_and_mint). In-memory only — does not
+ * write back to curator.json.
+ */
+export function setPoolSupply(mintAddress: string, humanSupply: number): number {
+  const raw = loadRaw();
+  let touched = 0;
+  for (const p of raw.pools as PoolConfig[]) {
+    if (p.displayMode !== 'mc') continue;
+    if (p.mintX === mintAddress || p.mintY === mintAddress) {
+      p.supply = humanSupply;
+      touched++;
+    }
+  }
+  return touched;
+}
+
+/**
  * Load gauge map: token symbol → LbPair address.
  * One gauge per trading pair. Used by /vote to resolve token names to
  * the on-chain PoolGauge PDA. Bin step pools are a routing detail —

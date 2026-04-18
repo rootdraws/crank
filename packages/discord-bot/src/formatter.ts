@@ -47,32 +47,26 @@ export function formatPositionOpened(params: {
   supply?: number;
   token?: string;
   walletAddress?: string;
+  actorId?: string;
 }): string {
-  const { side, poolName, priceLow, priceHigh, amount, quoteSymbol, txSig, displayMode, supply, token, walletAddress } = params;
+  const { side, poolName, priceLow, priceHigh, amount, quoteSymbol, txSig, displayMode, supply, token, walletAddress, actorId } = params;
   const isBuy = side === 'Buy';
   const tokenName = token || poolName.split('/')[0];
 
-  let topLabel: string;
-  let bottomLabel: string;
-
+  let rangePhrase: string;
   if (displayMode === 'mc' && supply) {
-    topLabel = formatMcap(priceHigh * supply);
-    bottomLabel = formatMcap(priceLow * supply);
+    rangePhrase = `between ${formatMcapCompact(priceLow * supply)} and ${formatMcapCompact(priceHigh * supply)} market cap`;
   } else {
-    topLabel = `$${formatPrice(priceHigh)}`;
-    bottomLabel = `$${formatPrice(priceLow)}`;
+    rangePhrase = `between $${formatPrice(priceLow)} and $${formatPrice(priceHigh)}`;
   }
 
-  const addr = walletAddress
-    ? `${walletAddress.slice(0, 4)}...${walletAddress.slice(-4)}`
-    : '';
+  const addr = actorId
+    ? `<@${actorId}>`
+    : walletAddress
+      ? `${walletAddress.slice(0, 4)}...${walletAddress.slice(-4)}`
+      : '';
 
-  return (
-    `${addr} is a ${isBuy ? 'buyer' : 'seller'} of ${tokenName} between:\n` +
-    `Top:    ${topLabel}\n` +
-    `Bottom: ${bottomLabel}\n` +
-    `[${amount} ${quoteSymbol} deposited](${SOLSCAN_TX}${txSig})`
-  );
+  return `${addr} is a ${isBuy ? 'buyer' : 'seller'} of ${tokenName} ${rangePhrase} · [${amount} ${quoteSymbol}](${SOLSCAN_TX}${txSig}).`;
 }
 
 function formatAmount(n: number): string {
@@ -86,6 +80,18 @@ function formatMcap(mcap: number): string {
   if (mcap >= 1_000_000) return `${(mcap / 1_000_000).toFixed(1)}m mc`;
   if (mcap >= 1_000) return `${(mcap / 1_000).toFixed(1)}k mc`;
   return `$${mcap.toFixed(0)} mc`;
+}
+
+function trimZero(n: number, digits: number): string {
+  const s = n.toFixed(digits);
+  return s.replace(/\.?0+$/, '');
+}
+
+function formatMcapCompact(mcap: number): string {
+  if (mcap >= 1_000_000_000) return `${trimZero(mcap / 1_000_000_000, 1)}b`;
+  if (mcap >= 1_000_000) return `${trimZero(mcap / 1_000_000, 1)}m`;
+  if (mcap >= 1_000) return `${trimZero(mcap / 1_000, 1)}k`;
+  return `$${mcap.toFixed(0)}`;
 }
 
 // ─── Position Opened (ephemeral follow-up) ─────────────────────────────────
@@ -252,17 +258,18 @@ export function formatFeedOpened(params: {
   txSig: string;
   displayMode?: 'price' | 'mc';
   supply?: number;
+  actorId?: string;
 }): string {
-  let range: string;
+  const isBuy = params.side === 'Buy';
+  const tokenName = params.poolName.split('/')[0];
+  let rangePhrase: string;
   if (params.displayMode === 'mc' && params.supply) {
-    range = `${formatMcap(params.priceLow * params.supply)}–${formatMcap(params.priceHigh * params.supply)}`;
+    rangePhrase = `between ${formatMcapCompact(params.priceLow * params.supply)} and ${formatMcapCompact(params.priceHigh * params.supply)} market cap`;
   } else {
-    range = `$${formatPrice(params.priceLow)}–$${formatPrice(params.priceHigh)}`;
+    rangePhrase = `between $${formatPrice(params.priceLow)} and $${formatPrice(params.priceHigh)}`;
   }
-  return (
-    `opened · ${params.side} ${params.poolName} ${range} · ` +
-    `[${params.amount} ${params.quoteSymbol}](${SOLSCAN_TX}${params.txSig}) deposited`
-  );
+  const actor = params.actorId ? `<@${params.actorId}>` : 'someone';
+  return `${actor} is a ${isBuy ? 'buyer' : 'seller'} of ${tokenName} ${rangePhrase} · [${params.amount} ${params.quoteSymbol}](${SOLSCAN_TX}${params.txSig}).`;
 }
 
 export function formatFeedHarvested(params: {
@@ -273,8 +280,37 @@ export function formatFeedHarvested(params: {
   txSig: string;
   actorId?: string;
 }): string {
-  const prefix = params.actorId ? `<@${params.actorId}> ` : '';
-  return `${prefix}harvested · ${params.poolName} ${params.side.toLowerCase()} · [${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig})`;
+  const actor = params.actorId ? `<@${params.actorId}>` : 'someone';
+  const link = `[${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig})`;
+  const verb = params.side === 'Buy' ? 'accumulated' : 'harvested';
+  return `${actor} ${verb} ${link}.`;
+}
+
+export function formatFeedVote(params: {
+  allocations: { token: string; pct: number }[];
+  bankAmount: string;
+  txSig: string;
+  actorId?: string;
+}): string {
+  const actor = params.actorId ? `<@${params.actorId}>` : 'someone';
+  let phrase: string;
+  if (params.allocations.length === 1) {
+    const a = params.allocations[0];
+    phrase = `allocated ${a.pct}% of voting power to ${a.token}`;
+  } else {
+    const list = params.allocations.map(a => `${a.pct}% to ${a.token}`).join(', ');
+    phrase = `allocated voting power — ${list}`;
+  }
+  return `${actor} has ${phrase} · [${params.bankAmount} BANK](${SOLSCAN_TX}${params.txSig}).`;
+}
+
+export function formatFeedBurn(params: {
+  amount: string;
+  txSig: string;
+  actorId?: string;
+}): string {
+  const actor = params.actorId ? `<@${params.actorId}>` : 'someone';
+  return `${actor} has burned [${params.amount} CRANK](${SOLSCAN_TX}${params.txSig}), and increased voting power by ${params.amount} BANK.`;
 }
 
 export function formatFeedClosed(params: {
@@ -290,18 +326,13 @@ export function formatFeedClosed(params: {
   quoteTokenUsdPrice?: number;
   actorId?: string;
 }): string {
-  const qUsd = params.quoteTokenUsdPrice ?? 1;
-  let range: string;
-  if (params.displayMode === 'mc' && params.supply) {
-    range = `${formatMcap(params.priceLow * qUsd * params.supply)}–${formatMcap(params.priceHigh * qUsd * params.supply)}`;
-  } else {
-    range = `$${formatPrice(params.priceLow)}–$${formatPrice(params.priceHigh)}`;
+  const actor = params.actorId ? `<@${params.actorId}>` : 'someone';
+  const sideLower = params.side.toLowerCase();
+  if (params.amountOut === '—') {
+    return `${actor} [closed a ${sideLower} position in ${params.poolName}](${SOLSCAN_TX}${params.txSig}).`;
   }
-  const amountPart = params.amountOut !== '—'
-    ? `[${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig}) returned`
-    : `[closed](${SOLSCAN_TX}${params.txSig})`;
-  const prefix = params.actorId ? `<@${params.actorId}> ` : '';
-  return `${prefix}closed · ${params.side} ${params.poolName} ${range} · ${amountPart}`;
+  const link = `[${params.amountOut} ${params.tokenSymbol}](${SOLSCAN_TX}${params.txSig})`;
+  return `${actor} closed their ${sideLower} position in ${params.poolName} · ${link} returned.`;
 }
 
 // ─── Error Messages (orangutan voice) ──────────────────────────────────────

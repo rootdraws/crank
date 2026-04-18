@@ -32,6 +32,20 @@ import { buildMeteoraCPIAccounts, getDLMM, fixBitmapWritable, SPL_MEMO_PROGRAM_I
 import type { HarvestJob, LbPairInfo } from './geyser-subscriber';
 import { logger } from './logger';
 import { confirmAndCheck } from '../packages/core-sdk/transactions';
+import { loadPoolRegistry, type PoolConfig } from '../packages/core-sdk/pool-config';
+import { binToPrice } from '../packages/core-sdk/math';
+import { fetchDexScreenerPrice } from '../packages/core-sdk/price-source';
+
+// Dust-harvest threshold (USD). Harvests with estimated yield below this are
+// skipped — bot's tx fees + gas reimbursement already cost ~$0.02 per harvest,
+// so a sub-threshold yield is a net loss. The position stays active; the next
+// gRPC event re-enqueues and accumulated yield eventually clears the bar.
+const MIN_HARVEST_USD = parseFloat(process.env.MIN_HARVEST_USD || '0.25');
+
+// Known quote mints. We only price yield in Y (quote); X yield is first
+// converted to Y via the DLMM's active price.
+const SOL_MINT_STR = 'So11111111111111111111111111111111111111112';
+const USDC_MINT_STR = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 // Priority fee floor/cap (micro-lamports per compute unit)
 const PRIORITY_FEE_FLOOR = 10_000;
@@ -102,6 +116,9 @@ export class HarvestExecutor extends EventEmitter {
   private shuttingDown = false;
   // DLMM cache moved to shared meteora-accounts.ts module
 
+  // Pool registry — address → config. Loaded once at construction; immutable.
+  private poolByAddress: Map<string, PoolConfig> = new Map();
+
   // Stats
   public lastHarvestTime = 0;
   public totalHarvests = 0;
@@ -115,6 +132,14 @@ export class HarvestExecutor extends EventEmitter {
     this.coreProgramId = config.coreProgramId;
     this.maxConcurrent = config.maxConcurrent ?? 5;
     this.walletService = config.walletService ?? null;
+
+    try {
+      for (const p of loadPoolRegistry()) {
+        this.poolByAddress.set(p.address, p);
+      }
+    } catch (e: any) {
+      logger.warn(`[executor] pool registry load failed: ${e.message} — dust-harvest filter disabled`);
+    }
   }
 
   setWalletService(ws: any): void {
@@ -228,10 +253,21 @@ export class HarvestExecutor extends EventEmitter {
       const allExhausted = safeBins.length === binData.length;
 
       if (allExhausted) {
+        // Always close on full conversion — close refunds position rent
+        // regardless of yield value, so a dust check doesn't apply here.
         logger.info(`  [executor] ${key.slice(0, 8)} ${job.side} ALL ${binData.length} bins → CLOSE`);
         await this.closePosition(key, job, dlmm, meteoraPos, job.poolInfo);
       } else {
-        logger.info(`  [executor] ${key.slice(0, 8)} ${job.side} ${safeBins.length}/${binData.length} bins → HARVEST`);
+        // Dust filter — partial harvests only. Skip if estimated yield value
+        // is below MIN_HARVEST_USD. Position stays active; next bin-change
+        // event re-enqueues once accumulated yield clears the bar.
+        const yieldUsd = await this.estimateYieldUsd(job, safeBins, binData, activeId);
+        if (yieldUsd !== null && yieldUsd < MIN_HARVEST_USD) {
+          logger.info(`  [executor] ${key.slice(0, 8)} ${job.side} skip dust — $${yieldUsd.toFixed(4)} < $${MIN_HARVEST_USD} across ${safeBins.length} bins`);
+          return;
+        }
+        const valueTag = yieldUsd !== null ? ` ($${yieldUsd.toFixed(2)})` : '';
+        logger.info(`  [executor] ${key.slice(0, 8)} ${job.side} ${safeBins.length}/${binData.length} bins → HARVEST${valueTag}`);
         await this.harvestBins(key, job, dlmm, meteoraPos, safeBins, job.poolInfo);
       }
     } catch (e: any) {
@@ -265,6 +301,96 @@ export class HarvestExecutor extends EventEmitter {
     }
 
     return safeBins.sort((a, b) => a - b);
+  }
+
+  /**
+   * Estimate the USD value of a pending partial harvest. Returns null when the
+   * pool isn't in the registry, the quote token isn't SOL/USDC, or the SOL/USD
+   * oracle fails — callers treat null as "couldn't decide" and proceed.
+   *
+   * Yield computation is entirely on-chain: DLMM's `activeId` gives the
+   * X-in-Y price, so Buy-side X yield is multiplied through to Y. Only the
+   * quote→USD step is external (Pyth for SOL, 1.0 for USDC). No DexScreener.
+   *
+   * Sell side harvests the Y-token; Buy side harvests the X-token.
+   */
+  private async estimateYieldUsd(
+    job: HarvestJob,
+    safeBins: number[],
+    binData: any[],
+    activeId: number,
+  ): Promise<number | null> {
+    const pool = this.poolByAddress.get(job.lbPair.toBase58());
+    if (!pool) return null;
+
+    const isSell = job.side === 'Sell';
+
+    // Sum the converted-side raw amount across safe bins.
+    let totalRaw = 0n;
+    const safeSet = new Set(safeBins);
+    for (const bin of binData) {
+      if (!safeSet.has(bin.binId)) continue;
+      const amount = isSell ? bin.positionYAmount : bin.positionXAmount;
+      if (amount) totalRaw += BigInt(amount);
+    }
+    if (totalRaw === 0n) return 0;
+
+    // Express yield in human-readable Y (quote) units.
+    let humanQuote: number;
+    if (isSell) {
+      humanQuote = Number(totalRaw) / 10 ** pool.decimalsY;
+    } else {
+      // Buy side: yield is in X. Convert using the DLMM's active-bin price
+      // (Y per X, already decimal-adjusted by binToPrice).
+      const pxPerX = binToPrice(activeId, pool.binStep, pool.decimalsX, pool.decimalsY);
+      const humanX = Number(totalRaw) / 10 ** pool.decimalsX;
+      humanQuote = humanX * pxPerX;
+    }
+
+    // Quote → USD. Only SOL + USDC supported; anything else returns null.
+    const quoteUsd = await this.quoteMintUsd(pool.mintY);
+    if (quoteUsd === null) return null;
+    return humanQuote * quoteUsd;
+  }
+
+  /** USD price of a known quote mint. SOL via Pyth, USDC pegged at 1. */
+  private async quoteMintUsd(mint: string): Promise<number | null> {
+    if (mint === USDC_MINT_STR) return 1;
+    if (mint === SOL_MINT_STR) {
+      const p = await fetchDexScreenerPrice(SOL_MINT_STR); // SOL path uses Pyth internally
+      return p?.priceUsd ?? null;
+    }
+    return null;
+  }
+
+  /**
+   * USD value of an actual harvest/close delta. Frozen at event time — meant
+   * to be persisted on the harvest row so /stats can show honest historical
+   * volume without re-pricing old events. Returns null if uncomputable.
+   */
+  private async actualHarvestUsd(
+    lbPair: string,
+    side: 'Buy' | 'Sell',
+    deltaX: bigint,
+    deltaY: bigint,
+    activeId: number,
+  ): Promise<number | null> {
+    const pool = this.poolByAddress.get(lbPair);
+    if (!pool) return null;
+
+    let humanQuote: number;
+    if (side === 'Sell') {
+      humanQuote = Number(deltaY) / 10 ** pool.decimalsY;
+    } else {
+      const pxPerX = binToPrice(activeId, pool.binStep, pool.decimalsX, pool.decimalsY);
+      const humanX = Number(deltaX) / 10 ** pool.decimalsX;
+      humanQuote = humanX * pxPerX;
+    }
+    if (humanQuote === 0) return 0;
+
+    const quoteUsd = await this.quoteMintUsd(pool.mintY);
+    if (quoteUsd === null) return null;
+    return humanQuote * quoteUsd;
   }
 
   // ─── HARVEST ───
@@ -443,6 +569,14 @@ export class HarvestExecutor extends EventEmitter {
     }, `Harvest submitted: ${binIds.length} bins from ${key.slice(0, 8)}`);
     this.lastHarvestTime = Date.now();
     this.totalHarvests++;
+
+    // USD value at harvest time — frozen and persisted so /stats can show
+    // honest historical volume without re-pricing old rows. null on pools
+    // that aren't in curator.json or with non-SOL/USDC quote.
+    const usdValue = await this.actualHarvestUsd(
+      job.lbPair.toBase58(), job.side, deltaX, deltaY, dlmm.lbPair.activeId,
+    );
+
     this.emit('harvestExecuted', {
       positionPDA: job.positionPDA,
       lbPair: job.lbPair.toBase58(),
@@ -453,6 +587,7 @@ export class HarvestExecutor extends EventEmitter {
       tokenXAmount: deltaX.toString(),
       tokenYAmount: deltaY.toString(),
       feeAmount: feeTaken.toString(),
+      usdValue,
     });
   }
 
@@ -612,6 +747,11 @@ export class HarvestExecutor extends EventEmitter {
     }, `Closed ${key.slice(0, 8)}`);
     this.lastHarvestTime = Date.now();
     this.totalCloses++;
+
+    const usdValue = await this.actualHarvestUsd(
+      job.lbPair.toBase58(), job.side, deltaX, deltaY, dlmm.lbPair.activeId,
+    );
+
     this.emit('positionClosed', {
       positionPDA: job.positionPDA,
       lbPair: job.lbPair.toBase58(),
@@ -620,6 +760,7 @@ export class HarvestExecutor extends EventEmitter {
       txSig: closeSig,
       tokenXAmount: deltaX.toString(),
       tokenYAmount: deltaY.toString(),
+      usdValue,
     });
   }
 

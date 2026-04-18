@@ -21,6 +21,21 @@ import {
 } from '@crankbot/core-sdk';
 import { formatPositionOpened, formatPositionEphemeral, formatFeedOpened, formatError, formatErrorBig } from '../formatter';
 import type { BotContext } from '../index';
+import { grantCrankRoleIfMissing } from '../role-service';
+import { fetchJupQuote, fetchDexScreenerPrice as fetchUsd } from '@crankbot/core-sdk';
+
+const SOL_MINT_STR = 'So11111111111111111111111111111111111111112';
+const USDC_MINT_STR = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+async function depositUsd(mint: string, rawAmount: bigint, decimals: number): Promise<number | null> {
+  if (mint === USDC_MINT_STR) return Number(rawAmount) / 10 ** decimals;
+  if (mint === SOL_MINT_STR) {
+    const p = await fetchUsd(SOL_MINT_STR);
+    if (!p?.priceUsd) return null;
+    return (Number(rawAmount) / 10 ** decimals) * p.priceUsd;
+  }
+  return null;
+}
 
 export async function handleBuy(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
   await handleOpenPosition(interaction, ctx, 'Buy');
@@ -211,9 +226,17 @@ export async function handleOpenPosition(
     }
 
     // Precise pre-flight: vault SOL sufficient for rent + gas + (SOL deposit if applicable)
-    // Vault pays: position account rent (~0.00185 SOL/position) + gas (0.00025 SOL/op)
-    // Bot pays: bin array init rent, priority fees
-    const POSITION_RENT_LAMPORTS = 2_000_000;   // ~0.002 SOL per position (Meteora position PDA + headroom)
+    // Vault pays: position rent (refunded on close) + gas (per-op flat)
+    // Bot pays (one-time, amortized): bin array rent, bitmap_ext rent, priority fees
+    //
+    // Rent breakdown per position (deducted via open_position_v2's rent_lamports):
+    //   PositionCounter (init_if_needed)  ~0.0017 SOL — only on first position per (vault,pool)
+    //   Position (Anchor)                 ~0.0017 SOL — refunded to vault on close
+    //   Vault (Anchor)                    ~0.0014 SOL — refunded to vault on close
+    //   MeteoraPositionV2 (Meteora CPI)   ~0.0580 SOL — refunded to vault on close (after auto-close flip)
+    //   Total per new position            ~0.063 SOL (worst case = first position per pool)
+    //                                     ~0.061 SOL (subsequent positions, counter exists)
+    const POSITION_RENT_LAMPORTS = 65_000_000;  // 0.065 SOL per position (real on-chain rent)
     const GAS_PER_OP_LAMPORTS = 250_000;        // 0.00025 SOL (open + eventual harvest)
     const VAULT_BUFFER_LAMPORTS = 2_000_000;    // 0.002 SOL safety for subsequent ops
     const isSolDeposit = side === 'Buy' && quote.toUpperCase() === 'SOL';
@@ -367,6 +390,23 @@ export async function handleOpenPosition(
         // TX 2: open position via Anchor program methods (bot is sole signer)
         const slippage = selectedPool.binStep >= 80 ? 15 : 5;
 
+        // Compute exact rent the bot is about to front so the program's
+        // `rent_lamports` passthrough deducts the same amount from vault.
+        // Sizes match Anchor account SIZE constants in bin-farm/src/lib.rs
+        // and Meteora's PositionV2 layout.
+        const POSITION_ANCHOR_BYTES   = 8 + 138;   // 8 disc + Position::SIZE body
+        const VAULT_ANCHOR_BYTES      = 8 + 33;    // 8 disc + Vault::SIZE body
+        const COUNTER_ANCHOR_BYTES    = 8 + 17;    // 8 disc + PositionCounter::SIZE body
+        const METEORA_POSITION_BYTES  = 8328;      // Meteora PositionV2 fixed size
+        const counterExists = posCounter > 0; // we read it above; >0 means counter PDA exists
+        const [positionRent, vaultRent, meteoraPosRent, counterRent] = await Promise.all([
+          ctx.connection.getMinimumBalanceForRentExemption(POSITION_ANCHOR_BYTES),
+          ctx.connection.getMinimumBalanceForRentExemption(VAULT_ANCHOR_BYTES),
+          ctx.connection.getMinimumBalanceForRentExemption(METEORA_POSITION_BYTES),
+          counterExists ? Promise.resolve(0) : ctx.connection.getMinimumBalanceForRentExemption(COUNTER_ANCHOR_BYTES),
+        ]);
+        const rentLamports = new BN(positionRent + vaultRent + meteoraPosRent + counterRent);
+
         // Build instruction first, then fix bitmap extension mutability.
         // Meteora's AddLiquidityByStrategy2 requires bitmap_ext as writable,
         // but the IDL marks it read-only (can't be mut when placeholder is used).
@@ -378,6 +418,7 @@ export async function handleOpenPosition(
             pos.maxBinId,
             side === 'Buy' ? { buy: {} } : { sell: {} },
             slippage,
+            rentLamports,
           )
           .accounts({
             bot: bot.publicKey,
@@ -424,7 +465,7 @@ export async function handleOpenPosition(
         }
 
         const { Transaction: Tx2 } = await import('@solana/web3.js');
-        const openTx = new Tx2().add(...(await buildPriorityFeeIxs(ctx.connection)), openIx);
+        const openTx = new Tx2().add(...(await buildPriorityFeeIxs(ctx.connection, 1_400_000)), openIx);
         openTx.feePayer = bot.publicKey;
         const openBh = await ctx.connection.getLatestBlockhash();
         openTx.recentBlockhash = openBh.blockhash;
@@ -460,6 +501,12 @@ export async function handleOpenPosition(
           throw openErr;
         }
 
+        // USD value of this position's deposit — frozen at open time for
+        // /stats "total deposited" aggregate. Only priced when deposit mint
+        // is SOL or USDC; otherwise null.
+        const initialUsd = await depositUsd(depositMint.toBase58(), positionAmount, depositDecimals)
+          .catch(() => null);
+
         ctx.walletService.savePosition({
           positionPda: positionPDA.toBase58(),
           userId,
@@ -470,7 +517,32 @@ export async function handleOpenPosition(
           minBinId: pos.minBinId,
           maxBinId: pos.maxBinId,
           initialAmount: positionAmount,
+          initialUsd,
         });
+
+        // JUP market-quote baseline — "what would a market trade get right now?"
+        // Frozen per-position so we can flex the delta vs DLMM-routed yield
+        // once the position fully converts. Non-blocking — quote failure just
+        // leaves the baseline unset (no flex, no impact on the open).
+        try {
+          const outputMint = side === 'Buy' ? cpi.tokenXMint : cpi.tokenYMint;
+          const outputDecimals = side === 'Buy' ? selectedPool.decimalsX : selectedPool.decimalsY;
+          const quote = await fetchJupQuote(
+            depositMint.toBase58(),
+            outputMint.toBase58(),
+            positionAmount,
+          );
+          if (quote) {
+            ctx.walletService.setPositionBaseline(
+              positionPDA.toBase58(),
+              quote.outAmount,
+              outputMint.toBase58(),
+              outputDecimals,
+            );
+          }
+        } catch (e: any) {
+          console.warn(`[buy] JUP baseline failed for ${positionPDA.toBase58().slice(0, 8)}: ${e.message?.slice(0, 100)}`);
+        }
 
         return { sig, positionPDA };
       });
@@ -493,13 +565,14 @@ export async function handleOpenPosition(
       displayMode: selectedPool.displayMode as 'price' | 'mc',
       supply: selectedPool.supply,
       token,
-      walletAddress: vaultPda!.toBase58(),
+      actorId: interaction.user.id,
     });
-    await interaction.editReply(
-      positions.length > 1
+    await interaction.editReply({
+      content: positions.length > 1
         ? `${publicText}\n_Split into ${positions.length} positions (${sigs.length} txs)_`
-        : publicText
-    );
+        : publicText,
+      allowedMentions: { parse: [] },
+    });
 
     // Ephemeral follow-up
     await interaction.followUp({
@@ -507,24 +580,35 @@ export async function handleOpenPosition(
       ephemeral: true,
     });
 
+    // Auto-grant crank role on successful action (no-op if already held).
+    grantCrankRoleIfMissing(ctx.client, interaction.user.id);
+
     // Feed channel
     if (ctx.feedChannelId) {
       try {
         const feedChannel = await ctx.client.channels.fetch(ctx.feedChannelId) as TextChannel;
         if (feedChannel) {
-          await feedChannel.send(formatFeedOpened({
-            side,
-            poolName: `${token}/${quote}`,
-            priceLow,
-            priceHigh,
-            amount,
-            quoteSymbol: depositSymbol,
-            txSig: sigs[0],
-            displayMode: selectedPool.displayMode as 'price' | 'mc',
-            supply: selectedPool.supply,
-          }));
+          await feedChannel.send({
+            content: formatFeedOpened({
+              side,
+              poolName: `${token}/${quote}`,
+              priceLow,
+              priceHigh,
+              amount,
+              quoteSymbol: depositSymbol,
+              txSig: sigs[0],
+              displayMode: selectedPool.displayMode as 'price' | 'mc',
+              supply: selectedPool.supply,
+              actorId: interaction.user.id,
+            }),
+            allowedMentions: { parse: [] },
+          });
+        } else {
+          console.warn(`[buy] feed channel ${ctx.feedChannelId} resolved to null`);
         }
-      } catch { /* feed channel post is best-effort */ }
+      } catch (e: any) {
+        console.warn(`[buy] feed post failed: ${e.message || e}`);
+      }
     }
   } catch (e: any) {
     // Log full error server-side for debugging (never shown to user)

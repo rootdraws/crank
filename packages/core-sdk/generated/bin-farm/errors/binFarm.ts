@@ -16,88 +16,92 @@ import { BIN_FARM_PROGRAM_ADDRESS } from '../programs';
 
 /** Unauthorized: Not authorized */
 export const BIN_FARM_ERROR__UNAUTHORIZED = 0x1770; // 6000
+/** GasLamportsTooHigh: gas_lamports exceeds MAX_GAS_LAMPORTS */
+export const BIN_FARM_ERROR__GAS_LAMPORTS_TOO_HIGH = 0x1771; // 6001
+/** RentLamportsTooHigh: rent_lamports exceeds MAX_RENT_DEDUCT_LAMPORTS */
+export const BIN_FARM_ERROR__RENT_LAMPORTS_TOO_HIGH = 0x1772; // 6002
 /** Paused: Protocol is paused */
-export const BIN_FARM_ERROR__PAUSED = 0x1771; // 6001
+export const BIN_FARM_ERROR__PAUSED = 0x1773; // 6003
 /** ZeroAmount: Amount must be greater than zero */
-export const BIN_FARM_ERROR__ZERO_AMOUNT = 0x1772; // 6002
+export const BIN_FARM_ERROR__ZERO_AMOUNT = 0x1774; // 6004
 /** InvalidBinRange: Invalid bin range (min must be <= max) */
-export const BIN_FARM_ERROR__INVALID_BIN_RANGE = 0x1773; // 6003
+export const BIN_FARM_ERROR__INVALID_BIN_RANGE = 0x1775; // 6005
 /** PositionTooWide: Position width exceeds maximum (70 bins) */
-export const BIN_FARM_ERROR__POSITION_TOO_WIDE = 0x1774; // 6004
+export const BIN_FARM_ERROR__POSITION_TOO_WIDE = 0x1776; // 6006
 /** BinOutOfPositionRange: Bin ID outside position range */
-export const BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE = 0x1775; // 6005
+export const BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE = 0x1777; // 6007
 /** InvalidSlippage: Invalid slippage (must be 0-20) */
-export const BIN_FARM_ERROR__INVALID_SLIPPAGE = 0x1776; // 6006
+export const BIN_FARM_ERROR__INVALID_SLIPPAGE = 0x1778; // 6008
 /** FeeTooHigh: Fee too high (max 10%) */
-export const BIN_FARM_ERROR__FEE_TOO_HIGH = 0x1777; // 6007
+export const BIN_FARM_ERROR__FEE_TOO_HIGH = 0x1779; // 6009
 /** NoBinsProvided: No bin IDs provided */
-export const BIN_FARM_ERROR__NO_BINS_PROVIDED = 0x1778; // 6008
+export const BIN_FARM_ERROR__NO_BINS_PROVIDED = 0x177a; // 6010
 /** TooManyBins: Too many bins (max 70 per call) */
-export const BIN_FARM_ERROR__TOO_MANY_BINS = 0x1779; // 6009
+export const BIN_FARM_ERROR__TOO_MANY_BINS = 0x177b; // 6011
 /** NonContiguousBins: Bin IDs must be contiguous (no gaps) */
-export const BIN_FARM_ERROR__NON_CONTIGUOUS_BINS = 0x177a; // 6010
+export const BIN_FARM_ERROR__NON_CONTIGUOUS_BINS = 0x177c; // 6012
 /** Overflow: Arithmetic overflow */
-export const BIN_FARM_ERROR__OVERFLOW = 0x177b; // 6011
+export const BIN_FARM_ERROR__OVERFLOW = 0x177d; // 6013
 /** InvalidTokenOwner: Token account owner mismatch */
-export const BIN_FARM_ERROR__INVALID_TOKEN_OWNER = 0x177c; // 6012
+export const BIN_FARM_ERROR__INVALID_TOKEN_OWNER = 0x177e; // 6014
 /** InvalidProgram: Invalid Meteora program ID */
-export const BIN_FARM_ERROR__INVALID_PROGRAM = 0x177d; // 6013
+export const BIN_FARM_ERROR__INVALID_PROGRAM = 0x177f; // 6015
 /** InvalidPosition: Invalid Meteora position */
-export const BIN_FARM_ERROR__INVALID_POSITION = 0x177e; // 6014
+export const BIN_FARM_ERROR__INVALID_POSITION = 0x1780; // 6016
 /** InvalidPool: Invalid pool */
-export const BIN_FARM_ERROR__INVALID_POOL = 0x177f; // 6015
+export const BIN_FARM_ERROR__INVALID_POOL = 0x1781; // 6017
 /** NoPendingAuthority: No pending authority */
-export const BIN_FARM_ERROR__NO_PENDING_AUTHORITY = 0x1780; // 6016
+export const BIN_FARM_ERROR__NO_PENDING_AUTHORITY = 0x1782; // 6018
 /** NoPendingFeeChange: No pending fee change */
-export const BIN_FARM_ERROR__NO_PENDING_FEE_CHANGE = 0x1781; // 6017
+export const BIN_FARM_ERROR__NO_PENDING_FEE_CHANGE = 0x1783; // 6019
 /** FeeTimelockNotExpired: Fee timelock not expired (24 hours required) */
-export const BIN_FARM_ERROR__FEE_TIMELOCK_NOT_EXPIRED = 0x1782; // 6018
+export const BIN_FARM_ERROR__FEE_TIMELOCK_NOT_EXPIRED = 0x1784; // 6020
 /** NothingToSweep: Nothing to sweep (rover authority has no excess SOL) */
-export const BIN_FARM_ERROR__NOTHING_TO_SWEEP = 0x1783; // 6019
+export const BIN_FARM_ERROR__NOTHING_TO_SWEEP = 0x1785; // 6021
 /** BotPaused: Bot close operations are paused */
-export const BIN_FARM_ERROR__BOT_PAUSED = 0x1784; // 6020
+export const BIN_FARM_ERROR__BOT_PAUSED = 0x1786; // 6022
 /** RoverDepositTooSmall: Rover deposit below minimum (anti-griefing) */
-export const BIN_FARM_ERROR__ROVER_DEPOSIT_TOO_SMALL = 0x1785; // 6021
+export const BIN_FARM_ERROR__ROVER_DEPOSIT_TOO_SMALL = 0x1787; // 6023
 /** PositionTooSmall: Position amount below minimum (anti-griefing) */
-export const BIN_FARM_ERROR__POSITION_TOO_SMALL = 0x1786; // 6022
+export const BIN_FARM_ERROR__POSITION_TOO_SMALL = 0x1788; // 6024
 /** RoverBinStepTooSmall: Rover bin_step too small (minimum 20 — prevents instant liquidation on tight pools) */
-export const BIN_FARM_ERROR__ROVER_BIN_STEP_TOO_SMALL = 0x1787; // 6023
+export const BIN_FARM_ERROR__ROVER_BIN_STEP_TOO_SMALL = 0x1789; // 6025
 /** InvalidDistPool: dist_pool cannot be the null address */
-export const BIN_FARM_ERROR__INVALID_DIST_POOL = 0x1788; // 6024
+export const BIN_FARM_ERROR__INVALID_DIST_POOL = 0x178a; // 6026
 /** BotNotStale: Bot is still active — permissionless harvest not yet available */
-export const BIN_FARM_ERROR__BOT_NOT_STALE = 0x1789; // 6025
+export const BIN_FARM_ERROR__BOT_NOT_STALE = 0x178b; // 6027
 /** MissingKeeperAta: Permissionless harvester must provide keeper ATA in remaining_accounts */
-export const BIN_FARM_ERROR__MISSING_KEEPER_ATA = 0x178a; // 6026
+export const BIN_FARM_ERROR__MISSING_KEEPER_ATA = 0x178c; // 6028
 /** PrioritySlotsExceedMax: Priority slots exceed maximum (9000 slots / ~1 hour) */
-export const BIN_FARM_ERROR__PRIORITY_SLOTS_EXCEED_MAX = 0x178b; // 6027
+export const BIN_FARM_ERROR__PRIORITY_SLOTS_EXCEED_MAX = 0x178d; // 6029
 /** NoPendingEmergencyClose: No pending emergency close */
-export const BIN_FARM_ERROR__NO_PENDING_EMERGENCY_CLOSE = 0x178c; // 6028
+export const BIN_FARM_ERROR__NO_PENDING_EMERGENCY_CLOSE = 0x178e; // 6030
 /** EmergencyCloseTimelockNotExpired: Emergency close timelock not expired (24 hours required) */
-export const BIN_FARM_ERROR__EMERGENCY_CLOSE_TIMELOCK_NOT_EXPIRED = 0x178d; // 6029
+export const BIN_FARM_ERROR__EMERGENCY_CLOSE_TIMELOCK_NOT_EXPIRED = 0x178f; // 6031
 /** InvalidMintData: Invalid mint account data (too short to read decimals) */
-export const BIN_FARM_ERROR__INVALID_MINT_DATA = 0x178e; // 6030
+export const BIN_FARM_ERROR__INVALID_MINT_DATA = 0x1790; // 6032
 /** InvalidBot: Invalid bot destination */
-export const BIN_FARM_ERROR__INVALID_BOT = 0x178f; // 6031
+export const BIN_FARM_ERROR__INVALID_BOT = 0x1791; // 6033
 /** InvalidTraderDest: Invalid trader destination */
-export const BIN_FARM_ERROR__INVALID_TRADER_DEST = 0x1790; // 6032
+export const BIN_FARM_ERROR__INVALID_TRADER_DEST = 0x1792; // 6034
 /** TraderDestNotSet: Trader destination not set — call set_trader_dest first */
-export const BIN_FARM_ERROR__TRADER_DEST_NOT_SET = 0x1791; // 6033
+export const BIN_FARM_ERROR__TRADER_DEST_NOT_SET = 0x1793; // 6035
 /** InsufficientBalance: Insufficient vault balance for withdrawal */
-export const BIN_FARM_ERROR__INSUFFICIENT_BALANCE = 0x1792; // 6034
+export const BIN_FARM_ERROR__INSUFFICIENT_BALANCE = 0x1794; // 6036
 /** InvalidVaultOwner: Invalid vault owner — does not match PDA seed */
-export const BIN_FARM_ERROR__INVALID_VAULT_OWNER = 0x1793; // 6035
+export const BIN_FARM_ERROR__INVALID_VAULT_OWNER = 0x1795; // 6037
 /** UnauthorizedCaller: Caller must be authorized bot or vault owner */
-export const BIN_FARM_ERROR__UNAUTHORIZED_CALLER = 0x1794; // 6036
+export const BIN_FARM_ERROR__UNAUTHORIZED_CALLER = 0x1796; // 6038
 /** InvalidExternalProgram: Invalid external program ID */
-export const BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM = 0x1795; // 6037
+export const BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM = 0x1797; // 6039
 /** BurnCurveAlreadyInitialized: Burn curve already initialized — initial_crank_supply is immutable */
-export const BIN_FARM_ERROR__BURN_CURVE_ALREADY_INITIALIZED = 0x1796; // 6038
+export const BIN_FARM_ERROR__BURN_CURVE_ALREADY_INITIALIZED = 0x1798; // 6040
 /** BurnCurveNotInitialized: Burn curve not initialized — call initialize_burn_curve first */
-export const BIN_FARM_ERROR__BURN_CURVE_NOT_INITIALIZED = 0x1797; // 6039
+export const BIN_FARM_ERROR__BURN_CURVE_NOT_INITIALIZED = 0x1799; // 6041
 /** InvalidCrankMint: CRANK mint account does not match expected mint */
-export const BIN_FARM_ERROR__INVALID_CRANK_MINT = 0x1798; // 6040
+export const BIN_FARM_ERROR__INVALID_CRANK_MINT = 0x179a; // 6042
 /** InvalidBurnSolVault: Invalid burn SOL vault PDA */
-export const BIN_FARM_ERROR__INVALID_BURN_SOL_VAULT = 0x1799; // 6041
+export const BIN_FARM_ERROR__INVALID_BURN_SOL_VAULT = 0x179b; // 6043
 
 export type BinFarmError =
   | typeof BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE
@@ -108,6 +112,7 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__EMERGENCY_CLOSE_TIMELOCK_NOT_EXPIRED
   | typeof BIN_FARM_ERROR__FEE_TIMELOCK_NOT_EXPIRED
   | typeof BIN_FARM_ERROR__FEE_TOO_HIGH
+  | typeof BIN_FARM_ERROR__GAS_LAMPORTS_TOO_HIGH
   | typeof BIN_FARM_ERROR__INSUFFICIENT_BALANCE
   | typeof BIN_FARM_ERROR__INVALID_BIN_RANGE
   | typeof BIN_FARM_ERROR__INVALID_BOT
@@ -135,6 +140,7 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__POSITION_TOO_SMALL
   | typeof BIN_FARM_ERROR__POSITION_TOO_WIDE
   | typeof BIN_FARM_ERROR__PRIORITY_SLOTS_EXCEED_MAX
+  | typeof BIN_FARM_ERROR__RENT_LAMPORTS_TOO_HIGH
   | typeof BIN_FARM_ERROR__ROVER_BIN_STEP_TOO_SMALL
   | typeof BIN_FARM_ERROR__ROVER_DEPOSIT_TOO_SMALL
   | typeof BIN_FARM_ERROR__TOO_MANY_BINS
@@ -154,6 +160,7 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__EMERGENCY_CLOSE_TIMELOCK_NOT_EXPIRED]: `Emergency close timelock not expired (24 hours required)`,
     [BIN_FARM_ERROR__FEE_TIMELOCK_NOT_EXPIRED]: `Fee timelock not expired (24 hours required)`,
     [BIN_FARM_ERROR__FEE_TOO_HIGH]: `Fee too high (max 10%)`,
+    [BIN_FARM_ERROR__GAS_LAMPORTS_TOO_HIGH]: `gas_lamports exceeds MAX_GAS_LAMPORTS`,
     [BIN_FARM_ERROR__INSUFFICIENT_BALANCE]: `Insufficient vault balance for withdrawal`,
     [BIN_FARM_ERROR__INVALID_BIN_RANGE]: `Invalid bin range (min must be <= max)`,
     [BIN_FARM_ERROR__INVALID_BOT]: `Invalid bot destination`,
@@ -181,6 +188,7 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__POSITION_TOO_SMALL]: `Position amount below minimum (anti-griefing)`,
     [BIN_FARM_ERROR__POSITION_TOO_WIDE]: `Position width exceeds maximum (70 bins)`,
     [BIN_FARM_ERROR__PRIORITY_SLOTS_EXCEED_MAX]: `Priority slots exceed maximum (9000 slots / ~1 hour)`,
+    [BIN_FARM_ERROR__RENT_LAMPORTS_TOO_HIGH]: `rent_lamports exceeds MAX_RENT_DEDUCT_LAMPORTS`,
     [BIN_FARM_ERROR__ROVER_BIN_STEP_TOO_SMALL]: `Rover bin_step too small (minimum 20 — prevents instant liquidation on tight pools)`,
     [BIN_FARM_ERROR__ROVER_DEPOSIT_TOO_SMALL]: `Rover deposit below minimum (anti-griefing)`,
     [BIN_FARM_ERROR__TOO_MANY_BINS]: `Too many bins (max 70 per call)`,

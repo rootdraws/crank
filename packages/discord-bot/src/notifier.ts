@@ -67,6 +67,7 @@ export class DiscordNotifier {
     feeAmount?: string;
     totalHarvested?: string;
     txSig?: string;
+    usdValue?: number | null;
   }): Promise<void> {
     const userId = this.walletService.getUserIdForVault(data.owner);
     const actorId = userId?.replace('discord:', '');
@@ -86,6 +87,8 @@ export class DiscordNotifier {
       feeTaken: BigInt(data.feeAmount ?? '0'),
       txSig: data.txSig ?? '',
       slot: 0,
+      usdValue: data.usdValue ?? null,
+      kind: 'harvest',
     });
 
     const pools = loadPoolRegistry();
@@ -134,9 +137,31 @@ export class DiscordNotifier {
     owner: string;
     side: 'Buy' | 'Sell';
     txSig?: string;
+    tokenXAmount?: string;
+    tokenYAmount?: string;
+    usdValue?: number | null;
   }): Promise<void> {
     const userId = this.walletService.getUserIdForVault(data.owner);
     const actorId = userId?.replace('discord:', '');
+
+    // Record a harvest row for the close — captures final yield so /stats
+    // reflects total volume across both partial harvests and closes.
+    const xAmt = BigInt(data.tokenXAmount ?? '0');
+    const yAmt = BigInt(data.tokenYAmount ?? '0');
+    const amountOutRaw = xAmt > yAmt ? xAmt : yAmt;
+    if (amountOutRaw > 0n || (data.usdValue ?? 0) > 0) {
+      this.walletService.saveHarvest({
+        positionPda: data.positionPDA,
+        vaultPda: data.owner,
+        lbPair: data.lbPair,
+        amountOut: amountOutRaw,
+        feeTaken: 0n,
+        txSig: data.txSig ?? '',
+        slot: 0,
+        usdValue: data.usdValue ?? null,
+        kind: 'close',
+      });
+    }
 
     this.walletService.closePosition(data.positionPDA);
 
@@ -171,7 +196,76 @@ export class DiscordNotifier {
       });
       await this.sendToFeed(feedText);
     }
+
+    // JUP-baseline flex — if the position fully converted and we recorded a
+    // market-quote baseline at open, compare actual DLMM yield vs market.
+    // Only positive deltas get posted (a negative delta means market would
+    // have beaten crank — not a flex). Failures are swallowed.
+    try {
+      await this.maybePostBaselineFlex(data.positionPDA, poolName, data.side, actorId);
+    } catch (e: any) {
+      console.warn(`[notifier] baseline flex failed: ${e.message?.slice(0, 120)}`);
+    }
   }
+
+  private async maybePostBaselineFlex(
+    positionPda: string,
+    poolName: string,
+    side: 'Buy' | 'Sell',
+    actorId: string | undefined,
+  ): Promise<void> {
+    const pos = this.walletService.getPositionByPda(positionPda);
+    if (!pos?.baseline_out || !pos?.baseline_mint) return;
+
+    const baseline = BigInt(pos.baseline_out);
+    const actual = this.walletService.getActualHarvestedForPosition(positionPda);
+    if (baseline === 0n || actual === 0n) return;
+
+    const decimals = pos.baseline_decimals ?? 9;
+    const humanBaseline = Number(baseline) / 10 ** decimals;
+    const humanActual = Number(actual) / 10 ** decimals;
+    const deltaPct = ((humanActual - humanBaseline) / humanBaseline) * 100;
+
+    // Only flex when crank meaningfully beat market.
+    if (deltaPct < 1) return;
+
+    // Output token = the converted side (what we filled into).
+    // On Buy: deposited quote, got base → tokenSym = pool base (e.g. CRANK).
+    // On Sell: deposited base, got quote → tokenSym = pool quote (e.g. SOL).
+    const parts = poolName.split('/');
+    const tokenSym = side === 'Buy' ? (parts[0] || 'tokens') : (parts[1] || 'SOL');
+    const verb = side === 'Sell' ? 'sold' : 'bought';
+    const actorTag = actorId ? `<@${actorId}>` : 'a trader';
+
+    const line = `${actorTag} ${verb} ${fmtAmount(humanActual)} ${tokenSym} via crank.money — +${deltaPct.toFixed(1)}% over a market ${side.toLowerCase()} at open.`;
+
+    if (this.feedChannel) {
+      await this.feedChannel.send({ content: line, allowedMentions: { parse: [] } });
+    }
+
+    // Tweet-ready variant — no @mention (X doesn't want Discord IDs), concrete
+    // numbers, Twitter-appropriate length. Posted to ops channel for Root to
+    // copy/paste; later wire to crank-crm's drafter for auto-submission.
+    const actorForX = actorId ? `a ${verb.replace(/^b/, 'B')}er` : 'a trader';
+    const tweet =
+      `${actorForX} filled ${fmtAmount(humanActual)} $${tokenSym} via @crankdotmoney` +
+      ` — +${deltaPct.toFixed(1)}% over a market ${side.toLowerCase()} at open.\n\n` +
+      `DLMM limit orders, curated pools, non-custodial distribution.`;
+    if (this.opsChannel) {
+      try {
+        await this.opsChannel.send({
+          content: `📣 tweet-draft (copy/paste to X):\n\`\`\`\n${tweet}\n\`\`\``,
+          allowedMentions: { parse: [] },
+        });
+      } catch { /* ops post is best-effort */ }
+    }
+  }
+
+  /**
+   * Format a human token amount for the flex line — thousands separators
+   * on large numbers, decimals on small ones, to keep messages readable
+   * across wildly different token magnitudes (1.2345 SOL vs 3,450,000 CRANK).
+   */
 
   /**
    * Called after new_epoch completes. Auto-claim itself is handled by
@@ -233,6 +327,13 @@ export class DiscordNotifier {
 function formatLamports(lamports: string, decimals: number): string {
   const val = Number(lamports) / Math.pow(10, decimals);
   if (val >= 1000) return val.toFixed(2);
+  if (val >= 1) return val.toFixed(4);
+  return val.toFixed(6);
+}
+
+function fmtAmount(val: number): string {
+  if (val >= 10_000) return val.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  if (val >= 100) return val.toLocaleString('en-US', { maximumFractionDigits: 2 });
   if (val >= 1) return val.toFixed(4);
   return val.toFixed(6);
 }

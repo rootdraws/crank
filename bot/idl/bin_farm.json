@@ -2047,6 +2047,10 @@
         {
           "name": "max_active_bin_slippage",
           "type": "i32"
+        },
+        {
+          "name": "rent_lamports",
+          "type": "u64"
         }
       ]
     },
@@ -4169,9 +4173,6 @@
         },
         {
           "name": "vault_wsol_ata",
-          "docs": [
-            "Lamport credit via system_program::transfer, validated by sync_native CPI."
-          ],
           "writable": true
         },
         {
@@ -4445,206 +4446,216 @@
     },
     {
       "code": 6001,
+      "name": "GasLamportsTooHigh",
+      "msg": "gas_lamports exceeds MAX_GAS_LAMPORTS"
+    },
+    {
+      "code": 6002,
+      "name": "RentLamportsTooHigh",
+      "msg": "rent_lamports exceeds MAX_RENT_DEDUCT_LAMPORTS"
+    },
+    {
+      "code": 6003,
       "name": "Paused",
       "msg": "Protocol is paused"
     },
     {
-      "code": 6002,
+      "code": 6004,
       "name": "ZeroAmount",
       "msg": "Amount must be greater than zero"
     },
     {
-      "code": 6003,
+      "code": 6005,
       "name": "InvalidBinRange",
       "msg": "Invalid bin range (min must be <= max)"
     },
     {
-      "code": 6004,
+      "code": 6006,
       "name": "PositionTooWide",
       "msg": "Position width exceeds maximum (70 bins)"
     },
     {
-      "code": 6005,
+      "code": 6007,
       "name": "BinOutOfPositionRange",
       "msg": "Bin ID outside position range"
     },
     {
-      "code": 6006,
+      "code": 6008,
       "name": "InvalidSlippage",
       "msg": "Invalid slippage (must be 0-20)"
     },
     {
-      "code": 6007,
+      "code": 6009,
       "name": "FeeTooHigh",
       "msg": "Fee too high (max 10%)"
     },
     {
-      "code": 6008,
+      "code": 6010,
       "name": "NoBinsProvided",
       "msg": "No bin IDs provided"
     },
     {
-      "code": 6009,
+      "code": 6011,
       "name": "TooManyBins",
       "msg": "Too many bins (max 70 per call)"
     },
     {
-      "code": 6010,
+      "code": 6012,
       "name": "NonContiguousBins",
       "msg": "Bin IDs must be contiguous (no gaps)"
     },
     {
-      "code": 6011,
+      "code": 6013,
       "name": "Overflow",
       "msg": "Arithmetic overflow"
     },
     {
-      "code": 6012,
+      "code": 6014,
       "name": "InvalidTokenOwner",
       "msg": "Token account owner mismatch"
     },
     {
-      "code": 6013,
+      "code": 6015,
       "name": "InvalidProgram",
       "msg": "Invalid Meteora program ID"
     },
     {
-      "code": 6014,
+      "code": 6016,
       "name": "InvalidPosition",
       "msg": "Invalid Meteora position"
     },
     {
-      "code": 6015,
+      "code": 6017,
       "name": "InvalidPool",
       "msg": "Invalid pool"
     },
     {
-      "code": 6016,
+      "code": 6018,
       "name": "NoPendingAuthority",
       "msg": "No pending authority"
     },
     {
-      "code": 6017,
+      "code": 6019,
       "name": "NoPendingFeeChange",
       "msg": "No pending fee change"
     },
     {
-      "code": 6018,
+      "code": 6020,
       "name": "FeeTimelockNotExpired",
       "msg": "Fee timelock not expired (24 hours required)"
     },
     {
-      "code": 6019,
+      "code": 6021,
       "name": "NothingToSweep",
       "msg": "Nothing to sweep (rover authority has no excess SOL)"
     },
     {
-      "code": 6020,
+      "code": 6022,
       "name": "BotPaused",
       "msg": "Bot close operations are paused"
     },
     {
-      "code": 6021,
+      "code": 6023,
       "name": "RoverDepositTooSmall",
       "msg": "Rover deposit below minimum (anti-griefing)"
     },
     {
-      "code": 6022,
+      "code": 6024,
       "name": "PositionTooSmall",
       "msg": "Position amount below minimum (anti-griefing)"
     },
     {
-      "code": 6023,
+      "code": 6025,
       "name": "RoverBinStepTooSmall",
       "msg": "Rover bin_step too small (minimum 20 — prevents instant liquidation on tight pools)"
     },
     {
-      "code": 6024,
+      "code": 6026,
       "name": "InvalidDistPool",
       "msg": "dist_pool cannot be the null address"
     },
     {
-      "code": 6025,
+      "code": 6027,
       "name": "BotNotStale",
       "msg": "Bot is still active — permissionless harvest not yet available"
     },
     {
-      "code": 6026,
+      "code": 6028,
       "name": "MissingKeeperAta",
       "msg": "Permissionless harvester must provide keeper ATA in remaining_accounts"
     },
     {
-      "code": 6027,
+      "code": 6029,
       "name": "PrioritySlotsExceedMax",
       "msg": "Priority slots exceed maximum (9000 slots / ~1 hour)"
     },
     {
-      "code": 6028,
+      "code": 6030,
       "name": "NoPendingEmergencyClose",
       "msg": "No pending emergency close"
     },
     {
-      "code": 6029,
+      "code": 6031,
       "name": "EmergencyCloseTimelockNotExpired",
       "msg": "Emergency close timelock not expired (24 hours required)"
     },
     {
-      "code": 6030,
+      "code": 6032,
       "name": "InvalidMintData",
       "msg": "Invalid mint account data (too short to read decimals)"
     },
     {
-      "code": 6031,
+      "code": 6033,
       "name": "InvalidBot",
       "msg": "Invalid bot destination"
     },
     {
-      "code": 6032,
+      "code": 6034,
       "name": "InvalidTraderDest",
       "msg": "Invalid trader destination"
     },
     {
-      "code": 6033,
+      "code": 6035,
       "name": "TraderDestNotSet",
       "msg": "Trader destination not set — call set_trader_dest first"
     },
     {
-      "code": 6034,
+      "code": 6036,
       "name": "InsufficientBalance",
       "msg": "Insufficient vault balance for withdrawal"
     },
     {
-      "code": 6035,
+      "code": 6037,
       "name": "InvalidVaultOwner",
       "msg": "Invalid vault owner — does not match PDA seed"
     },
     {
-      "code": 6036,
+      "code": 6038,
       "name": "UnauthorizedCaller",
       "msg": "Caller must be authorized bot or vault owner"
     },
     {
-      "code": 6037,
+      "code": 6039,
       "name": "InvalidExternalProgram",
       "msg": "Invalid external program ID"
     },
     {
-      "code": 6038,
+      "code": 6040,
       "name": "BurnCurveAlreadyInitialized",
       "msg": "Burn curve already initialized — initial_crank_supply is immutable"
     },
     {
-      "code": 6039,
+      "code": 6041,
       "name": "BurnCurveNotInitialized",
       "msg": "Burn curve not initialized — call initialize_burn_curve first"
     },
     {
-      "code": 6040,
+      "code": 6042,
       "name": "InvalidCrankMint",
       "msg": "CRANK mint account does not match expected mint"
     },
     {
-      "code": 6041,
+      "code": 6043,
       "name": "InvalidBurnSolVault",
       "msg": "Invalid burn SOL vault PDA"
     }

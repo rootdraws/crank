@@ -1,5 +1,6 @@
 import { ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { PublicKey, VersionedTransaction, TransactionMessage, Transaction } from '@solana/web3.js';
+import { NATIVE_MINT, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { address } from '@solana/kit';
 import {
   getUserCloseInstructionAsync,
@@ -339,13 +340,33 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
     }
   }
 
-  const closeTx = new Transaction().add(...(await buildPriorityFeeIxs(ctx.connection)), closeIx);
+  const closeTx = new Transaction().add(...(await buildPriorityFeeIxs(ctx.connection, 1_400_000)), closeIx);
   closeTx.feePayer = bot.publicKey;
   const closeBh = await ctx.connection.getLatestBlockhash();
   closeTx.recentBlockhash = closeBh.blockhash;
   closeTx.sign(bot);
   const sig = await ctx.connection.sendRawTransaction(closeTx.serialize(), { skipPreflight: true });
   await confirmAndCheck(ctx.connection, sig, closeBh.blockhash, closeBh.lastValidBlockHeight);
+
+  // Auto-unwrap vault WSOL → native SOL so /balance reflects the full return
+  // immediately. Without this, closes on SOL-quoted pools leave WSOL parked in
+  // the vault ATA that /balance hides (WSOL is skipped as transient).
+  if (cpi.tokenXMint.equals(NATIVE_MINT) || cpi.tokenYMint.equals(NATIVE_MINT)) {
+    try {
+      const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, vaultPda, true, TOKEN_PROGRAM_ID);
+      await ctx.coreProgram.methods
+        .unwrapWsolInVault()
+        .accounts({
+          caller: bot.publicKey,
+          config: configPDA,
+          userVault: vaultPda,
+          vaultWsolAta: wsolAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([bot])
+        .rpc();
+    } catch { /* best-effort; /withdraw SOL unwraps on demand */ }
+  }
 
   ctx.walletService.closePosition(position.position_pda);
   return sig;

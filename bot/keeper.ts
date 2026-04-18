@@ -73,25 +73,14 @@ interface KeeperConfig {
 
 // ═══ HELPERS ═══
 
-const MAX_RETRIES = 3;
-const BASE_DELAY = 2000;
+import { withRetry as sharedWithRetry } from './retry';
+
+const KEEPER_RETRY_BASE_MS = 2000;
 const DEPOSIT_SOL_THRESHOLD_LAMPORTS = parseInt(process.env.DEPOSIT_SOL_THRESHOLD_LAMPORTS || '500000000'); // 0.5 SOL
 const DEFAULT_EPOCH_AMOUNT = parseInt(process.env.DEFAULT_EPOCH_AMOUNT || '0');
 
-async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
-  let lastErr: Error | undefined;
-  for (let i = 0; i <= MAX_RETRIES; i++) {
-    try { return await fn(); }
-    catch (e: any) {
-      lastErr = e;
-      if (i < MAX_RETRIES) {
-        const delay = BASE_DELAY * Math.pow(2, i);
-        logger.warn(`  [keeper retry] ${label} #${i + 1}, ${delay}ms`);
-        await new Promise(r => setTimeout(r, delay));
-      }
-    }
-  }
-  throw lastErr;
+function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  return sharedWithRetry(fn, label, KEEPER_RETRY_BASE_MS);
 }
 
 function distributorPDA(distributorProgramId: PublicKey): [PublicKey, number] {
@@ -176,17 +165,34 @@ export class MonkeKeeper {
       return 'Idle';
     }
 
-    // Check for epoch miss (>26 hours since last successful epoch)
+    // Epoch-miss check — gated on vault having eligible balance. During the
+    // magnesium phase of the burn curve, bridge_vault is expected to sit empty,
+    // so a pure time-based check fires forever. We only alert when there's
+    // actual SOL/BANK sitting undistributed past the staleness threshold.
     try {
-      const { loadEpochState } = await import('./epoch-computer');
-      const epochState = loadEpochState();
-      if (epochState.lastEpochTimestamp > 0) {
-        const hoursSince = (now - epochState.lastEpochTimestamp) / (3600 * 1000);
-        if (hoursSince > 26) {
-          await alertEpochMiss(hoursSince);
+      const { detectEpochMiss } = await import('./epoch-computer');
+      // Build a transient bank-distributor Program so we can read its state.
+      let bankProgram: Program | null = null;
+      try {
+        const bankIdl = await import('./idl/bank_distributor.json').catch(() => null);
+        if (bankIdl) {
+          const provider = (this.coreProgram as any).provider;
+          bankProgram = new Program(
+            (bankIdl as any).default || bankIdl,
+            provider,
+          );
         }
+      } catch { /* bank program optional for miss check */ }
+      const report = await detectEpochMiss(this.connection, bankProgram);
+      if (report.solStaleHours !== null) {
+        const sol = (Number(report.solAvailableLamports) / 1e9).toFixed(4);
+        await alertEpochMiss('SOL', report.solStaleHours, `${sol} SOL`);
       }
-    } catch { /* epoch state file may not exist yet */ }
+      if (report.bankStaleHours !== null) {
+        const bank = (Number(report.bankDeltaUnits) / 1e6).toFixed(4);
+        await alertEpochMiss('BANK', report.bankStaleHours, `${bank} BANK`);
+      }
+    } catch (e: any) { logger.warn(`[keeper] epoch-miss probe failed: ${e.message?.slice(0, 150)}`); }
 
     {
       logger.info(`[keeper] ${ts} Running daily fee processing sequence`);
@@ -220,10 +226,103 @@ export class MonkeKeeper {
       // Step 6: Prune the crank role from idle Discord members (best-effort, no-op if unconfigured)
       await this.crankPruneInactiveMembers();
 
+      // Step 7: Refresh in-memory pool supplies from on-chain mint state.
+      //         Keeps /buy's mcap→price math honest as CRANK gets burned.
+      await this.crankRefreshSupplies();
+
+      // Step 8: Post a daily volume summary to #crank-stats.
+      await this.crankDailyStatsPost();
+
       this.lastRunDay = today;
       this.lastRunTimestamp = Date.now();
       logger.info(`[keeper] ${ts} Daily sequence complete`);
       return 'Processing';
+    }
+  }
+
+  /**
+   * Post a protocol-wide stats summary to `#crank-stats` (or the feed channel
+   * if `DISCORD_STATS_CHANNEL_ID` isn't set). Best-effort — skips silently if
+   * Discord isn't wired or there's no data yet.
+   */
+  private async crankDailyStatsPost(): Promise<void> {
+    try {
+      const channelId = process.env.DISCORD_STATS_CHANNEL_ID || process.env.DISCORD_FEED_CHANNEL_ID;
+      if (!channelId || !this.discordClient || !this.walletService) {
+        logger.info(`  [keeper] stats post skipped — channel=${!!channelId} client=${!!this.discordClient} ws=${!!this.walletService}`);
+        return;
+      }
+
+      const now = Date.now();
+      const ws = this.walletService;
+      const d1 = ws.getTotalVolumeUsd(now - 24 * 60 * 60 * 1000);
+      const d7 = ws.getTotalVolumeUsd(now - 7 * 24 * 60 * 60 * 1000);
+      const all = ws.getTotalVolumeUsd(0);
+      const activeUsers = ws.getActiveUserCount();
+      const fills = ws.getTotalHarvestCount();
+      const open = ws.getTotalOpenPositions();
+
+      // Skip the post on truly empty days — no reason to spam an idle channel.
+      if (d1 === 0 && fills === 0) {
+        logger.info(`  [keeper] stats post skipped — zero activity`);
+        return;
+      }
+
+      const fmtUsd = (n: number) => n >= 1000 ? n.toLocaleString('en-US', { maximumFractionDigits: 0 }) : n >= 1 ? n.toFixed(2) : n.toFixed(4);
+      const lines = [
+        '**crank.money — daily stats**',
+        `\`24h \` · $${fmtUsd(d1)}`,
+        `\`7d  \` · $${fmtUsd(d7)}`,
+        `\`all \` · $${fmtUsd(all)}`,
+        '',
+        `\`users\` · ${activeUsers} active`,
+        `\`fills\` · ${fills}`,
+        `\`open \` · ${open}`,
+      ];
+
+      const channel = await this.discordClient.channels.fetch(channelId);
+      if (channel?.isTextBased()) {
+        await channel.send({ content: lines.join('\n'), allowedMentions: { parse: [] } });
+        logger.info(`  [keeper] ✓ stats posted to #${channel.name ?? channelId.slice(0, 8)}`);
+      }
+    } catch (e: any) {
+      logger.warn(`  [keeper] stats post failed: ${e.message?.slice(0, 120)}`);
+    }
+  }
+
+  /**
+   * Iterate mc-mode pools and refresh their in-memory `supply` from the
+   * on-chain mint. curator.json is the seed, not the source of truth —
+   * supply drifts as rover_burn_and_mint fires daily.
+   */
+  private async crankRefreshSupplies(): Promise<void> {
+    try {
+      const { loadPoolRegistry, setPoolSupply } = await import('../packages/core-sdk/pool-config');
+      const { getMint } = await import('@solana/spl-token');
+
+      const pools = loadPoolRegistry();
+      const seen = new Set<string>();
+      let updated = 0;
+      for (const p of pools) {
+        if (p.displayMode !== 'mc') continue;
+        // base mint carries the supply — on CRANK/SOL that's mintX.
+        const mintAddr = p.mintX;
+        if (seen.has(mintAddr)) continue;
+        seen.add(mintAddr);
+
+        try {
+          const mint = await getMint(this.connection, new PublicKey(mintAddr));
+          const humanSupply = Number(mint.supply) / 10 ** mint.decimals;
+          const touched = setPoolSupply(mintAddr, humanSupply);
+          logger.info(`  [keeper] refresh supply ${p.tokenX} = ${humanSupply.toFixed(0)} (${touched} pool(s))`);
+          updated += touched;
+        } catch (e: any) {
+          logger.warn(`  [keeper] refresh supply failed for ${p.tokenX}: ${e.message?.slice(0, 80)}`);
+        }
+      }
+      logger.info(`  [keeper] ✓ refresh_supplies — ${updated} pool row(s) updated`);
+    } catch (e: any) {
+      logger.warn(`  [keeper] refresh_supplies error: ${e.message?.slice(0, 80)}`);
     }
   }
 

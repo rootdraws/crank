@@ -53,9 +53,11 @@ export function formatPrice(price: number): string {
 export function formatAmount(amount: bigint, decimals: number): string {
   const divisor = Math.pow(10, decimals);
   const value = Number(amount) / divisor;
-  if (value >= 1000) return value.toFixed(2);
-  if (value >= 1)    return value.toFixed(4);
-  return value.toFixed(6);
+  const fixed =
+    value >= 1000 ? value.toFixed(2) :
+    value >= 1    ? value.toFixed(4) :
+                    value.toFixed(6);
+  return fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed;
 }
 
 /**

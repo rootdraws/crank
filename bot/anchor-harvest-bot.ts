@@ -96,24 +96,7 @@ if (!Number.isSafeInteger(SOL_BALANCE_CRITICAL)) { logger.warn(`SOL_BALANCE_CRIT
 
 // ═══ RETRY ═══
 
-const MAX_RETRIES = 3;
-const BASE_DELAY  = 1000;
-
-async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
-  let lastErr: Error | undefined;
-  for (let i = 0; i <= MAX_RETRIES; i++) {
-    try { return await fn(); }
-    catch (e: any) {
-      lastErr = e;
-      if (i < MAX_RETRIES) {
-        const delay = BASE_DELAY * Math.pow(2, i);
-        logger.warn(`  [retry] ${label} #${i + 1}, ${delay}ms`);
-        await sleep(delay);
-      }
-    }
-  }
-  throw lastErr;
-}
+import { withRetry } from './retry';
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));

@@ -1,11 +1,11 @@
-import { ChatInputCommandInteraction } from 'discord.js';
+import { ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { PublicKey } from '@solana/web3.js';
 import {
   GAUGE_VOTER_PROGRAM_ID, BANK_MINT, TOKEN_PROGRAM_ID,
   getGaugeConfigPDA, getPoolGaugePDA, deriveATA,
-  loadGauges, withUserLock,
+  loadGauges, withUserLock, formatAmount,
 } from '@crankbot/core-sdk';
-import { formatError } from '../formatter';
+import { formatError, formatFeedVote } from '../formatter';
 import type { BotContext } from '../index';
 
 export async function handleVote(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
@@ -141,6 +141,28 @@ export async function handleVote(interaction: ChatInputCommandInteraction, ctx: 
     ctx.walletService.setVotes(vaultPda.toBase58(), voteMap);
 
     await interaction.editReply(`Vote submitted on-chain.\n\n${summary}\n\ntx: \`${sig}\``);
+
+    if (ctx.feedChannelId) {
+      try {
+        const vaultBankAta = deriveATA(BANK_MINT, vaultPda, TOKEN_PROGRAM_ID, true);
+        const bal = await ctx.connection.getTokenAccountBalance(vaultBankAta).catch(() => null);
+        const bankAmount = bal ? formatAmount(BigInt(bal.value.amount), 6) : '0';
+        const feedChannel = await ctx.client.channels.fetch(ctx.feedChannelId) as TextChannel;
+        if (feedChannel) {
+          await feedChannel.send({
+            content: formatFeedVote({
+              allocations: resolved.map(a => ({ token: a.token, pct: a.weightBps / 100 })),
+              bankAmount,
+              txSig: sig,
+              actorId: interaction.user.id,
+            }),
+            allowedMentions: { parse: [] },
+          });
+        }
+      } catch (e: any) {
+        console.warn(`[vote] feed post failed: ${e.message || e}`);
+      }
+    }
   } catch (e: any) {
     const errMsg = e.message?.slice(0, 200) || 'unknown error';
     if (interaction.deferred) {

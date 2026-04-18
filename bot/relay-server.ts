@@ -17,12 +17,31 @@ import { IncomingMessage, ServerResponse } from 'http';
 import { Connection, PublicKey } from '@solana/web3.js';
 import WebSocket from 'ws';
 import * as fs from 'fs';
+import { timingSafeEqual } from 'crypto';
 const WebSocketServer = WebSocket.Server;
 import type { Server as HttpServer } from 'http';
 import type { GeyserSubscriber, ActiveBinChangedEvent, HarvestJob, PositionChangedEvent } from './geyser-subscriber';
 import type { HarvestExecutor } from './harvest-executor';
 import type { MonkeKeeper } from './keeper';
 import { logger } from './logger';
+
+let EXPECTED_AUTH_HEADER: Buffer | null = null;
+
+function initRelayAuth(): void {
+  const token = process.env.RELAY_AUTH_TOKEN;
+  if (!token) {
+    throw new Error('RELAY_AUTH_TOKEN is required — relay refuses to start unauthenticated');
+  }
+  EXPECTED_AUTH_HEADER = Buffer.from(`Bearer ${token}`);
+}
+
+function authHeaderOk(header: string | string[] | undefined): boolean {
+  if (!EXPECTED_AUTH_HEADER) return false;
+  if (!header || Array.isArray(header)) return false;
+  const received = Buffer.from(header);
+  if (received.length !== EXPECTED_AUTH_HEADER.length) return false;
+  return timingSafeEqual(received, EXPECTED_AUTH_HEADER);
+}
 
 // ═══ TYPES ═══
 
@@ -435,18 +454,32 @@ export class RelayServer {
    * Adds WebSocket upgrade handling + REST route handling.
    */
   attach(server: HttpServer): void {
+    // Fail-closed: RELAY_AUTH_TOKEN must be set by the time attach() runs
+    // (anchor-harvest-bot.ts calls dotenv.config() before constructing the bot).
+    initRelayAuth();
+
     // WebSocket server — upgrade at /ws path
     this.wss = new WebSocketServer({ noServer: true });
 
     server.on('upgrade', (request, socket: any, head) => {
       const url = new URL(request.url || '/', `http://${request.headers.host}`);
-      if (url.pathname === '/ws') {
-        this.wss!.handleUpgrade(request, socket, head, (ws) => {
-          this.wss!.emit('connection', ws, request);
-        });
-      } else {
+      if (url.pathname !== '/ws') {
         socket.destroy();
+        return;
       }
+      // Auth: Authorization header OR ?token=... query param (browsers can't
+      // set custom headers on WebSocket upgrade, so query fallback is required).
+      const headerAuth = request.headers['authorization'];
+      const queryToken = url.searchParams.get('token');
+      const queryAuth = queryToken ? `Bearer ${queryToken}` : undefined;
+      if (!authHeaderOk(headerAuth) && !authHeaderOk(queryAuth)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      this.wss!.handleUpgrade(request, socket, head, (ws) => {
+        this.wss!.emit('connection', ws, request);
+      });
     });
 
     const MAX_WS_CLIENTS = 100;
@@ -524,14 +557,10 @@ export class RelayServer {
     if (!path.startsWith('/api/')) return false;
 
     // Auth gate: /api/health is public (uptime monitors), everything else requires token.
-    // Set RELAY_AUTH_TOKEN in bot/.env. If unset, all endpoints are open (backward compat).
-    const authToken = process.env.RELAY_AUTH_TOKEN;
-    if (authToken && path !== '/api/health') {
-      const header = req.headers['authorization'] || '';
-      if (header !== `Bearer ${authToken}`) {
-        this.json(res, 401, { error: 'Unauthorized' });
-        return true;
-      }
+    // Fail-closed — relay refuses to start without RELAY_AUTH_TOKEN.
+    if (path !== '/api/health' && !authHeaderOk(req.headers['authorization'])) {
+      this.json(res, 401, { error: 'Unauthorized' });
+      return true;
     }
 
     try {
@@ -823,8 +852,10 @@ export class RelayServer {
     clearTimeout(this.feedSaveTimer!);
     this.feedSaveTimer = setTimeout(() => this.saveFeedCache(), 5000);
 
-    // Broadcast to connected clients
-    const payload = JSON.stringify(event);
+    // Broadcast to connected clients. BigInt replacer stringifies any
+    // bigint fields (e.g. PositionInfo.initialAmount/harvestedAmount) so
+    // `positionChanged` events don't throw on serialize.
+    const payload = JSON.stringify(event, (_k, v) => typeof v === 'bigint' ? v.toString() : v);
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(payload);
@@ -865,7 +896,10 @@ export class RelayServer {
 
   private saveFeedCache(): void {
     try {
-      fs.writeFileSync(this.feedCachePath, JSON.stringify(this.feedEvents.slice(-200)));
+      fs.writeFileSync(
+        this.feedCachePath,
+        JSON.stringify(this.feedEvents.slice(-200), (_k, v) => typeof v === 'bigint' ? v.toString() : v),
+      );
     } catch (e: any) {
       logger.warn(`[relay] Failed to save feed cache: ${e.message}`);
     }

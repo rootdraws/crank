@@ -1,4 +1,4 @@
-import { ChatInputCommandInteraction } from 'discord.js';
+import { ChatInputCommandInteraction, TextChannel } from 'discord.js';
 import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
 import {
@@ -8,7 +8,7 @@ import {
   buildSetupTx, signAndSendLegacy, withUserLock,
   computeCurve, ppbToPct,
 } from '@crankbot/core-sdk';
-import { formatError } from '../formatter';
+import { formatError, formatFeedBurn } from '../formatter';
 import type { BotContext } from '../index';
 
 async function handleBurnStatus(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
@@ -145,6 +145,24 @@ export async function handleBurn(interaction: ChatInputCommandInteraction, ctx: 
       `Burned ${humanAmount} CRANK → minted ${humanAmount} BANK\n` +
       `tx: \`${sig}\``
     );
+
+    if (ctx.feedChannelId) {
+      try {
+        const feedChannel = await ctx.client.channels.fetch(ctx.feedChannelId) as TextChannel;
+        if (feedChannel) {
+          await feedChannel.send({
+            content: formatFeedBurn({
+              amount: humanAmount,
+              txSig: sig,
+              actorId: interaction.user.id,
+            }),
+            allowedMentions: { parse: [] },
+          });
+        }
+      } catch (e: any) {
+        console.warn(`[burn] feed post failed: ${e.message || e}`);
+      }
+    }
   } catch (e: any) {
     const errMsg = e.message?.slice(0, 200) || 'unknown error';
     if (interaction.deferred) {

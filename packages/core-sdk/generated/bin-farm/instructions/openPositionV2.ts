@@ -170,6 +170,7 @@ export type OpenPositionV2InstructionData = {
   maxBinId: number;
   side: Side;
   maxActiveBinSlippage: number;
+  rentLamports: bigint;
 };
 
 export type OpenPositionV2InstructionDataArgs = {
@@ -178,6 +179,7 @@ export type OpenPositionV2InstructionDataArgs = {
   maxBinId: number;
   side: SideArgs;
   maxActiveBinSlippage: number;
+  rentLamports: number | bigint;
 };
 
 export function getOpenPositionV2InstructionDataEncoder(): FixedSizeEncoder<OpenPositionV2InstructionDataArgs> {
@@ -189,6 +191,7 @@ export function getOpenPositionV2InstructionDataEncoder(): FixedSizeEncoder<Open
       ['maxBinId', getI32Encoder()],
       ['side', getSideEncoder()],
       ['maxActiveBinSlippage', getI32Encoder()],
+      ['rentLamports', getU64Encoder()],
     ]),
     (value) => ({ ...value, discriminator: OPEN_POSITION_V2_DISCRIMINATOR })
   );
@@ -202,6 +205,7 @@ export function getOpenPositionV2InstructionDataDecoder(): FixedSizeDecoder<Open
     ['maxBinId', getI32Decoder()],
     ['side', getSideDecoder()],
     ['maxActiveBinSlippage', getI32Decoder()],
+    ['rentLamports', getU64Decoder()],
   ]);
 }
 
@@ -268,6 +272,7 @@ export type OpenPositionV2AsyncInput<
   maxBinId: OpenPositionV2InstructionDataArgs['maxBinId'];
   side: OpenPositionV2InstructionDataArgs['side'];
   maxActiveBinSlippage: OpenPositionV2InstructionDataArgs['maxActiveBinSlippage'];
+  rentLamports: OpenPositionV2InstructionDataArgs['rentLamports'];
 };
 
 export async function getOpenPositionV2InstructionAsync<
@@ -555,6 +560,7 @@ export type OpenPositionV2Input<
   maxBinId: OpenPositionV2InstructionDataArgs['maxBinId'];
   side: OpenPositionV2InstructionDataArgs['side'];
   maxActiveBinSlippage: OpenPositionV2InstructionDataArgs['maxActiveBinSlippage'];
+  rentLamports: OpenPositionV2InstructionDataArgs['rentLamports'];
 };
 
 export function getOpenPositionV2Instruction<
