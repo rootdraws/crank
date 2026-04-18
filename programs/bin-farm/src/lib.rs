@@ -25,6 +25,16 @@ declare_id!("8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia");
 
 pub const DEFAULT_FEE_BPS: u16 = 30;
 
+/// Hard cap on `Config.gas_lamports` (0.01 SOL). Bounds blast radius if the
+/// admin/bot key is ever compromised — attacker can't inflate per-op gas to
+/// drain vaults via routine ops.
+pub const MAX_GAS_LAMPORTS: u64 = 10_000_000;
+
+/// Hard cap on rent passthrough per `open_position_v2` call (0.2 SOL).
+/// Real worst case is ~0.14 SOL (2 fresh bin arrays + position accounts);
+/// 0.2 leaves headroom while bounding damage if bot key is compromised.
+pub const MAX_RENT_DEDUCT_LAMPORTS: u64 = 200_000_000;
+
 /// Minimum token deposit for rover positions (anti-griefing)
 pub const MIN_ROVER_DEPOSIT: u64 = 10_000;
 
@@ -159,6 +169,7 @@ pub mod bin_farm {
         max_bin_id: i32,
         _side: Side,
         max_active_bin_slippage: i32,
+        rent_lamports: u64,
     ) -> Result<()> {
         require!(!ctx.accounts.config.paused, CoreError::Paused);
         require!(ctx.accounts.bot.key() == ctx.accounts.config.bot, CoreError::Unauthorized);
@@ -166,6 +177,7 @@ pub mod bin_farm {
         require!(amount >= MIN_POSITION_AMOUNT, CoreError::PositionTooSmall);
         require!(max_active_bin_slippage >= 0 && max_active_bin_slippage <= 20, CoreError::InvalidSlippage);
         require!(min_bin_id <= max_bin_id, CoreError::InvalidBinRange);
+        require!(rent_lamports <= MAX_RENT_DEDUCT_LAMPORTS, CoreError::RentLamportsTooHigh);
         let width = max_bin_id - min_bin_id + 1;
         require!(width <= MAX_POSITION_WIDTH, CoreError::PositionTooWide);
 
@@ -350,12 +362,26 @@ pub mod bin_farm {
         config.total_positions = config.total_positions.saturating_add(1);
         config.total_volume = config.total_volume.saturating_add(amount);
 
-        // Gas reimbursement
+        // Gas reimbursement (flat per-op tx fee)
         deduct_gas(
             config,
             &ctx.accounts.user_vault.to_account_info(),
             &ctx.accounts.bot.to_account_info(),
         )?;
+
+        // Rent passthrough — bot fronted real rent for position/vault/counter/
+        // bin arrays; vault reimburses the exact lamport amount the bot paid.
+        // Capped (require above) and bounded by vault rent-exempt minimum.
+        if rent_lamports > 0 {
+            let rent_min = Rent::get()?.minimum_balance(UserVault::SIZE);
+            let available = ctx.accounts.user_vault.to_account_info()
+                .lamports()
+                .saturating_sub(rent_min);
+            let deduct = rent_lamports.min(available);
+            require!(deduct == rent_lamports, CoreError::InsufficientBalance);
+            **ctx.accounts.user_vault.to_account_info().try_borrow_mut_lamports()? -= deduct;
+            **ctx.accounts.bot.to_account_info().try_borrow_mut_lamports()? += deduct;
+        }
 
         emit!(PositionOpenedEvent {
             position: ctx.accounts.position.key(),
@@ -368,8 +394,8 @@ pub mod bin_farm {
             timestamp: Clock::get()?.unix_timestamp,
         });
 
-        msg!("Position opened: {} | {} bins [{},{}] | {} lamports",
-            ctx.accounts.position.key(), width, min_bin_id, max_bin_id, amount);
+        msg!("Position opened: {} | {} bins [{},{}] | {} lamports + {} rent",
+            ctx.accounts.position.key(), width, min_bin_id, max_bin_id, amount, rent_lamports);
         Ok(())
     }
 
@@ -695,12 +721,18 @@ pub mod bin_farm {
             total_harvested: position.harvested_amount,
         });
 
-        // Gas reimbursement
-        deduct_gas(
-            &ctx.accounts.config,
-            &ctx.accounts.user_vault.to_account_info(),
-            &ctx.accounts.bot.to_account_info(),
-        )?;
+        // Gas reimbursement — only when authorized bot harvested actual yield.
+        // Permissionless keepers are compensated via `keeper_tip_bps` from fees;
+        // zero-yield calls must not drain user vault (prevents permissionless spam
+        // drain via repeated no-op harvests).
+        let had_yield = x_received > 0 || y_received > 0;
+        if is_authorized_bot && had_yield {
+            deduct_gas(
+                &ctx.accounts.config,
+                &ctx.accounts.user_vault.to_account_info(),
+                &ctx.accounts.bot.to_account_info(),
+            )?;
+        }
 
         msg!("Harvested bins [{},{}] | fee={} | tip={} | cumulative={}",
             from_bin, to_bin, fee_taken, keeper_tip_taken, position.harvested_amount);
@@ -796,12 +828,16 @@ pub mod bin_farm {
             remaining,
         )?;
 
-        // 3. Close Meteora position (rent -> bot)
+        // 3. Close Meteora position (rent -> user_vault).
+        // Rationale: vault paid the rent at open via open_position_v2's
+        // rent_lamports passthrough. Refund must return to vault to preserve
+        // user-funds invariant. (Pre-rent-passthrough this routed to bot to
+        // recoup the float; that subsidy model is gone.)
         close_position2(
             &[
                 ctx.accounts.meteora_position.to_account_info(),
                 ctx.accounts.vault.to_account_info(),
-                ctx.accounts.bot.to_account_info(),
+                ctx.accounts.user_vault.to_account_info(),
                 ctx.accounts.event_authority.to_account_info(),
                 ctx.accounts.dlmm_program.to_account_info(),
             ],
@@ -1283,47 +1319,50 @@ pub mod bin_farm {
         Ok(())
     }
 
-    // Timelocked propose/apply pattern for revenue_dest
-    pub fn propose_revenue_dest(
+    // Timelocked propose/apply pattern for trader_dest.
+    // (Reuses the legacy pending_revenue_dest / revenue_dest_change_at slots,
+    // renamed to pending_trader_dest / trader_dest_change_at after the
+    // curve-driven sweep made revenue_dest a dead field.)
+    pub fn propose_trader_dest(
         ctx: Context<UpdateRoverDistPool>,
-        new_revenue_dest: Pubkey,
+        new_trader_dest: Pubkey,
     ) -> Result<()> {
-        require!(new_revenue_dest != Pubkey::default(), CoreError::InvalidDistPool);
+        require!(new_trader_dest != Pubkey::default(), CoreError::InvalidDistPool);
         let rover = &mut ctx.accounts.rover_authority;
-        rover.pending_revenue_dest = new_revenue_dest;
-        rover.revenue_dest_change_at = Clock::get()?.unix_timestamp
+        rover.pending_trader_dest = new_trader_dest;
+        rover.trader_dest_change_at = Clock::get()?.unix_timestamp
             .checked_add(86_400).ok_or(CoreError::Overflow)?;
-        msg!("Revenue dest change proposed: {}, effective at {}", new_revenue_dest, rover.revenue_dest_change_at);
+        msg!("Trader dest change proposed: {}, effective at {}", new_trader_dest, rover.trader_dest_change_at);
         emit!(AdminConfigEvent {
-            field: "revenue_dest".into(),
+            field: "trader_dest".into(),
             authority: ctx.accounts.authority.key(),
             timestamp: Clock::get()?.unix_timestamp,
         });
         Ok(())
     }
 
-    /// Apply a previously proposed revenue_dest change. Permissionless after 24hr.
-    pub fn apply_revenue_dest(ctx: Context<ApplyRevenueDest>) -> Result<()> {
+    /// Apply a previously proposed trader_dest change. Permissionless after 24hr.
+    pub fn apply_trader_dest(ctx: Context<ApplyTraderDest>) -> Result<()> {
         let rover = &mut ctx.accounts.rover_authority;
-        require!(rover.revenue_dest_change_at > 0, CoreError::NoPendingFeeChange);
+        require!(rover.trader_dest_change_at > 0, CoreError::NoPendingFeeChange);
         require!(
-            Clock::get()?.unix_timestamp >= rover.revenue_dest_change_at,
+            Clock::get()?.unix_timestamp >= rover.trader_dest_change_at,
             CoreError::FeeTimelockNotExpired
         );
-        rover.revenue_dest = rover.pending_revenue_dest;
-        rover.pending_revenue_dest = Pubkey::default();
-        rover.revenue_dest_change_at = 0;
-        msg!("Revenue dest applied: {}", rover.revenue_dest);
+        rover.trader_dest = rover.pending_trader_dest;
+        rover.pending_trader_dest = Pubkey::default();
+        rover.trader_dest_change_at = 0;
+        msg!("Trader dest applied: {}", rover.trader_dest);
         Ok(())
     }
 
-    /// Cancel a pending revenue_dest change. Admin only.
-    pub fn cancel_pending_revenue_dest(ctx: Context<UpdateRoverDistPool>) -> Result<()> {
+    /// Cancel a pending trader_dest change. Admin only.
+    pub fn cancel_pending_trader_dest(ctx: Context<UpdateRoverDistPool>) -> Result<()> {
         let rover = &mut ctx.accounts.rover_authority;
-        require!(rover.revenue_dest_change_at > 0, CoreError::NoPendingFeeChange);
-        rover.pending_revenue_dest = Pubkey::default();
-        rover.revenue_dest_change_at = 0;
-        msg!("Pending revenue dest change cancelled");
+        require!(rover.trader_dest_change_at > 0, CoreError::NoPendingFeeChange);
+        rover.pending_trader_dest = Pubkey::default();
+        rover.trader_dest_change_at = 0;
+        msg!("Pending trader dest change cancelled");
         Ok(())
     }
 
@@ -1341,8 +1380,8 @@ pub mod bin_farm {
         rover.revenue_dest = revenue_dest;
         rover.bump = ctx.bumps.rover_authority;
         rover.total_rover_positions = 0;
-        rover.pending_revenue_dest = Pubkey::default();
-        rover.revenue_dest_change_at = 0;
+        rover.pending_trader_dest = Pubkey::default();
+        rover.trader_dest_change_at = 0;
         rover.trader_dest = Pubkey::default();
         rover.initial_crank_supply = 0;
         rover.burn_enabled = false;
@@ -1352,16 +1391,18 @@ pub mod bin_farm {
         Ok(())
     }
 
-    /// Set the trader reward destination. Admin only.
-    /// Must be called before sweep_rover will include trader share.
+    /// Set the trader reward destination. Admin only. One-shot init: callable
+    /// only while trader_dest is unset (Pubkey::default). After initial setting,
+    /// further changes require the propose/apply/cancel timelock trio below.
     pub fn set_trader_dest(
         ctx: Context<UpdateRoverDistPool>,
         trader_dest: Pubkey,
     ) -> Result<()> {
         require!(trader_dest != Pubkey::default(), CoreError::InvalidDistPool);
         let rover = &mut ctx.accounts.rover_authority;
+        require!(rover.trader_dest == Pubkey::default(), CoreError::TraderDestAlreadySet);
         rover.trader_dest = trader_dest;
-        msg!("Trader dest set: {}", trader_dest);
+        msg!("Trader dest set (init): {}", trader_dest);
         emit!(AdminConfigEvent {
             field: "trader_dest".into(),
             authority: ctx.accounts.authority.key(),
@@ -2327,12 +2368,8 @@ pub mod bin_farm {
         require!(is_authorized, CoreError::UnauthorizedCaller);
 
         // Read ATA rent before closing (rent = lamports - token_amount)
-        let ata_lamports = ctx.accounts.vault_wsol_ata.lamports();
-        let token_amount = {
-            let data = ctx.accounts.vault_wsol_ata.try_borrow_data()?;
-            // SPL Token account layout: amount is u64 LE at offset 64
-            u64::from_le_bytes(data[64..72].try_into().map_err(|_| CoreError::Overflow)?)
-        };
+        let ata_lamports = ctx.accounts.vault_wsol_ata.to_account_info().lamports();
+        let token_amount = ctx.accounts.vault_wsol_ata.amount;
         let rent_lamports = ata_lamports.saturating_sub(token_amount);
 
         let owner_key = ctx.accounts.user_vault.owner;
@@ -2542,6 +2579,18 @@ pub mod bin_farm {
             anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
         ];
 
+        // Defense-in-depth (v2-M-01): reject any remaining_account that isn't
+        // owned by gauge-voter before forwarding via CPI. Gauge-voter also
+        // checks this on its side (v1-M-03), but we enforce at the boundary
+        // so a future gauge-voter refactor can't regress this protocol into a
+        // config-corruption footgun.
+        for acc in ctx.remaining_accounts.iter() {
+            require!(
+                acc.owner == &GAUGE_VOTER_PROGRAM_ID,
+                CoreError::InvalidGaugeAccount
+            );
+        }
+
         // Forward PoolGauge remaining_accounts (writable)
         let mut account_infos = vec![
             ctx.accounts.user_vault.to_account_info(),
@@ -2574,6 +2623,7 @@ pub mod bin_farm {
 
     /// Admin sets gas reimbursement amount per operation.
     pub fn update_gas_lamports(ctx: Context<AdminOnly>, gas_lamports: u64) -> Result<()> {
+        require!(gas_lamports <= MAX_GAS_LAMPORTS, CoreError::GasLamportsTooHigh);
         ctx.accounts.config.gas_lamports = gas_lamports;
         msg!("Gas lamports updated to {}", gas_lamports);
         Ok(())
@@ -2961,15 +3011,17 @@ impl UserVault {
 /// Kill switch: when burn_enabled = false, burn_ratio is clamped to 0 and
 /// all SOL flows 80% trader / 20% protocol.
 ///
-/// `revenue_dest` and its timelock fields are LEGACY — held for backwards-compat
-/// of the on-chain account layout but not referenced by sweep_rover anymore.
+/// `revenue_dest` is LEGACY — held for backwards-compat of the on-chain account
+/// layout but not referenced by sweep_rover anymore. Its former timelock slots
+/// (pending/change_at) have been repurposed for the trader_dest propose/apply
+/// timelock — same bytes, new meaning.
 #[account]
 pub struct RoverAuthority {
     pub revenue_dest: Pubkey,              // LEGACY (was holder share dest; unused in curve model)
     pub total_rover_positions: u64,        // Lifetime count
     pub bump: u8,
-    pub pending_revenue_dest: Pubkey,      // LEGACY
-    pub revenue_dest_change_at: i64,       // LEGACY
+    pub pending_trader_dest: Pubkey,       // Pending trader_dest (propose/apply timelock)
+    pub trader_dest_change_at: i64,        // Unix ts when pending_trader_dest may be applied
     pub trader_dest: Pubkey,               // Trader SOL share destination (bridge_vault)
     // Carved from _reserved (post-amendment):
     pub initial_crank_supply: u64,         // Snapshot of crank_mint.supply at curve init (immutable after init)
@@ -2979,7 +3031,7 @@ pub struct RoverAuthority {
 
 impl RoverAuthority {
     // 8 (disc) + 32 (revenue_dest) + 8 (total_rover_positions) + 1 (bump)
-    // + 32 (pending_revenue_dest) + 8 (revenue_dest_change_at) + 32 (trader_dest)
+    // + 32 (pending_trader_dest) + 8 (trader_dest_change_at) + 32 (trader_dest)
     // + 8 (initial_crank_supply) + 1 (burn_enabled) + 23 (_reserved)
     pub const SIZE: usize = 8 + 32 + 8 + 1 + 32 + 8 + 32 + 8 + 1 + 23;
 }
@@ -3655,10 +3707,12 @@ pub struct WrapSolInVault<'info> {
     )]
     pub user_vault: Account<'info, UserVault>,
 
-    /// CHECK: Vault's WSOL ATA. Must be owned by SPL Token with mint = NATIVE_MINT.
-    /// Lamport credit via system_program::transfer, validated by sync_native CPI.
-    #[account(mut)]
-    pub vault_wsol_ata: AccountInfo<'info>,
+    #[account(
+        mut,
+        token::mint = anchor_spl::token::spl_token::native_mint::ID,
+        token::authority = user_vault,
+    )]
+    pub vault_wsol_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     /// CHECK: SPL Token program (for sync_native — called separately after this ix)
     #[account(constraint = token_program.key() == anchor_spl::token::ID @ CoreError::InvalidProgram)]
@@ -3680,9 +3734,12 @@ pub struct UnwrapWsolInVault<'info> {
     )]
     pub user_vault: Account<'info, UserVault>,
 
-    /// CHECK: Vault's WSOL ATA to close. Must be owned by vault PDA.
-    #[account(mut)]
-    pub vault_wsol_ata: AccountInfo<'info>,
+    #[account(
+        mut,
+        token::mint = anchor_spl::token::spl_token::native_mint::ID,
+        token::authority = user_vault,
+    )]
+    pub vault_wsol_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     /// CHECK: SPL Token program (for close_account)
     #[account(constraint = *token_program.key == anchor_spl::token::ID || *token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
@@ -4022,7 +4079,8 @@ pub struct OpenRoverPosition<'info> {
 }
 
 #[derive(Accounts)]
-// Timelocked propose/apply for rover revenue_dest
+// Shared admin context for rover dist-pool setters (set_trader_dest init,
+// propose_trader_dest, cancel_pending_trader_dest, set_fee_bps).
 pub struct UpdateRoverDistPool<'info> {
     #[account(constraint = authority.key() == config.authority @ CoreError::Unauthorized)]
     pub authority: Signer<'info>,
@@ -4076,9 +4134,9 @@ pub struct InitializeBurnCurve<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Permissionless apply for revenue_dest after 24hr timelock
+/// Permissionless apply for trader_dest after 24hr timelock
 #[derive(Accounts)]
-pub struct ApplyRevenueDest<'info> {
+pub struct ApplyTraderDest<'info> {
     pub caller: Signer<'info>,
 
     #[account(
@@ -4457,6 +4515,10 @@ pub struct RoverOpenedEvent {
 pub enum CoreError {
     #[msg("Not authorized")]
     Unauthorized,
+    #[msg("gas_lamports exceeds MAX_GAS_LAMPORTS")]
+    GasLamportsTooHigh,
+    #[msg("rent_lamports exceeds MAX_RENT_DEDUCT_LAMPORTS")]
+    RentLamportsTooHigh,
     #[msg("Protocol is paused")]
     Paused,
     #[msg("Amount must be greater than zero")]
@@ -4523,6 +4585,10 @@ pub enum CoreError {
     InvalidTraderDest,
     #[msg("Trader destination not set — call set_trader_dest first")]
     TraderDestNotSet,
+    #[msg("Trader destination already set — use propose_trader_dest for changes")]
+    TraderDestAlreadySet,
+    #[msg("remaining_account owner is not gauge-voter program")]
+    InvalidGaugeAccount,
     #[msg("Insufficient vault balance for withdrawal")]
     InsufficientBalance,
     #[msg("Invalid vault owner — does not match PDA seed")]

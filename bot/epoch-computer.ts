@@ -5,8 +5,10 @@
  * Computes per-user shares, builds Merkle tree, drains epoch-vault,
  * wraps WSOL, funds distributor, auto-claims for all users.
  *
- * Share computation (v1): proportional to fees generated (fee_taken in harvests).
- * BANK holder weighting deferred to v2 (gauge-voter integration).
+ * Share computation: proportional to fees generated (fee_taken in harvests),
+ * weighted per-pool by on-chain PoolGauge.weight_bps when a gauge map is
+ * passed in. BANK holders steer the split across pools via /vote (gauge-voter
+ * integration live as of 2026-04-17).
  *
  * Called by the keeper as part of the daily sequence.
  */
@@ -24,6 +26,7 @@ import {
 } from '@solana/spl-token';
 import { WalletService } from '../packages/core-sdk/wallet-service';
 import { logger } from './logger';
+import { alertEntitlementDrift } from './alerter';
 import * as fs from 'fs';
 import * as path from 'path';
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -137,12 +140,22 @@ export function loadEpochState(): EpochState {
   return { lastEpoch: 0, cumulativeEntitlements: {}, lastProcessedHarvestIndex: 0, lastEpochTimestamp: 0 };
 }
 
+/**
+ * Write JSON atomically (tmp + rename). Crash mid-write leaves the old file
+ * intact instead of a half-written JSON that fails to parse on restart.
+ * Required for every checkpoint file — progress, state, tree snapshots —
+ * since parse failure defeats crash recovery and re-runs epoch steps that
+ * already committed on-chain (v2-M-09).
+ */
+function atomicWriteJson(filePath: string, obj: unknown): void {
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  fs.renameSync(tmp, filePath);
+}
+
 function saveEpochState(state: EpochState): void {
   if (!fs.existsSync(EPOCH_DATA_DIR)) fs.mkdirSync(EPOCH_DATA_DIR, { recursive: true });
-  fs.writeFileSync(
-    path.join(EPOCH_DATA_DIR, 'epoch-state.json'),
-    JSON.stringify(state, null, 2)
-  );
+  atomicWriteJson(path.join(EPOCH_DATA_DIR, 'epoch-state.json'), state);
 }
 
 // ─── Epoch Progress (crash recovery) ─────────────────────────────────────
@@ -175,7 +188,7 @@ function loadProgress(): EpochProgress | null {
 
 function saveProgress(progress: EpochProgress): void {
   if (!fs.existsSync(EPOCH_DATA_DIR)) fs.mkdirSync(EPOCH_DATA_DIR, { recursive: true });
-  fs.writeFileSync(PROGRESS_PATH, JSON.stringify(progress, null, 2));
+  atomicWriteJson(PROGRESS_PATH, progress);
 }
 
 function clearProgress(): void {
@@ -190,21 +203,84 @@ export interface UserShare {
   share: bigint; // lamports for this epoch
 }
 
+/**
+ * Load live on-chain `PoolGauge.weight_bps` for every gauge registered in
+ * `curator.json`. Returns a map of `lb_pair → weight_bps`.
+ *
+ * PoolGauge layout (gauge-voter/src/lib.rs:403):
+ *   [0..8]   discriminator
+ *   [8..40]  lb_pair (Pubkey)
+ *   [40..48] weight_bps (u64 LE)    ← we read this
+ *   [48]     enabled (bool)         ← zero-weight if disabled
+ *   [49]     bump
+ *
+ * Ungaugeed pools (in harvest records but not in curator.json) implicitly map
+ * to 0 weight → their fee contributions are dropped from the BANK pie.
+ */
+export async function loadGaugeWeights(connection: Connection): Promise<Record<string, bigint>> {
+  const { loadGauges } = await import('../packages/core-sdk/pool-config');
+  const { getPoolGaugePDA } = await import('../packages/core-sdk/pda');
+  const gauges = loadGauges(); // symbol → lb_pair
+  const lbPairs = Object.values(gauges);
+  if (lbPairs.length === 0) return {};
+
+  const gaugePdas: PublicKey[] = lbPairs.map(lp => getPoolGaugePDA(new PublicKey(lp))[0]);
+  const result: Record<string, bigint> = {};
+
+  const BATCH = 100;
+  for (let i = 0; i < gaugePdas.length; i += BATCH) {
+    const chunk = gaugePdas.slice(i, i + BATCH);
+    const infos = await connection.getMultipleAccountsInfo(chunk);
+    for (let j = 0; j < infos.length; j++) {
+      const info = infos[j];
+      const lbPair = lbPairs[i + j];
+      if (!info || info.data.length < 49) {
+        // Gauge PDA not initialized → treat as 0 weight
+        result[lbPair] = 0n;
+        continue;
+      }
+      const enabled = info.data.readUInt8(48) === 1;
+      if (!enabled) {
+        result[lbPair] = 0n;
+        continue;
+      }
+      result[lbPair] = info.data.readBigUInt64LE(40);
+    }
+  }
+  return result;
+}
+
 export function computeShares(
   walletService: WalletService,
   availableLamports: bigint,
   state: EpochState,
+  // lb_pair → weight_bps. When present, each harvest's fee is multiplied
+  // by weight_bps/10000 before summing. Pools not in the map contribute 0.
+  // When absent (or empty), falls back to flat fee-proportional distribution.
+  gaugeWeights?: Record<string, bigint>,
 ): UserShare[] {
   // Read all harvests and compute per-user fee contribution
   const data = (walletService as any).data as any;
   const harvests: any[] = data.harvests || [];
+  const hasGaugeMap = !!gaugeWeights && Object.keys(gaugeWeights).length > 0;
 
   // Sum fees per wallet (only new harvests since last epoch)
   const feesByWallet = new Map<string, bigint>();
   for (let i = state.lastProcessedHarvestIndex; i < harvests.length; i++) {
     const h = harvests[i];
-    const fee = BigInt(h.fee_taken || '0');
-    if (fee <= 0n) continue;
+    const rawFee = BigInt(h.fee_taken || '0');
+    if (rawFee <= 0n) continue;
+
+    // Apply gauge weight when the caller supplied a map.
+    // Harvests from ungaugeed pools (or pools with zero weight) contribute 0 —
+    // this is the protocol invariant post gauge-voter integration (2026-04-17).
+    let fee = rawFee;
+    if (hasGaugeMap) {
+      const weightBps = gaugeWeights![h.lb_pair] ?? 0n;
+      if (weightBps === 0n) continue;
+      fee = (rawFee * weightBps) / 10000n;
+      if (fee === 0n) continue;
+    }
 
     // Map vault_pda (or legacy wallet_pubkey) to user's vault PDA for Merkle tree
     const vaultKey = h.vault_pda || h.wallet_pubkey; // migration: old harvests use wallet_pubkey
@@ -299,9 +375,11 @@ export async function runEpoch(config: EpochComputerConfig): Promise<EpochResult
 
   logger.info(`[epoch] Vault has ${Number(available) / 1e9} SOL — computing epoch`);
 
-  // 2. Load state + compute shares
+  // 2. Load state + gauge weights + compute shares
   const state = loadEpochState();
-  const shares = computeShares(walletService, available, state);
+  const gaugeWeights = await loadGaugeWeights(connection);
+  logger.info(`[epoch] Loaded ${Object.keys(gaugeWeights).length} gauge weight(s)`);
+  const shares = computeShares(walletService, available, state, gaugeWeights);
 
   if (shares.length === 0) {
     logger.info('[epoch] No eligible users — skipping');
@@ -320,14 +398,23 @@ export async function runEpoch(config: EpochComputerConfig): Promise<EpochResult
     updatedEntitlements[s.wallet] = (prev + s.share).toString();
   }
 
+  // 3b. Reconcile against on-chain claim_status before tree build (v2-H-04).
+  // Guards against DB-rollback → claim lockout via cumulative underflow.
+  const [solDistributorPDA] = PublicKey.findProgramAddressSync(
+    [Buffer.from('distributor')], MERKLE_DIST_ID,
+  );
+  const reconciledEntitlements = await reconcileEntitlementsAgainstOnChain(
+    connection, solDistributorPDA, MERKLE_DIST_ID, updatedEntitlements, 'SOL',
+  );
+
   // 4. Build Merkle tree (sort wallets for deterministic ordering)
-  const wallets = Object.keys(updatedEntitlements).sort();
+  const wallets = Object.keys(reconciledEntitlements).sort();
   const leafHashes: Buffer[] = [];
   const leafData: Leaf[] = [];
 
   for (let i = 0; i < wallets.length; i++) {
     const wallet = wallets[i];
-    const cumAmount = BigInt(updatedEntitlements[wallet]);
+    const cumAmount = BigInt(reconciledEntitlements[wallet]);
     const leafHash = hashLeaf(BigInt(i), new PublicKey(wallet), cumAmount);
     leafHashes.push(leafHash);
     leafData.push({
@@ -350,7 +437,7 @@ export async function runEpoch(config: EpochComputerConfig): Promise<EpochResult
   const treeJson = { leaves: leafData, epoch: newEpochNum, amount: Number(available) };
   const treePath = path.join(EPOCH_DATA_DIR, `epoch-${newEpochNum}.json`);
   if (!fs.existsSync(EPOCH_DATA_DIR)) fs.mkdirSync(EPOCH_DATA_DIR, { recursive: true });
-  fs.writeFileSync(treePath, JSON.stringify(treeJson, null, 2));
+  atomicWriteJson(treePath, treeJson);
   logger.info(`[epoch] Tree saved: ${treePath}`);
 
   // 6. Upload to IPFS (if Pinata credentials available)
@@ -391,7 +478,7 @@ export async function runEpoch(config: EpochComputerConfig): Promise<EpochResult
     merkleRoot,
     ipfsCid,
     treePath,
-    updatedEntitlements,
+    updatedEntitlements: reconciledEntitlements,
     lastProcessedHarvestIndex: (wsData.harvests || []).length,
   };
   saveProgress(progress);
@@ -564,6 +651,86 @@ async function getAlreadyClaimed(
   return 0n;
 }
 
+/**
+ * Pre-publish reconciliation against on-chain `claim_status.cumulative_claimed`.
+ *
+ * Rationale (audit v2-H-04): distribution uses cumulative accounting. If
+ * `data/crankbot.json` (or `epoch-state.json`) is restored from a backup
+ * taken BEFORE a harvest that produced some entitlement X which later got
+ * claimed on-chain (cumulative_claimed = X), the local `cumulativeEntitlements`
+ * rewinds. If we publish a tree where `leaf.cumulative_amount < X`, the
+ * on-chain distributor's `checked_sub(leaf.cumulative_amount, claim_status.cumulative_claimed)`
+ * underflows and reverts `NothingToClaim` — permanently locking the user out
+ * of new entitlements until their cumulative naturally grows past X.
+ *
+ * Fix: before tree build, batch-fetch claim_status for every candidate wallet.
+ * If on-chain claimed > local entitlement, bump local to match so the new
+ * leaf's cumulative_amount is always ≥ what's already claimed on-chain.
+ * Fires an ops alert whenever any bump happens (indicates DB drift worth
+ * investigating).
+ */
+export async function reconcileEntitlementsAgainstOnChain(
+  connection: Connection,
+  distributorPDA: PublicKey,
+  distributorProgramId: PublicKey,
+  entitlements: Record<string, string>,
+  tree: 'SOL' | 'BANK',
+): Promise<Record<string, string>> {
+  const wallets = Object.keys(entitlements);
+  if (wallets.length === 0) return entitlements;
+
+  // Derive claim_status PDAs for every wallet.
+  const claimStatusPdas: PublicKey[] = wallets.map(w => {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('claim_status'), distributorPDA.toBuffer(), new PublicKey(w).toBuffer()],
+      distributorProgramId,
+    );
+    return pda;
+  });
+
+  // Batch getMultipleAccounts (100 per RPC call).
+  const accountInfos: (Awaited<ReturnType<Connection['getAccountInfo']>> | null)[] = [];
+  const BATCH = 100;
+  for (let i = 0; i < claimStatusPdas.length; i += BATCH) {
+    const chunk = claimStatusPdas.slice(i, i + BATCH);
+    const infos = await connection.getMultipleAccountsInfo(chunk);
+    for (const info of infos) accountInfos.push(info);
+  }
+
+  const reconciled: Record<string, string> = { ...entitlements };
+  const bumps: Array<{ wallet: string; localWas: bigint; onChain: bigint }> = [];
+
+  for (let i = 0; i < wallets.length; i++) {
+    const wallet = wallets[i];
+    const info = accountInfos[i];
+    // No claim_status yet = on-chain claimed is 0 → no reconciliation needed
+    if (!info || info.data.length < 16) continue;
+    const onChainClaimed = info.data.readBigUInt64LE(8); // skip 8-byte discriminator
+    const local = BigInt(reconciled[wallet]);
+    if (onChainClaimed > local) {
+      bumps.push({ wallet, localWas: local, onChain: onChainClaimed });
+      reconciled[wallet] = onChainClaimed.toString();
+    }
+  }
+
+  if (bumps.length > 0) {
+    const sample = bumps.slice(0, 3).map(b =>
+      `${b.wallet.slice(0, 8)}… local=${b.localWas.toString()} onChain=${b.onChain.toString()}`
+    ).join('; ');
+    logger.warn(
+      `[${tree === 'SOL' ? 'epoch' : 'bank-epoch'}] RECONCILE: ${bumps.length} wallet(s) had local < on-chain claimed — bumped to prevent claim lockout. ${sample}`
+    );
+    // Fire ops alert (non-fatal — don't block epoch publish)
+    alertEntitlementDrift(tree, bumps.length, sample).catch(e =>
+      logger.warn(`[epoch] alertEntitlementDrift dispatch failed: ${e.message?.slice(0, 80)}`)
+    );
+  } else {
+    logger.info(`[${tree === 'SOL' ? 'epoch' : 'bank-epoch'}] reconcile: ${wallets.length} wallet(s) checked, no drift`);
+  }
+
+  return reconciled;
+}
+
 async function claimForUser(
   connection: Connection,
   distributorProgram: Program,
@@ -648,8 +815,9 @@ async function claimForUser(
 //   - Separate state file (epoch-state-bank.json) and tree files.
 //
 // Trader weights are computed from the same `harvests` table as the SOL tree,
-// using the same `computeShares` function — traders get pro-rata BANK by
-// harvest-volume, identical to their SOL share weighting.
+// using the same `computeShares` function. Per-pool gauge weights from
+// `loadGaugeWeights` modulate each harvest's fee contribution, so BANK flows
+// toward pools that BANK holders have voted for.
 
 const MIN_BANK_EPOCH_UNITS = 1_000n; // 0.001 BANK (6 decimals) min to trigger epoch
 const MIN_BANK_CLAIM_UNITS = 100n;   // min claimable per user
@@ -664,10 +832,7 @@ function loadBankEpochState(): EpochState {
 
 function saveBankEpochState(state: EpochState): void {
   if (!fs.existsSync(EPOCH_DATA_DIR)) fs.mkdirSync(EPOCH_DATA_DIR, { recursive: true });
-  fs.writeFileSync(
-    path.join(EPOCH_DATA_DIR, 'epoch-state-bank.json'),
-    JSON.stringify(state, null, 2)
-  );
+  atomicWriteJson(path.join(EPOCH_DATA_DIR, 'epoch-state-bank.json'), state);
 }
 
 export interface BankEpochConfig {
@@ -708,7 +873,9 @@ export async function runBankEpoch(config: BankEpochConfig): Promise<EpochResult
 
   // 2. Compute shares from harvests (same weighting as SOL tree)
   const state = loadBankEpochState();
-  const shares = computeShares(walletService, amount, state);
+  const gaugeWeights = await loadGaugeWeights(connection);
+  logger.info(`[bank-epoch] Loaded ${Object.keys(gaugeWeights).length} gauge weight(s)`);
+  const shares = computeShares(walletService, amount, state, gaugeWeights);
   if (shares.length === 0) {
     logger.info('[bank-epoch] No eligible users — skipping');
     return { ran: false };
@@ -723,13 +890,18 @@ export async function runBankEpoch(config: BankEpochConfig): Promise<EpochResult
     updatedEntitlements[s.wallet] = (prev + s.share).toString();
   }
 
+  // 3b. Reconcile against on-chain claim_status before tree build (v2-H-04).
+  const reconciledEntitlements = await reconcileEntitlementsAgainstOnChain(
+    connection, bankDist, BANK_DIST_ID, updatedEntitlements, 'BANK',
+  );
+
   // 4. Build Merkle tree
-  const wallets = Object.keys(updatedEntitlements).sort();
+  const wallets = Object.keys(reconciledEntitlements).sort();
   const leafHashes: Buffer[] = [];
   const leafData: Leaf[] = [];
   for (let i = 0; i < wallets.length; i++) {
     const wallet = wallets[i];
-    const cumAmount = BigInt(updatedEntitlements[wallet]);
+    const cumAmount = BigInt(reconciledEntitlements[wallet]);
     leafHashes.push(hashLeaf(BigInt(i), new PublicKey(wallet), cumAmount));
     leafData.push({ index: i, wallet, cumulative_amount: cumAmount.toString(), proof: [] });
   }
@@ -742,7 +914,7 @@ export async function runBankEpoch(config: BankEpochConfig): Promise<EpochResult
   const treeJson = { leaves: leafData, epoch: newEpochNum, amount: Number(amount) };
   const treePath = path.join(EPOCH_DATA_DIR, `epoch-${newEpochNum}-bank.json`);
   if (!fs.existsSync(EPOCH_DATA_DIR)) fs.mkdirSync(EPOCH_DATA_DIR, { recursive: true });
-  fs.writeFileSync(treePath, JSON.stringify(treeJson, null, 2));
+  atomicWriteJson(treePath, treeJson);
   logger.info(`[bank-epoch] Tree saved: ${treePath}`);
 
   // 5. Pin to IPFS (non-fatal)
@@ -834,11 +1006,100 @@ export async function runBankEpoch(config: BankEpochConfig): Promise<EpochResult
   // 8. Finalize state
   const wsData = (walletService as any).data as any;
   state.lastEpoch = newEpochNum;
-  state.cumulativeEntitlements = updatedEntitlements;
+  state.cumulativeEntitlements = reconciledEntitlements;
   state.lastProcessedHarvestIndex = (wsData.harvests || []).length;
   state.lastEpochTimestamp = Date.now();
   saveBankEpochState(state);
 
   return { ran: true, epoch: newEpochNum, amountSol: Number(amount) / 1e6, userCount: leafData.length };
+}
+
+// ─── Epoch-miss detection ─────────────────────────────────────────────────
+
+export interface EpochMissReport {
+  /** Hours since last successful SOL epoch, iff bridge_vault has eligible SOL. */
+  solStaleHours: number | null;
+  solAvailableLamports: bigint;
+  /** Hours since last successful BANK epoch, iff bank-distributor vault has eligible delta. */
+  bankStaleHours: number | null;
+  bankDeltaUnits: bigint;
+}
+
+/**
+ * A miss is only a miss if there's something to distribute.
+ * Post-2026-04-13 amendment, sweep_rover runs full-magnesium and bridge_vault
+ * can sit empty for days by design. This gates the alert on actual eligible
+ * balance so we only page when a genuine epoch is stuck.
+ */
+export async function detectEpochMiss(
+  connection: Connection,
+  bankDistributorProgram: Program | null,
+  staleThresholdHours = 26,
+): Promise<EpochMissReport> {
+  const now = Date.now();
+  const report: EpochMissReport = {
+    solStaleHours: null,
+    solAvailableLamports: 0n,
+    bankStaleHours: null,
+    bankDeltaUnits: 0n,
+  };
+
+  // SOL side — bridge_vault lamports minus rent vs MIN_EPOCH_LAMPORTS
+  try {
+    const [bridgeVault] = PublicKey.findProgramAddressSync(
+      [Buffer.from('bridge_vault')], EPOCH_VAULT_ID,
+    );
+    const lamports = await connection.getBalance(bridgeVault);
+    const rent = await connection.getMinimumBalanceForRentExemption(0);
+    const available = BigInt(Math.max(0, lamports - rent));
+    report.solAvailableLamports = available;
+
+    if (available >= BigInt(MIN_EPOCH_LAMPORTS)) {
+      const state = loadEpochState();
+      if (state.lastEpochTimestamp > 0) {
+        const h = (now - state.lastEpochTimestamp) / 3_600_000;
+        if (h > staleThresholdHours) report.solStaleHours = h;
+      } else {
+        report.solStaleHours = Infinity;
+      }
+    }
+  } catch (e: any) {
+    logger.warn(`[epoch-miss] SOL probe failed: ${e.message}`);
+  }
+
+  // BANK side — vault.amount + totalClaimed − totalFunded vs MIN_BANK_EPOCH_UNITS
+  if (bankDistributorProgram) {
+    try {
+      const [bankDist] = PublicKey.findProgramAddressSync(
+        [Buffer.from('distributor')], BANK_DIST_ID,
+      );
+      const bankVault = getAssociatedTokenAddressSync(
+        BANK_MINT_PK, bankDist, true, TOKEN_PROGRAM_ID,
+      );
+      const vaultInfo = await connection.getAccountInfo(bankVault);
+      if (vaultInfo && vaultInfo.data.length >= 72) {
+        const vaultBalance = vaultInfo.data.readBigUInt64LE(64);
+        const distState = await bankDistributorProgram.account.distributor.fetch(bankDist);
+        const totalFunded = BigInt((distState as any).totalAmountFunded.toString());
+        const totalClaimed = BigInt((distState as any).totalAmountClaimed.toString());
+        const delta = vaultBalance + totalClaimed - totalFunded;
+        report.bankDeltaUnits = delta;
+
+        if (delta >= MIN_BANK_EPOCH_UNITS) {
+          const state = loadBankEpochState();
+          if (state.lastEpochTimestamp > 0) {
+            const h = (now - state.lastEpochTimestamp) / 3_600_000;
+            if (h > staleThresholdHours) report.bankStaleHours = h;
+          } else {
+            report.bankStaleHours = Infinity;
+          }
+        }
+      }
+    } catch (e: any) {
+      logger.warn(`[epoch-miss] BANK probe failed: ${e.message}`);
+    }
+  }
+
+  return report;
 }
 

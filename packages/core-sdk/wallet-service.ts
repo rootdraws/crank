@@ -16,6 +16,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getUserVaultPDA } from './pda';
 
+export class WalletAlreadyClaimedError extends Error {
+  constructor(public readonly ownerWallet: string, public readonly existingUserId: string) {
+    super(`wallet ${ownerWallet} is already bound to a different account`);
+    this.name = 'WalletAlreadyClaimedError';
+  }
+}
+
 // ─── JSON File Store ───────────────────────────────────────────────────────
 
 interface UserRecord {
@@ -36,12 +43,24 @@ interface StoreData {
     lb_pair: string; meteora_position: string; side: string;
     min_bin_id: number; max_bin_id: number; initial_amount: string;
     status: string; created_at: number;
+    /** JUP market-quote output for the deposit at open time (raw bigint string). */
+    baseline_out?: string;
+    /** Mint of the baseline output (= converted side — X on Buy, Y on Sell). */
+    baseline_mint?: string;
+    /** Decimals of the baseline mint (for display without re-looking up). */
+    baseline_decimals?: number;
+    /** USD value of the deposit at open time (frozen, for aggregate volume metrics). */
+    initial_usd?: number | null;
   }>;
   votes: Record<string, { vault_pda: string; pool_address: string; allocation_pct: number; updated_at: number }>;
   harvests: Array<{
     position_pda: string; vault_pda: string; lb_pair: string;
     amount_out: string; fee_taken: string; tx_sig: string;
     epoch: number; slot: number; created_at: number;
+    /** USD value of the converted output, frozen at event time. null = uncomputable. */
+    usd_value?: number | null;
+    /** 'harvest' (partial) or 'close' (terminal). Default 'harvest' for legacy rows. */
+    kind?: 'harvest' | 'close';
   }>;
 }
 
@@ -112,6 +131,11 @@ export class WalletService {
     const [vaultPda] = getUserVaultPDA(ownerWallet);
     const vaultStr = vaultPda.toBase58();
     const ownerStr = ownerWallet.toBase58();
+
+    const priorOwnerBinding = this.data.ownerIndex[ownerStr];
+    if (priorOwnerBinding && priorOwnerBinding !== userId) {
+      throw new WalletAlreadyClaimedError(ownerStr, priorOwnerBinding);
+    }
 
     this.data.users[userId] = {
       user_id: userId,
@@ -217,6 +241,7 @@ export class WalletService {
     minBinId: number;
     maxBinId: number;
     initialAmount: bigint;
+    initialUsd?: number | null;
   }): void {
     this.data.positions[params.positionPda] = {
       position_pda: params.positionPda,
@@ -230,8 +255,19 @@ export class WalletService {
       initial_amount: params.initialAmount.toString(),
       status: 'open',
       created_at: Date.now(),
+      initial_usd: params.initialUsd ?? null,
     };
     this.markDirty();
+  }
+
+  /** Sum of `initial_usd` across positions opened within the window. */
+  getTotalDepositedUsd(sinceMs: number = 0): number {
+    let total = 0;
+    for (const p of Object.values(this.data.positions)) {
+      if (p.created_at < sinceMs) continue;
+      if (p.initial_usd != null) total += p.initial_usd;
+    }
+    return total;
   }
 
   closePosition(positionPda: string): void {
@@ -250,6 +286,34 @@ export class WalletService {
 
   getPositionByPda(positionPda: string): any {
     return this.data.positions[positionPda] || null;
+  }
+
+  /**
+   * Attach a JUP market-quote baseline to an open position. Called from /buy
+   * and /sell right after the open tx confirms. Stored so that on 100%
+   * conversion we can compute "delta vs market" as a shareable flex.
+   */
+  setPositionBaseline(
+    positionPda: string,
+    baselineOut: bigint,
+    baselineMint: string,
+    baselineDecimals: number,
+  ): void {
+    const pos = this.data.positions[positionPda];
+    if (!pos) return;
+    pos.baseline_out = baselineOut.toString();
+    pos.baseline_mint = baselineMint;
+    pos.baseline_decimals = baselineDecimals;
+    this.markDirty();
+  }
+
+  /** Sum of actual converted output across all harvest rows for one position. */
+  getActualHarvestedForPosition(positionPda: string): bigint {
+    let total = 0n;
+    for (const h of this.data.harvests) {
+      if (h.position_pda === positionPda) total += BigInt(h.amount_out);
+    }
+    return total;
   }
 
   findPositionByIdPrefix(userId: string, prefix: string): any {
@@ -319,6 +383,8 @@ export class WalletService {
     txSig: string;
     epoch?: number;
     slot?: number;
+    usdValue?: number | null;
+    kind?: 'harvest' | 'close';
   }): void {
     this.data.harvests.push({
       position_pda: params.positionPda,
@@ -330,8 +396,54 @@ export class WalletService {
       epoch: params.epoch ?? 0,
       slot: params.slot ?? 0,
       created_at: Date.now(),
+      usd_value: params.usdValue ?? null,
+      kind: params.kind ?? 'harvest',
     });
     this.markDirty();
+  }
+
+  /** Sum of `usd_value` across all harvest rows (skips nulls). */
+  getTotalVolumeUsd(sinceMs: number = 0): number {
+    let total = 0;
+    for (const h of this.data.harvests) {
+      if (h.created_at < sinceMs) continue;
+      if (h.usd_value != null) total += h.usd_value;
+    }
+    return total;
+  }
+
+  /** Sum of `usd_value` for a specific user's vault. */
+  getUserVolumeUsd(vaultPda: string, sinceMs: number = 0): number {
+    let total = 0;
+    for (const h of this.data.harvests) {
+      if (h.vault_pda !== vaultPda) continue;
+      if (h.created_at < sinceMs) continue;
+      if (h.usd_value != null) total += h.usd_value;
+    }
+    return total;
+  }
+
+  /** Distinct users with at least one harvest row. */
+  getActiveUserCount(): number {
+    const seen = new Set<string>();
+    for (const h of this.data.harvests) seen.add(h.vault_pda);
+    return seen.size;
+  }
+
+  getTotalRegisteredUsers(): number {
+    return Object.keys(this.data.users).length;
+  }
+
+  getTotalHarvestCount(): number {
+    return this.data.harvests.length;
+  }
+
+  getTotalOpenPositions(): number {
+    let n = 0;
+    for (const p of Object.values(this.data.positions)) {
+      if (p.status === 'open') n++;
+    }
+    return n;
   }
 
   /**
@@ -365,8 +477,12 @@ export class WalletService {
     return false;
   }
 
-  /** Aggregated per-user activity since `sinceMs`. Sorted by harvest volume desc. */
-  getLeaderboard(sinceMs: number): Array<{
+  /**
+   * Aggregated per-user activity since `sinceMs`. Sorted by harvest volume desc.
+   * Pass `lbPairFilter` to restrict to a set of pool addresses (e.g. all
+   * CRANK/* pools for `/leaderboard CRANK`).
+   */
+  getLeaderboard(sinceMs: number, lbPairFilter?: Set<string>): Array<{
     userId: string;
     vaultPda: string;
     lastActiveMs: number;
@@ -380,6 +496,7 @@ export class WalletService {
 
     for (const h of this.data.harvests) {
       if (h.created_at < sinceMs) continue;
+      if (lbPairFilter && !lbPairFilter.has(h.lb_pair)) continue;
       const e = ensure(h.vault_pda);
       e.count += 1;
       e.volume += BigInt(h.amount_out);
@@ -388,6 +505,7 @@ export class WalletService {
     }
     for (const p of Object.values(this.data.positions)) {
       if (p.status !== 'open') continue;
+      if (lbPairFilter && !lbPairFilter.has(p.lb_pair)) continue;
       const e = ensure(p.vault_pda);
       e.open += 1;
       if (p.created_at > e.lastMs) e.lastMs = p.created_at;

@@ -4,7 +4,7 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
-import { CRANK_MINT, TOKEN_2022_PROGRAM_ID } from '@crankbot/core-sdk';
+import { CRANK_MINT, TOKEN_2022_PROGRAM_ID, WalletAlreadyClaimedError } from '@crankbot/core-sdk';
 import type { BotContext } from '../index';
 
 /**
@@ -133,7 +133,19 @@ export async function handleStart(interaction: ChatInputCommandInteraction, ctx:
       .rpc();
 
     // On-chain succeeded — now save locally
-    ctx.walletService.registerUser(userId, ownerWallet);
+    try {
+      ctx.walletService.registerUser(userId, ownerWallet);
+    } catch (e: any) {
+      if (e instanceof WalletAlreadyClaimedError) {
+        await interaction.editReply({
+          content:
+            `That wallet is already bound to another account. ` +
+            `If you believe this is a mistake, ask an operator to unbind it.`,
+        });
+        return;
+      }
+      throw e;
+    }
 
     await ensureCrankAta(ctx, vaultPda);
 

@@ -76,8 +76,36 @@ export async function alertProcessDeath(reason: string): Promise<void> {
   await dispatch('ops', 'process_death', `**CRITICAL:** Bot process dying — ${reason.slice(0, 200)}. Check PM2 logs.`);
 }
 
-export async function alertEpochMiss(hoursSince: number): Promise<void> {
-  await dispatch('ops', 'epoch_miss', `**ALERT:** Epoch distribution overdue — last epoch was ${hoursSince.toFixed(1)}h ago.`);
+export async function alertEpochMiss(
+  tree: 'SOL' | 'BANK',
+  hoursSince: number,
+  eligible: string,
+): Promise<void> {
+  const age = Number.isFinite(hoursSince) ? `${hoursSince.toFixed(1)}h` : 'ever';
+  await dispatch(
+    'ops',
+    `epoch_miss_${tree.toLowerCase()}`,
+    `**ALERT:** ${tree} epoch overdue — ${eligible} eligible sitting undistributed (last epoch ${age} ago).`,
+  );
+}
+
+/**
+ * Fires when pre-publish reconciliation finds a wallet's local cumulative
+ * entitlement below its on-chain `claim_status.cumulative_claimed`. Indicates
+ * a wallet-DB rollback or progress-file drift — the tree was auto-bumped to
+ * max(local, onChain) so no user is locked out, but the drift needs
+ * investigation (see runbooks/droplet-recovery.md).
+ */
+export async function alertEntitlementDrift(
+  tree: 'SOL' | 'BANK',
+  bumpCount: number,
+  sample: string,
+): Promise<void> {
+  await dispatch(
+    'ops',
+    `entitlement_drift_${tree.toLowerCase()}`,
+    `**ALERT:** ${tree} epoch — ${bumpCount} wallet(s) had local entitlement < on-chain claimed. Auto-reconciled. Sample: ${sample.slice(0, 200)}`,
+  );
 }
 
 // ─── Feed channel (public) ────────────────────────────────────────────────
