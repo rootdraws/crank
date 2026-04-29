@@ -110,6 +110,7 @@ class HarvestBot {
   private connection: Connection;
   private provider: AnchorProvider;
   private coreProgram!: Program;
+  private feeDest!: PublicKey;
 
   // Modules
   private subscriber!: GeyserSubscriber;
@@ -292,13 +293,23 @@ class HarvestBot {
     const coreIdl = loadIdl('bin_farm');
     this.coreProgram = new Program(coreIdl, this.provider);
 
-    // Verify bot authorization
+    // Verify bot authorization + resolve fee_dest
     const [configPDA] = coreConfigPDA();
     const config = await this.coreProgram.account.config.fetch(configPDA);
     if (!config.bot.equals(botKeypair.publicKey)) {
       throw new Error(`Bot key mismatch. Config expects: ${config.bot.toBase58()}`);
     }
     logger.info('Bot authorized ✓');
+
+    // Resolve effective fee destination. config.fee_dest defaults to Pubkey::default(),
+    // which on-chain falls back to config.bot. The bot mirrors that fallback locally
+    // so harvest tx accounts match what the on-chain check expects. When admin retargets
+    // to the Hopper PDA via set_fee_dest, restart the bot to pick it up.
+    const DEFAULT_PUBKEY = new PublicKey('11111111111111111111111111111111');
+    this.feeDest = (config.feeDest && !config.feeDest.equals(DEFAULT_PUBKEY))
+      ? config.feeDest
+      : config.bot;
+    logger.info(`fee_dest: ${this.feeDest.toBase58()} (${config.feeDest && !config.feeDest.equals(DEFAULT_PUBKEY) ? 'configured' : 'fallback to config.bot'})`);
 
     // Check bot SOL balance
     const botBalance = await this.connection.getBalance(botKeypair.publicKey);
@@ -326,6 +337,7 @@ class HarvestBot {
       coreProgram: this.coreProgram,
       botKeypair,
       coreProgramId: CORE_PROGRAM_ID,
+      feeDest: this.feeDest,
     });
 
     this.keeper = new MonkeKeeper({

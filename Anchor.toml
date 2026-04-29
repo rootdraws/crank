@@ -8,9 +8,11 @@ skip-lint = false
 
 [programs.devnet]
 bin_farm = "8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"
+hopper = "2HqbBkZvEKQkLZ3hjFDCb4voogrMhdDMTAHZbKx8mtDF"
 
 [programs.mainnet]
 bin_farm = "8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia"
+hopper = "2HqbBkZvEKQkLZ3hjFDCb4voogrMhdDMTAHZbKx8mtDF"
 
 [registry]
 url = "https://api.apr.dev"

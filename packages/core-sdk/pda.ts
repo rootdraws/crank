@@ -8,6 +8,7 @@
 import { PublicKey } from '@solana/web3.js';
 import {
   BIN_FARM_PROGRAM_ID,
+  HOPPER_PROGRAM_ID,
   METEORA_DLMM_PROGRAM_ID,
 } from './constants';
 
@@ -67,6 +68,29 @@ export function getUserVaultPDA(owner: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [Buffer.from('user_vault'), owner.toBuffer()],
     BIN_FARM_PROGRAM_ID
+  );
+}
+
+// ─── Hopper PDAs ───────────────────────────────────────────────────────────
+
+export function getRoutingConfigPDA(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('routing_config')],
+    HOPPER_PROGRAM_ID
+  );
+}
+
+export function getHopperVaultPDA(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('hopper_vault')],
+    HOPPER_PROGRAM_ID
+  );
+}
+
+export function getTokenRoutePDA(mint: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('token_route'), mint.toBuffer()],
+    HOPPER_PROGRAM_ID
   );
 }
 

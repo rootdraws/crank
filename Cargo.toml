@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "programs/bin-farm",
+    "programs/hopper",
 ]
 resolver = "2"
 

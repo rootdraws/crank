@@ -77,6 +77,8 @@ interface ExecutorConfig {
   coreProgram: Program;
   botKeypair: Keypair;
   coreProgramId: PublicKey;
+  /** Effective fee destination — resolved at startup from Config.fee_dest (fallback: bot keypair). */
+  feeDest: PublicKey;
   maxConcurrent?: number;
   walletService?: any;
 }
@@ -103,6 +105,7 @@ export class HarvestExecutor extends EventEmitter {
   private coreProgram: Program;
   private botKeypair: Keypair;
   private coreProgramId: PublicKey;
+  private feeDest: PublicKey;
   private maxConcurrent: number;
   private walletService: any;
 
@@ -126,6 +129,7 @@ export class HarvestExecutor extends EventEmitter {
     this.coreProgram = config.coreProgram;
     this.botKeypair = config.botKeypair;
     this.coreProgramId = config.coreProgramId;
+    this.feeDest = config.feeDest;
     this.maxConcurrent = config.maxConcurrent ?? 5;
     this.walletService = config.walletService ?? null;
 
@@ -402,7 +406,7 @@ export class HarvestExecutor extends EventEmitter {
     const [configPDA] = coreConfigPDA(this.coreProgramId);
     const [vaultPda] = vaultPDA(job.meteoraPosition, this.coreProgramId);
 
-    const feeDest = this.botKeypair.publicKey;
+    const feeDest = this.feeDest;
 
     // Build Meteora CPI accounts first to resolve token programs,
     // then derive ATAs with the correct program ID (critical for Token-2022).
@@ -599,7 +603,7 @@ export class HarvestExecutor extends EventEmitter {
     const [configPDA] = coreConfigPDA(this.coreProgramId);
     const [vaultPda] = vaultPDA(job.meteoraPosition, this.coreProgramId);
 
-    const feeDest = this.botKeypair.publicKey;
+    const feeDest = this.feeDest;
 
     const allBinIds = meteoraPos.positionData.positionBinData.map((b: any) => b.binId);
     const meteora = buildMeteoraCPIAccounts(dlmm, meteoraPos, allBinIds, poolInfo);

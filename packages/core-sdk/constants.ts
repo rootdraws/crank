@@ -10,6 +10,7 @@ import { PublicKey } from '@solana/web3.js';
 // ─── Program IDs ───────────────────────────────────────────────────────────
 
 export const BIN_FARM_PROGRAM_ID     = new PublicKey('8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia');
+export const HOPPER_PROGRAM_ID       = new PublicKey('2HqbBkZvEKQkLZ3hjFDCb4voogrMhdDMTAHZbKx8mtDF');
 export const METEORA_DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 
 // ─── Token Programs ────────────────────────────────────────────────────────

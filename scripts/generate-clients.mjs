@@ -5,6 +5,7 @@ import { readFileSync } from "fs";
 
 const idls = [
   { name: "bin_farm", path: "bot/idl/bin_farm.json", dir: "packages/core-sdk/generated/bin-farm" },
+  { name: "hopper",   path: "bot/idl/hopper.json",   dir: "packages/core-sdk/generated/hopper" },
 ];
 
 for (const { name, path, dir } of idls) {
