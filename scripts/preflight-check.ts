@@ -23,8 +23,7 @@ const BIN_FARM = new PublicKey("8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia");
 const CRANK_MINT = new PublicKey("Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump");
 
 // ── PDAs (derived, not hardcoded — derivation is the source of truth) ──
-const [coreConfig] = PublicKey.findProgramAddressSync([Buffer.from("config")],          BIN_FARM);
-const [roverAuth]  = PublicKey.findProgramAddressSync([Buffer.from("rover_authority")], BIN_FARM);
+const [coreConfig] = PublicKey.findProgramAddressSync([Buffer.from("config")], BIN_FARM);
 
 // ── Check harness ───────────────────────────────────────────────────
 let fails = 0;
@@ -56,14 +55,10 @@ async function main(): Promise<void> {
   await checkProgram("bin_farm", BIN_FARM);
 
   console.log("\nPDAs:");
-  await checkAccount("bin_farm Config",         coreConfig);
-  await checkAccount("bin_farm RoverAuthority", roverAuth);
+  await checkAccount("bin_farm Config", coreConfig);
 
   console.log("\nMints:");
   await checkAccount("$CRANK mint", CRANK_MINT);
-
-  console.log("\nLive balances (sanity):");
-  await checkSolBalance("rover_authority", roverAuth);
 
   if (fails === 0) {
     console.log("\n=== ALL CHECKS PASSED ===\n");

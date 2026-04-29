@@ -6,7 +6,7 @@ import {
   getUserCloseInstructionAsync,
 } from '@crankbot/core-sdk/generated/bin-farm/index.js';
 import {
-  getConfigPDA, getPositionPDA, getVaultPDA, getRoverAuthorityPDA,
+  getConfigPDA, getPositionPDA, getVaultPDA,
   resolveMeteoraCPIAccounts, parseLbPairFull, deriveATA,
   buildSetupTx, buildPriorityFeeIxs, kitIxToWeb3, asSigner, confirmAndCheck,
   signAndSend, signAndSendLegacy, binToPrice, fetchDexScreenerPrice,
@@ -273,23 +273,24 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
   const [configPDA] = getConfigPDA();
   const [positionPDA] = getPositionPDA(meteoraPosition);
   const [posVaultPDA] = getVaultPDA(meteoraPosition);
-  const [roverAuth] = getRoverAuthorityPDA();
+  // Post-cleanup: fee_dest = bot keypair (Config.fee_dest falls back to Config.bot when default)
+  const feeDest = bot.publicKey;
 
   const vaultTokenX = deriveATA(cpi.tokenXMint, posVaultPDA, cpi.tokenXProgramId, true);
   const vaultTokenY = deriveATA(cpi.tokenYMint, posVaultPDA, cpi.tokenYProgramId, true);
   // user_token_x/y = vault PDA's ATAs (tokens go to vault, user withdraws later)
   const userTokenX = deriveATA(cpi.tokenXMint, vaultPda, cpi.tokenXProgramId, true);
   const userTokenY = deriveATA(cpi.tokenYMint, vaultPda, cpi.tokenYProgramId, true);
-  const roverFeeTokenX = deriveATA(cpi.tokenXMint, roverAuth, cpi.tokenXProgramId, true);
-  const roverFeeTokenY = deriveATA(cpi.tokenYMint, roverAuth, cpi.tokenYProgramId, true);
+  const feeDestTokenX = deriveATA(cpi.tokenXMint, feeDest, cpi.tokenXProgramId, true);
+  const feeDestTokenY = deriveATA(cpi.tokenYMint, feeDest, cpi.tokenYProgramId, true);
 
   const setupTx = await buildSetupTx(
     ctx.connection, bot.publicKey,
     [
       { ata: userTokenX, owner: vaultPda, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
       { ata: userTokenY, owner: vaultPda, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
-      { ata: roverFeeTokenX, owner: roverAuth, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
-      { ata: roverFeeTokenY, owner: roverAuth, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+      { ata: feeDestTokenX, owner: feeDest, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+      { ata: feeDestTokenY, owner: feeDest, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
     ]
   );
 
@@ -321,9 +322,9 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
       vaultTokenY,
       userTokenX,
       userTokenY,
-      roverAuthority: roverAuth,
-      roverFeeTokenX,
-      roverFeeTokenY,
+      feeDest,
+      feeDestTokenX,
+      feeDestTokenY,
       tokenXProgram: cpi.tokenXProgramId,
       tokenYProgram: cpi.tokenYProgramId,
       memoProgram: SPL_MEMO_PROGRAM_ID,

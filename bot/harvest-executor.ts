@@ -96,10 +96,6 @@ function vaultPDA(meteoraPosition: PublicKey, coreProgramId: PublicKey): [Public
   );
 }
 
-function roverAuthorityPDA(coreProgramId: PublicKey): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync([Buffer.from('rover_authority')], coreProgramId);
-}
-
 // ═══ EXECUTOR ═══
 
 export class HarvestExecutor extends EventEmitter {
@@ -406,7 +402,7 @@ export class HarvestExecutor extends EventEmitter {
     const [configPDA] = coreConfigPDA(this.coreProgramId);
     const [vaultPda] = vaultPDA(job.meteoraPosition, this.coreProgramId);
 
-    const [roverAuthority] = roverAuthorityPDA(this.coreProgramId);
+    const feeDest = this.botKeypair.publicKey;
 
     // Build Meteora CPI accounts first to resolve token programs,
     // then derive ATAs with the correct program ID (critical for Token-2022).
@@ -417,9 +413,9 @@ export class HarvestExecutor extends EventEmitter {
     const vaultTokenY    = getAssociatedTokenAddressSync(meteora.tokenYMint, vaultPda, true, meteora.tokenYProgram);
     const ownerTokenX    = getAssociatedTokenAddressSync(meteora.tokenXMint, job.owner, true, meteora.tokenXProgram);
     const ownerTokenY    = getAssociatedTokenAddressSync(meteora.tokenYMint, job.owner, true, meteora.tokenYProgram);
-    // All fees → rover_authority ATAs (sweep_rover splits 40/40/20: holders + traders + bot)
-    const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
-    const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
+    // Fees → fee_dest ATAs (initial: bot keypair; retargeted to Hopper PDA later via set_fee_dest)
+    const feeDestTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, feeDest, true, meteora.tokenXProgram);
+    const feeDestTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, feeDest, true, meteora.tokenYProgram);
 
     // PDA vault architecture: bot is sole signer. Gas reimbursed on-chain from user vault.
     // job.owner = UserVault PDA (position.user_vault on-chain).
@@ -435,11 +431,11 @@ export class HarvestExecutor extends EventEmitter {
     const createOwnerAtaY = createAssociatedTokenAccountIdempotentInstruction(
       payer, ownerTokenY, job.owner, meteora.tokenYMint, meteora.tokenYProgram,
     );
-    const createRoverAtaX = createAssociatedTokenAccountIdempotentInstruction(
-      payer, roverFeeTokenX, roverAuthority, meteora.tokenXMint, meteora.tokenXProgram,
+    const createFeeDestAtaX = createAssociatedTokenAccountIdempotentInstruction(
+      payer, feeDestTokenX, feeDest, meteora.tokenXMint, meteora.tokenXProgram,
     );
-    const createRoverAtaY = createAssociatedTokenAccountIdempotentInstruction(
-      payer, roverFeeTokenY, roverAuthority, meteora.tokenYMint, meteora.tokenYProgram,
+    const createFeeDestAtaY = createAssociatedTokenAccountIdempotentInstruction(
+      payer, feeDestTokenY, feeDest, meteora.tokenYMint, meteora.tokenYProgram,
     );
 
     // Priority fees to survive Solana congestion
@@ -471,9 +467,9 @@ export class HarvestExecutor extends EventEmitter {
             vaultTokenY,
             ownerTokenX,
             ownerTokenY,
-            roverAuthority,
-            roverFeeTokenX,
-            roverFeeTokenY,
+            feeDest,
+            feeDestTokenX,
+            feeDestTokenY,
             tokenXProgram:      meteora.tokenXProgram,
             tokenYProgram:      meteora.tokenYProgram,
             memoProgram:        meteora.memoProgram,
@@ -481,7 +477,7 @@ export class HarvestExecutor extends EventEmitter {
           .instruction();
         fixBitmapWritable(ix, meteora.binArrayBitmapExt);
         const tx = new Transaction().add(
-          ...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY, ix
+          ...priorityIxs, createOwnerAtaX, createOwnerAtaY, createFeeDestAtaX, createFeeDestAtaY, ix
         );
         tx.feePayer = this.botKeypair.publicKey;
         const bh = await this.connection.getLatestBlockhash();
@@ -603,7 +599,7 @@ export class HarvestExecutor extends EventEmitter {
     const [configPDA] = coreConfigPDA(this.coreProgramId);
     const [vaultPda] = vaultPDA(job.meteoraPosition, this.coreProgramId);
 
-    const [roverAuthority] = roverAuthorityPDA(this.coreProgramId);
+    const feeDest = this.botKeypair.publicKey;
 
     const allBinIds = meteoraPos.positionData.positionBinData.map((b: any) => b.binId);
     const meteora = buildMeteoraCPIAccounts(dlmm, meteoraPos, allBinIds, poolInfo);
@@ -612,9 +608,9 @@ export class HarvestExecutor extends EventEmitter {
     const vaultTokenY    = getAssociatedTokenAddressSync(meteora.tokenYMint, vaultPda, true, meteora.tokenYProgram);
     const ownerTokenX    = getAssociatedTokenAddressSync(meteora.tokenXMint, job.owner, true, meteora.tokenXProgram);
     const ownerTokenY    = getAssociatedTokenAddressSync(meteora.tokenYMint, job.owner, true, meteora.tokenYProgram);
-    // All fees → rover_authority ATAs (sweep_rover splits 40/40/20: holders + traders + bot)
-    const roverFeeTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, roverAuthority, true, meteora.tokenXProgram);
-    const roverFeeTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, roverAuthority, true, meteora.tokenYProgram);
+    // Fees → fee_dest ATAs (initial: bot keypair; retargeted to Hopper PDA later via set_fee_dest)
+    const feeDestTokenX = getAssociatedTokenAddressSync(meteora.tokenXMint, feeDest, true, meteora.tokenXProgram);
+    const feeDestTokenY = getAssociatedTokenAddressSync(meteora.tokenYMint, feeDest, true, meteora.tokenYProgram);
 
     // PDA vault architecture: bot is sole signer.
     const userId = this.walletService?.getUserIdForVault(job.owner.toBase58());
@@ -628,11 +624,11 @@ export class HarvestExecutor extends EventEmitter {
     const createOwnerAtaY = createAssociatedTokenAccountIdempotentInstruction(
       payer, ownerTokenY, job.owner, meteora.tokenYMint, meteora.tokenYProgram,
     );
-    const createRoverAtaX = createAssociatedTokenAccountIdempotentInstruction(
-      payer, roverFeeTokenX, roverAuthority, meteora.tokenXMint, meteora.tokenXProgram,
+    const createFeeDestAtaX = createAssociatedTokenAccountIdempotentInstruction(
+      payer, feeDestTokenX, feeDest, meteora.tokenXMint, meteora.tokenXProgram,
     );
-    const createRoverAtaY = createAssociatedTokenAccountIdempotentInstruction(
-      payer, roverFeeTokenY, roverAuthority, meteora.tokenYMint, meteora.tokenYProgram,
+    const createFeeDestAtaY = createAssociatedTokenAccountIdempotentInstruction(
+      payer, feeDestTokenY, feeDest, meteora.tokenYMint, meteora.tokenYProgram,
     );
 
     const priorityIxs = await buildPriorityFeeIxs(this.connection);
@@ -662,9 +658,9 @@ export class HarvestExecutor extends EventEmitter {
             vaultTokenY,
             ownerTokenX,
             ownerTokenY,
-            roverAuthority,
-            roverFeeTokenX,
-            roverFeeTokenY,
+            feeDest,
+            feeDestTokenX,
+            feeDestTokenY,
             tokenXProgram:      meteora.tokenXProgram,
             tokenYProgram:      meteora.tokenYProgram,
             memoProgram:        meteora.memoProgram,
@@ -673,7 +669,7 @@ export class HarvestExecutor extends EventEmitter {
           .instruction();
         fixBitmapWritable(ix, meteora.binArrayBitmapExt);
         const tx = new Transaction().add(
-          ...priorityIxs, createOwnerAtaX, createOwnerAtaY, createRoverAtaX, createRoverAtaY, ix
+          ...priorityIxs, createOwnerAtaX, createOwnerAtaY, createFeeDestAtaX, createFeeDestAtaY, ix
         );
         tx.feePayer = this.botKeypair.publicKey;
         const bh = await this.connection.getLatestBlockhash();

@@ -8,7 +8,7 @@
 import { Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js';
 import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
-import { getConfigPDA, getPositionPDA, getVaultPDA, getRoverAuthorityPDA } from '../packages/core-sdk/pda';
+import { getConfigPDA, getPositionPDA, getVaultPDA } from '../packages/core-sdk/pda';
 import { resolveMeteoraCPIAccounts, deriveATA } from '../packages/core-sdk/meteora';
 import { buildSetupTx, buildPriorityFeeIxs } from '../packages/core-sdk/transactions';
 import { signAndSendLegacy } from '../packages/core-sdk/signer';
@@ -60,21 +60,22 @@ async function main() {
       const meteoraPosition = new PublicKey(pos.meteora_position);
       const [positionPDA] = getPositionPDA(meteoraPosition);
       const [posVaultPDA] = getVaultPDA(meteoraPosition);
-      const [roverAuth] = getRoverAuthorityPDA();
+      // Post-cleanup: fee_dest = bot keypair (Config.fee_dest falls back to Config.bot when default)
+      const feeDest = botKeypair.publicKey;
 
       const vaultTokenX = deriveATA(cpi.tokenXMint, posVaultPDA, cpi.tokenXProgramId, true);
       const vaultTokenY = deriveATA(cpi.tokenYMint, posVaultPDA, cpi.tokenYProgramId, true);
       // user_token_x/y = vault PDA's ATAs (tokens go to vault)
       const userTokenX = deriveATA(cpi.tokenXMint, vaultPda, cpi.tokenXProgramId, true);
       const userTokenY = deriveATA(cpi.tokenYMint, vaultPda, cpi.tokenYProgramId, true);
-      const roverFeeTokenX = deriveATA(cpi.tokenXMint, roverAuth, cpi.tokenXProgramId, true);
-      const roverFeeTokenY = deriveATA(cpi.tokenYMint, roverAuth, cpi.tokenYProgramId, true);
+      const feeDestTokenX = deriveATA(cpi.tokenXMint, feeDest, cpi.tokenXProgramId, true);
+      const feeDestTokenY = deriveATA(cpi.tokenYMint, feeDest, cpi.tokenYProgramId, true);
 
       const setupTx = await buildSetupTx(connection, botKeypair.publicKey, [
         { ata: userTokenX, owner: vaultPda, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
         { ata: userTokenY, owner: vaultPda, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
-        { ata: roverFeeTokenX, owner: roverAuth, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
-        { ata: roverFeeTokenY, owner: roverAuth, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+        { ata: feeDestTokenX, owner: feeDest, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+        { ata: feeDestTokenY, owner: feeDest, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
       ]);
       if (setupTx) { console.log('  Setup ATAs...'); await signAndSendLegacy(setupTx, botKeypair, connection); }
 
@@ -101,9 +102,9 @@ async function main() {
           vaultTokenY,
           userTokenX,
           userTokenY,
-          roverAuthority: roverAuth,
-          roverFeeTokenX,
-          roverFeeTokenY,
+          feeDest,
+          feeDestTokenX,
+          feeDestTokenY,
           tokenXProgram: cpi.tokenXProgramId,
           tokenYProgram: cpi.tokenYProgramId,
           memoProgram: SPL_MEMO_PROGRAM_ID,

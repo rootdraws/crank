@@ -4,14 +4,14 @@
  * crank.money orchestrator. Wires together:
  *   - GeyserSubscriber: gRPC stream for real-time DLMM position monitoring
  *   - HarvestExecutor: job queue for harvest/close transactions
- *   - MonkeKeeper: daily orchestration (unwrap WSOL → sweep → fee rovers → cleanup)
+ *   - MonkeKeeper: daily orchestration (Discord role prune, supply refresh, stats post)
  *
  * The bot is a stateless operator — never custodies user funds. User funds live
  * in PDA-derived UserVault accounts, withdrawable only to the registered owner.
  *
- * Post-2026-04-28 pivot: BANK distribution and Merkle epoch flows are retired.
- * Curve-driven sweep_rover and open_fee_rovers remain on-chain pending the
- * follow-up bin-farm cleanup upgrade.
+ * Post-2026-04-29 bin-farm cleanup: BANK distribution, Merkle epochs, and
+ * rover/curve machinery are all retired. Protocol fees from harvest_bins flow
+ * directly to Config.fee_dest (initial: bot keypair; later: Hopper PDA).
  */
 
 import {
@@ -465,18 +465,6 @@ class HarvestBot {
       }));
       logger.info(`[relay] WebSocket relay on :${HEALTH_PORT}/ws, REST on :${HEALTH_PORT}/api/*`);
     }
-
-    // Wire keeper rover TVL computation to relay
-    this.keeper.onRoverTvlComputed = (entries) => {
-      this.relay?.updateRoverTvl(entries.map(e => ({
-        pool: e.pool,
-        tokenXSymbol: '',
-        tokenYSymbol: '',
-        tvl: e.tvl,
-        positionCount: e.positionCount,
-        status: e.status as any,
-      })));
-    };
 
     logger.info(`keeper: ${KEEPER_ACTIVE_INTERVAL_MS / 1000}s (idle) / ${KEEPER_PROCESSING_INTERVAL_MS / 1000}s (processing)`);
     logger.info(`safety: ${SAFETY_POLL_INTERVAL_MS / 1000}s fallback poll`);

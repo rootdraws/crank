@@ -5,7 +5,7 @@
  */
 import { Connection, Keypair, PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
 import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor';
-import { getConfigPDA, getPositionPDA, getVaultPDA, getRoverAuthorityPDA } from '../packages/core-sdk/pda';
+import { getConfigPDA, getPositionPDA, getVaultPDA } from '../packages/core-sdk/pda';
 import { resolveMeteoraCPIAccounts, deriveATA } from '../packages/core-sdk/meteora';
 import { WalletService } from '../packages/core-sdk/wallet-service';
 import dotenv from 'dotenv';
@@ -50,13 +50,14 @@ async function main() {
       const met = new PublicKey(pos.meteora_position);
       const [posPDA] = getPositionPDA(met);
       const [posVaultPDA] = getVaultPDA(met);
-      const [roverAuth] = getRoverAuthorityPDA();
+      // Post-cleanup: fee_dest = bot keypair (Config.fee_dest falls back to Config.bot when default)
+      const feeDest = botKeypair.publicKey;
       const vTx = deriveATA(cpi.tokenXMint, posVaultPDA, cpi.tokenXProgramId, true);
       const vTy = deriveATA(cpi.tokenYMint, posVaultPDA, cpi.tokenYProgramId, true);
       const uTx = deriveATA(cpi.tokenXMint, vaultPda, cpi.tokenXProgramId, true);
       const uTy = deriveATA(cpi.tokenYMint, vaultPda, cpi.tokenYProgramId, true);
-      const rFx = deriveATA(cpi.tokenXMint, roverAuth, cpi.tokenXProgramId, true);
-      const rFy = deriveATA(cpi.tokenYMint, roverAuth, cpi.tokenYProgramId, true);
+      const feeDestTokenX = deriveATA(cpi.tokenXMint, feeDest, cpi.tokenXProgramId, true);
+      const feeDestTokenY = deriveATA(cpi.tokenYMint, feeDest, cpi.tokenYProgramId, true);
 
       // Build user_close instruction via Anchor methods (bot as caller)
       const ix = await coreProgram.methods
@@ -82,9 +83,9 @@ async function main() {
           vaultTokenY: vTy,
           userTokenX: uTx,
           userTokenY: uTy,
-          roverAuthority: roverAuth,
-          roverFeeTokenX: rFx,
-          roverFeeTokenY: rFy,
+          feeDest,
+          feeDestTokenX,
+          feeDestTokenY,
           tokenXProgram: cpi.tokenXProgramId,
           tokenYProgram: cpi.tokenYProgramId,
           memoProgram: SPL_MEMO,

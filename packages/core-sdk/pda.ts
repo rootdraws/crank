@@ -70,20 +70,6 @@ export function getUserVaultPDA(owner: PublicKey): [PublicKey, number] {
   );
 }
 
-export function getRoverAuthorityPDA(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('rover_authority')],
-    BIN_FARM_PROGRAM_ID
-  );
-}
-
-export function getBurnSolVaultPDA(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('burn_sol_vault')],
-    BIN_FARM_PROGRAM_ID
-  );
-}
-
 // ─── Meteora DLMM PDAs ─────────────────────────────────────────────────────
 
 /**

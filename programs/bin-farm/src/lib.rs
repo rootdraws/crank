@@ -35,91 +35,11 @@ pub const MAX_GAS_LAMPORTS: u64 = 10_000_000;
 /// 0.2 leaves headroom while bounding damage if bot key is compromised.
 pub const MAX_RENT_DEDUCT_LAMPORTS: u64 = 200_000_000;
 
-/// Minimum token deposit for rover positions (anti-griefing)
-pub const MIN_ROVER_DEPOSIT: u64 = 10_000;
-
 /// Minimum deposit amount for user positions (anti-griefing, prevents dust positions)
 pub const MIN_POSITION_AMOUNT: u64 = 10_000;
 
-/// Minimum bin_step for rover positions. Prevents instant liquidation
-/// on low bin_step pools (bin_step=1 gives only 0.7% range with 2x formula).
-/// bin_step=20 gives ~346 bins at ~0.2% spacing, covering ~100% above current price.
-pub const MIN_ROVER_BIN_STEP: u16 = 20;
-
 pub const TOKEN_2022_PROGRAM_ID: Pubkey =
     solana_program::pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
-
-pub const BANK_MINT_PROGRAM_ID: Pubkey =
-    solana_program::pubkey!("FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk");
-
-/// CRANK SPL mint. Used by sweep_rover to read current supply for the burn curve.
-pub const CRANK_MINT: Pubkey =
-    solana_program::pubkey!("Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump");
-
-/// BANK SPL mint decimals. Hardcoded for transfer_checked in rover_burn_and_mint
-/// (bank_mint passed as AccountInfo for CPI compat — decimals not exposed).
-pub const BANK_MINT_DECIMALS: u8 = 6;
-
-/// Burn curve breakpoint: while remaining_supply >= 75% of initial, burn_ratio = 100%.
-/// Below 75%, burn_ratio decays linearly to 0 at supply = 0.
-pub const BURN_CURVE_BREAKPOINT_PPB: u128 = 750_000_000; // 0.75 in parts-per-billion
-
-/// Maximum protocol skim — 20% of fees at endgame (supply = 0).
-pub const MAX_PROTOCOL_SKIM_PPB: u128 = 200_000_000; // 0.20 in parts-per-billion
-
-pub const PPB_SCALE: u128 = 1_000_000_000;
-
-/// Pure curve math. Returns `(burn_ratio_ppb, protocol_skim_ppb)` given current
-/// CRANK supply, initial supply, and the kill switch.
-///
-/// burn_ratio:    1.0 while remaining ≥ 0.75; linearly decays to 0 at remaining = 0
-/// protocol_skim: 0.20 × (1 − burn_ratio)
-///
-/// All math in u128 ppb (parts per billion). Safe across realistic supply ranges
-/// (CRANK total is < 2B with 6 decimals = 2e15 base units, fits in u64).
-pub fn compute_curve(
-    current_supply: u64,
-    initial_supply: u64,
-    burn_enabled: bool,
-) -> (u128, u128) {
-    if !burn_enabled || initial_supply == 0 {
-        // Kill switch: no burn, max protocol skim
-        return (0, MAX_PROTOCOL_SKIM_PPB);
-    }
-    let current = current_supply as u128;
-    let initial = initial_supply as u128;
-    // Clamp current to initial (post-init mints would otherwise push remaining > 1)
-    let current = if current > initial { initial } else { current };
-    let remaining_ppb = current
-        .saturating_mul(PPB_SCALE)
-        .checked_div(initial)
-        .unwrap_or(0);
-    let burn_ratio_ppb = if remaining_ppb >= BURN_CURVE_BREAKPOINT_PPB {
-        PPB_SCALE
-    } else {
-        // Linear decay: burn_ratio = remaining / 0.75
-        remaining_ppb
-            .saturating_mul(PPB_SCALE)
-            .checked_div(BURN_CURVE_BREAKPOINT_PPB)
-            .unwrap_or(0)
-    };
-    let inv_burn_ppb = PPB_SCALE.saturating_sub(burn_ratio_ppb);
-    let protocol_skim_ppb = inv_burn_ppb
-        .saturating_mul(MAX_PROTOCOL_SKIM_PPB)
-        .checked_div(PPB_SCALE)
-        .unwrap_or(0);
-    (burn_ratio_ppb, protocol_skim_ppb)
-}
-
-pub const GAUGE_VOTER_PROGRAM_ID: Pubkey =
-    solana_program::pubkey!("DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA");
-
-/// Pool weight allocation for gauge voting CPI
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct PoolAllocation {
-    pub lb_pair: Pubkey,
-    pub weight_bps: u16,
-}
 
 #[program]
 pub mod bin_farm {
@@ -153,7 +73,8 @@ pub mod bin_farm {
         config.last_bot_close_slot = 0;
         config.last_bot_sweep_slot = 0;
         config.gas_lamports = 0;
-        config._reserved = [0u8; 88];
+        config.fee_dest = Pubkey::default(); // falls back to `bot` until set via set_fee_dest
+        config._reserved = [0u8; 56];
 
         msg!("crank.money initialized | bot={} fee={}bps", bot, fee_bps);
         Ok(())
@@ -410,6 +331,17 @@ pub mod bin_farm {
         require!(!bin_ids.is_empty(), CoreError::NoBinsProvided);
         require!(bin_ids.len() <= 70, CoreError::TooManyBins);
 
+        // Validate fee destination matches Config.fee_dest (or Config.bot if unset).
+        let effective_fee_dest = if ctx.accounts.config.fee_dest == Pubkey::default() {
+            ctx.accounts.config.bot
+        } else {
+            ctx.accounts.config.fee_dest
+        };
+        require!(
+            ctx.accounts.fee_dest.key() == effective_fee_dest,
+            CoreError::InvalidFeeDest
+        );
+
         let x_decimals = read_mint_decimals(&ctx.accounts.token_x_mint)?;
         let y_decimals = read_mint_decimals(&ctx.accounts.token_y_mint)?;
 
@@ -553,8 +485,8 @@ pub mod bin_farm {
             // Prevent duplicate mutable account exploitation — keeper ATA
             // must not be the same as any fee destination or owner token account
             require!(
-                keeper_ata_info.key() != ctx.accounts.rover_fee_token_y.key()
-                    && keeper_ata_info.key() != ctx.accounts.rover_fee_token_x.key()
+                keeper_ata_info.key() != ctx.accounts.fee_dest_token_y.key()
+                    && keeper_ata_info.key() != ctx.accounts.fee_dest_token_x.key()
                     && keeper_ata_info.key() != ctx.accounts.owner_token_x.key()
                     && keeper_ata_info.key() != ctx.accounts.owner_token_y.key(),
                 CoreError::MissingKeeperAta
@@ -612,8 +544,8 @@ pub mod bin_farm {
         }
 
         // Fee routing: all fees → rover_authority ATAs (sweep_rover splits 40/40/20: holders + traders + bot)
-        //   TOKEN fees (Buy side) → rover_fee_token_x for DLMM recycling
-        //   SOL fees (Sell side)  → rover_fee_token_y (WSOL, unwrapped later via close_rover_token_account)
+        //   TOKEN fees (Buy side) → fee_dest_token_x for DLMM recycling
+        //   SOL fees (Sell side)  → fee_dest_token_y (WSOL, unwrapped later via close_rover_token_account)
         if x_to_protocol > 0 {
             memo_cpi(&ctx.accounts.memo_program, &ctx.accounts.vault.to_account_info(), signer)?;
             transfer_checked(
@@ -622,7 +554,7 @@ pub mod bin_farm {
                     TransferChecked {
                         from: ctx.accounts.vault_token_x.to_account_info(),
                         mint: ctx.accounts.token_x_mint.to_account_info(),
-                        to: ctx.accounts.rover_fee_token_x.to_account_info(),
+                        to: ctx.accounts.fee_dest_token_x.to_account_info(),
                         authority: ctx.accounts.vault.to_account_info(),
                     },
                     signer,
@@ -639,7 +571,7 @@ pub mod bin_farm {
                     TransferChecked {
                         from: ctx.accounts.vault_token_y.to_account_info(),
                         mint: ctx.accounts.token_y_mint.to_account_info(),
-                        to: ctx.accounts.rover_fee_token_y.to_account_info(),
+                        to: ctx.accounts.fee_dest_token_y.to_account_info(),
                         authority: ctx.accounts.vault.to_account_info(),
                     },
                     signer,
@@ -756,6 +688,17 @@ pub mod bin_farm {
             require!(slots_since > ctx.accounts.config.priority_slots, CoreError::BotNotStale);
         }
 
+        // Validate fee destination matches Config.fee_dest (or Config.bot if unset).
+        let effective_fee_dest = if ctx.accounts.config.fee_dest == Pubkey::default() {
+            ctx.accounts.config.bot
+        } else {
+            ctx.accounts.config.fee_dest
+        };
+        require!(
+            ctx.accounts.fee_dest.key() == effective_fee_dest,
+            CoreError::InvalidFeeDest
+        );
+
         let side = ctx.accounts.position.side;
         let min_bin_id = ctx.accounts.position.min_bin_id;
         let max_bin_id = ctx.accounts.position.max_bin_id;
@@ -854,8 +797,8 @@ pub mod bin_farm {
             &mut ctx.accounts.vault_token_y,
             &ctx.accounts.owner_token_x.to_account_info(),
             &ctx.accounts.owner_token_y.to_account_info(),
-            &ctx.accounts.rover_fee_token_y.to_account_info(),
-            &ctx.accounts.rover_fee_token_x.to_account_info(),
+            &ctx.accounts.fee_dest_token_y.to_account_info(),
+            &ctx.accounts.fee_dest_token_x.to_account_info(),
             &ctx.accounts.vault.to_account_info(),
             &ctx.accounts.user_vault.to_account_info(),
             &ctx.accounts.token_x_program.to_account_info(),
@@ -899,6 +842,18 @@ pub mod bin_farm {
         let is_authorized = caller == ctx.accounts.config.bot
             || caller == ctx.accounts.user_vault.owner;
         require!(is_authorized, CoreError::UnauthorizedCaller);
+
+        // Validate fee destination matches Config.fee_dest (or Config.bot if unset).
+        let effective_fee_dest = if ctx.accounts.config.fee_dest == Pubkey::default() {
+            ctx.accounts.config.bot
+        } else {
+            ctx.accounts.config.fee_dest
+        };
+        require!(
+            ctx.accounts.fee_dest.key() == effective_fee_dest,
+            CoreError::InvalidFeeDest
+        );
+
         let side = ctx.accounts.position.side;
         let min_bin_id = ctx.accounts.position.min_bin_id;
         let max_bin_id = ctx.accounts.position.max_bin_id;
@@ -993,8 +948,8 @@ pub mod bin_farm {
             &mut ctx.accounts.vault_token_y,
             &ctx.accounts.user_token_x.to_account_info(),
             &ctx.accounts.user_token_y.to_account_info(),
-            &ctx.accounts.rover_fee_token_y.to_account_info(),
-            &ctx.accounts.rover_fee_token_x.to_account_info(),
+            &ctx.accounts.fee_dest_token_y.to_account_info(),
+            &ctx.accounts.fee_dest_token_x.to_account_info(),
             &ctx.accounts.vault.to_account_info(),
             &ctx.accounts.user_vault.to_account_info(),
             &ctx.accounts.token_x_program.to_account_info(),
@@ -1184,6 +1139,20 @@ pub mod bin_farm {
         Ok(())
     }
 
+    /// Admin sets the destination wallet for harvest_bins protocol fees.
+    /// Pass `Pubkey::default()` to fall back to `Config.bot` (legacy behavior).
+    /// Will be retargeted to the Hopper program PDA once Hopper ships.
+    pub fn set_fee_dest(ctx: Context<AdminOnly>, new_fee_dest: Pubkey) -> Result<()> {
+        ctx.accounts.config.fee_dest = new_fee_dest;
+        emit!(AdminConfigEvent {
+            field: "fee_dest".into(),
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        msg!("fee_dest set to {}", new_fee_dest);
+        Ok(())
+    }
+
     pub fn update_keeper_tip_bps(ctx: Context<AdminOnly>, new_bps: u16) -> Result<()> {
         require!(new_bps <= 5000, CoreError::FeeTooHigh); // cap at 50%
         ctx.accounts.config.keeper_tip_bps = new_bps;
@@ -1319,914 +1288,6 @@ pub mod bin_farm {
         Ok(())
     }
 
-    // Timelocked propose/apply pattern for trader_dest.
-    // (Reuses the legacy pending_revenue_dest / revenue_dest_change_at slots,
-    // renamed to pending_trader_dest / trader_dest_change_at after the
-    // curve-driven sweep made revenue_dest a dead field.)
-    pub fn propose_trader_dest(
-        ctx: Context<UpdateRoverDistPool>,
-        new_trader_dest: Pubkey,
-    ) -> Result<()> {
-        require!(new_trader_dest != Pubkey::default(), CoreError::InvalidDistPool);
-        let rover = &mut ctx.accounts.rover_authority;
-        rover.pending_trader_dest = new_trader_dest;
-        rover.trader_dest_change_at = Clock::get()?.unix_timestamp
-            .checked_add(86_400).ok_or(CoreError::Overflow)?;
-        msg!("Trader dest change proposed: {}, effective at {}", new_trader_dest, rover.trader_dest_change_at);
-        emit!(AdminConfigEvent {
-            field: "trader_dest".into(),
-            authority: ctx.accounts.authority.key(),
-            timestamp: Clock::get()?.unix_timestamp,
-        });
-        Ok(())
-    }
-
-    /// Apply a previously proposed trader_dest change. Permissionless after 24hr.
-    pub fn apply_trader_dest(ctx: Context<ApplyTraderDest>) -> Result<()> {
-        let rover = &mut ctx.accounts.rover_authority;
-        require!(rover.trader_dest_change_at > 0, CoreError::NoPendingFeeChange);
-        require!(
-            Clock::get()?.unix_timestamp >= rover.trader_dest_change_at,
-            CoreError::FeeTimelockNotExpired
-        );
-        rover.trader_dest = rover.pending_trader_dest;
-        rover.pending_trader_dest = Pubkey::default();
-        rover.trader_dest_change_at = 0;
-        msg!("Trader dest applied: {}", rover.trader_dest);
-        Ok(())
-    }
-
-    /// Cancel a pending trader_dest change. Admin only.
-    pub fn cancel_pending_trader_dest(ctx: Context<UpdateRoverDistPool>) -> Result<()> {
-        let rover = &mut ctx.accounts.rover_authority;
-        require!(rover.trader_dest_change_at > 0, CoreError::NoPendingFeeChange);
-        rover.pending_trader_dest = Pubkey::default();
-        rover.trader_dest_change_at = 0;
-        msg!("Pending trader dest change cancelled");
-        Ok(())
-    }
-
-    // ============ ROVER (bribe positions) ============
-
-    /// Initialize the rover authority PDA. Admin only. Called once.
-    /// The rover_authority PDA owns rover positions. Harvest proceeds
-    /// accumulate in its ATAs, then sweep_rover moves SOL to dist_pool.
-    pub fn initialize_rover(
-        ctx: Context<InitializeRover>,
-        revenue_dest: Pubkey,
-    ) -> Result<()> {
-        require!(revenue_dest != Pubkey::default(), CoreError::InvalidDistPool);
-        let rover = &mut ctx.accounts.rover_authority;
-        rover.revenue_dest = revenue_dest;
-        rover.bump = ctx.bumps.rover_authority;
-        rover.total_rover_positions = 0;
-        rover.pending_trader_dest = Pubkey::default();
-        rover.trader_dest_change_at = 0;
-        rover.trader_dest = Pubkey::default();
-        rover.initial_crank_supply = 0;
-        rover.burn_enabled = false;
-        rover._reserved = [0u8; 23];
-
-        msg!("Rover authority initialized. revenue_dest={}", revenue_dest);
-        Ok(())
-    }
-
-    /// Set the trader reward destination. Admin only. One-shot init: callable
-    /// only while trader_dest is unset (Pubkey::default). After initial setting,
-    /// further changes require the propose/apply/cancel timelock trio below.
-    pub fn set_trader_dest(
-        ctx: Context<UpdateRoverDistPool>,
-        trader_dest: Pubkey,
-    ) -> Result<()> {
-        require!(trader_dest != Pubkey::default(), CoreError::InvalidDistPool);
-        let rover = &mut ctx.accounts.rover_authority;
-        require!(rover.trader_dest == Pubkey::default(), CoreError::TraderDestAlreadySet);
-        rover.trader_dest = trader_dest;
-        msg!("Trader dest set (init): {}", trader_dest);
-        emit!(AdminConfigEvent {
-            field: "trader_dest".into(),
-            authority: ctx.accounts.authority.key(),
-            timestamp: Clock::get()?.unix_timestamp,
-        });
-        Ok(())
-    }
-
-    /// One-shot: snapshot CRANK supply at curve activation, enable burn,
-    /// and create the burn_sol_vault PDA that stages SOL for buy-side bids.
-    /// Admin only. Errors if already initialized (initial_crank_supply > 0).
-    /// Snapshot is read directly from the passed CRANK mint account.
-    pub fn initialize_burn_curve(ctx: Context<InitializeBurnCurve>) -> Result<()> {
-        let rover = &mut ctx.accounts.rover_authority;
-        require!(rover.initial_crank_supply == 0, CoreError::BurnCurveAlreadyInitialized);
-        let supply = ctx.accounts.crank_mint.supply;
-        require!(supply > 0, CoreError::ZeroAmount);
-        rover.initial_crank_supply = supply;
-        rover.burn_enabled = true;
-        ctx.accounts.burn_sol_vault.bump = ctx.bumps.burn_sol_vault;
-        msg!(
-            "Burn curve initialized: initial_crank_supply={} burn_enabled=true",
-            supply
-        );
-        emit!(BurnCurveInitializedEvent {
-            initial_crank_supply: supply,
-            timestamp: Clock::get()?.unix_timestamp,
-        });
-        Ok(())
-    }
-
-    /// Toggle the burn kill switch. Admin only.
-    /// When false, sweep_rover clamps burn_ratio to 0 and routes all SOL
-    /// 80% trader / 20% protocol regardless of supply position on the curve.
-    pub fn set_burn_enabled(
-        ctx: Context<UpdateRoverDistPool>,
-        enabled: bool,
-    ) -> Result<()> {
-        let rover = &mut ctx.accounts.rover_authority;
-        rover.burn_enabled = enabled;
-        msg!("Burn enabled: {}", enabled);
-        emit!(BurnEnabledEvent {
-            enabled,
-            timestamp: Clock::get()?.unix_timestamp,
-        });
-        Ok(())
-    }
-
-    /// Anyone deposits tokens into a sell-side DLMM position owned by rover_authority.
-    /// The harvest bot liquidates these like normal positions. SOL accumulates in
-    /// rover_authority ATAs. sweep_rover sends it to dist_pool for all monke holders.
-    /// This IS the bribe mechanism — rover TVL ranks pools in the frontend.
-    ///
-    /// Range is hardcoded to 2x current price (or MAX_POSITION_WIDTH bins, whichever
-    /// is smaller). The depositor only chooses how many tokens to put in.
-    /// Bins are placed from active_id+1 upward (sell side, above current price).
-    pub fn open_rover_position<'info>(
-        ctx: Context<'_, '_, 'info, 'info, OpenRoverPosition<'info>>,
-        amount: u64,
-        bin_step: u16,
-    ) -> Result<()> {
-        require!(!ctx.accounts.config.paused, CoreError::Paused);
-        require!(amount > 0, CoreError::ZeroAmount);
-        require!(amount >= MIN_ROVER_DEPOSIT, CoreError::RoverDepositTooSmall);
-        require!(bin_step >= MIN_ROVER_BIN_STEP, CoreError::RoverBinStepTooSmall);
-
-        // Validate token account owners
-        {
-            let data = ctx.accounts.depositor_token_account.try_borrow_data()?;
-            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
-            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
-            require!(owner == ctx.accounts.depositor.key(), CoreError::InvalidTokenOwner);
-        }
-        {
-            let data = ctx.accounts.vault_token_x.try_borrow_data()?;
-            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
-            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
-            require!(owner == ctx.accounts.vault.key(), CoreError::InvalidTokenOwner);
-        }
-
-        // C1: Read active_id from on-chain lb_pair — never trust the caller
-        let active_id = {
-            let data = ctx.accounts.lb_pair.try_borrow_data()?;
-            // Validate data length before byte slice (prevents panic on malformed accounts)
-            require!(data.len() >= 80, CoreError::InvalidPool);
-            i32::from_le_bytes(data[76..80].try_into().map_err(|_| CoreError::Overflow)?)
-        };
-        require!(active_id > -443636 && active_id < 443636, CoreError::InvalidBinRange);
-
-        // Overflow accounts: event_authority, dlmm_program
-        require!(ctx.remaining_accounts.len() >= 2, CoreError::NoBinsProvided);
-        let event_authority = ctx.remaining_accounts[0].to_account_info();
-        let dlmm_program = ctx.remaining_accounts[1].to_account_info();
-        require!(dlmm_program.key() == METEORA_DLMM_PROGRAM_ID, CoreError::InvalidProgram);
-
-        // Compute 2x range: ln(2)/ln(1+binStep/10000) ≈ 6931/binStep bins
-        // Capped at MAX_POSITION_WIDTH (70 bins)
-        let bins_for_2x = 6931_i32 / (bin_step as i32);
-        let width = if bins_for_2x < 1 { 1 } else if bins_for_2x > MAX_POSITION_WIDTH { MAX_POSITION_WIDTH } else { bins_for_2x };
-        let min_bin_id = active_id + 1; // sell side: just above current price
-        let max_bin_id = min_bin_id + width - 1;
-        let max_active_bin_slippage = 10; // hardcoded for rovers
-
-        // Transfer deposit tokens from caller to vault
-        {
-            let transfer_ix = anchor_lang::solana_program::instruction::Instruction {
-                program_id: *ctx.accounts.token_x_program.key,
-                accounts: vec![
-                    anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.depositor_token_account.key(), false),
-                    anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_token_x.key(), false),
-                    anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.depositor.key(), true),
-                ],
-                data: {
-                    let mut d = vec![3u8];
-                    d.extend_from_slice(&amount.to_le_bytes());
-                    d
-                },
-            };
-            anchor_lang::solana_program::program::invoke(
-                &transfer_ix,
-                &[
-                    ctx.accounts.depositor_token_account.to_account_info(),
-                    ctx.accounts.vault_token_x.to_account_info(),
-                    ctx.accounts.depositor.to_account_info(),
-                    ctx.accounts.token_x_program.to_account_info(),
-                ],
-            )?;
-        }
-
-        // Vault PDA signs Meteora CPIs
-        let meteora_pos_key = ctx.accounts.meteora_position.key();
-        let vault_seeds: &[&[u8]] = &[
-            b"vault",
-            meteora_pos_key.as_ref(),
-            &[ctx.bumps.vault],
-        ];
-        let signer = &[vault_seeds];
-
-        // Initialize Meteora position (vault PDA = owner)
-        initialize_position2(
-            &[
-                ctx.accounts.depositor.to_account_info(),
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.lb_pair.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-                event_authority.clone(),
-                dlmm_program.clone(),
-            ],
-            min_bin_id,
-            width,
-            signer,
-        )?;
-
-        // Add sell-side liquidity with BidAsk distribution via V2 two-sided CPI
-        // (amount_y = 0 makes it effectively one-sided)
-        let liquidity_params = LiquidityParameterByStrategy {
-            amount_x: amount,
-            amount_y: 0,
-            active_id,
-            max_active_bin_slippage,
-            strategy_parameters: StrategyParameters::bid_ask_imbalanced(min_bin_id, max_bin_id),
-        };
-
-        add_liquidity_by_strategy2(
-            &[
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.lb_pair.to_account_info(),
-                ctx.accounts.bin_array_bitmap_ext.to_account_info(),
-                ctx.accounts.vault_token_x.to_account_info(),
-                ctx.accounts.vault_token_y.to_account_info(),
-                ctx.accounts.reserve_x.to_account_info(),
-                ctx.accounts.reserve_y.to_account_info(),
-                ctx.accounts.token_x_mint.to_account_info(),
-                ctx.accounts.token_y_mint.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.token_x_program.to_account_info(),
-                ctx.accounts.token_y_program.to_account_info(),
-                event_authority,
-                dlmm_program,
-            ],
-            liquidity_params,
-            RemainingAccountsInfo::empty_hooks(),
-            signer,
-            &[ctx.accounts.bin_array_lower.to_account_info(), ctx.accounts.bin_array_upper.to_account_info()],
-        )?;
-
-        // Capture keys before mutable borrows
-        let position_key = ctx.accounts.position.key();
-        let depositor_key = ctx.accounts.depositor.key();
-        let lb_pair_key = ctx.accounts.lb_pair.key();
-        let rover_key = ctx.accounts.rover_authority.key();
-        let meteora_pos_key2 = ctx.accounts.meteora_position.key();
-        let created_at = Clock::get()?.unix_timestamp;
-
-        // Store position metadata — owner is rover_authority, side is always Sell
-        let position = &mut ctx.accounts.position;
-        position.user_vault = rover_key;
-        position.lb_pair = lb_pair_key;
-        position.meteora_position = meteora_pos_key2;
-        position.side = Side::Sell;
-        position.min_bin_id = min_bin_id;
-        position.max_bin_id = max_bin_id;
-        position.initial_amount = amount;
-        position.harvested_amount = 0;
-        position.created_at = created_at;
-        position.bump = ctx.bumps.position;
-
-        let vault = &mut ctx.accounts.vault;
-        vault.position = ctx.accounts.meteora_position.key();
-        vault.bump = ctx.bumps.vault;
-
-        let config = &mut ctx.accounts.config;
-        config.total_positions = config.total_positions.saturating_add(1);
-        config.total_volume = config.total_volume.saturating_add(amount);
-
-        let rover = &mut ctx.accounts.rover_authority;
-        rover.total_rover_positions = rover.total_rover_positions.saturating_add(1);
-
-        emit!(RoverOpenedEvent {
-            depositor: depositor_key,
-            lb_pair: lb_pair_key,
-            position: position_key,
-            token_mint: ctx.accounts.token_x_mint.key(),
-            amount,
-            active_id,
-            bin_step,
-            min_bin_id,
-            max_bin_id,
-            timestamp: created_at,
-        });
-
-        msg!("Rover position opened: {} bins [{},{}] amount={}",
-            width, min_bin_id, max_bin_id, amount);
-        Ok(())
-    }
-
-    /// Sweep SOL from rover_authority via the curve.
-    /// Splits into burn_sol (→ burn_sol_vault), trader_sol (→ trader_dest),
-    /// protocol_sol (→ Config.bot). Permissionless — anyone can call.
-    /// Errors if the burn curve has not been initialized.
-    pub fn sweep_rover(ctx: Context<SweepRover>) -> Result<()> {
-        let is_authorized_bot = ctx.accounts.caller.key() == ctx.accounts.config.bot;
-        if is_authorized_bot {
-            ctx.accounts.config.last_bot_sweep_slot = Clock::get()?.slot;
-        }
-
-        let rover = &ctx.accounts.rover_authority;
-        require!(rover.initial_crank_supply > 0, CoreError::BurnCurveNotInitialized);
-
-        let rover_lamports = ctx.accounts.rover_authority.to_account_info().lamports();
-        let rent = Rent::get()?.minimum_balance(RoverAuthority::SIZE);
-        let sweepable = rover_lamports.saturating_sub(rent);
-        require!(sweepable > 0, CoreError::NothingToSweep);
-
-        let crank_supply = ctx.accounts.crank_mint.supply;
-        let (burn_ratio_ppb, protocol_skim_ppb) =
-            compute_curve(crank_supply, rover.initial_crank_supply, rover.burn_enabled);
-
-        let sweepable_u128 = sweepable as u128;
-        let burn_sol = sweepable_u128
-            .saturating_mul(burn_ratio_ppb)
-            .checked_div(PPB_SCALE)
-            .ok_or(CoreError::Overflow)? as u64;
-        let protocol_sol = sweepable_u128
-            .saturating_mul(protocol_skim_ppb)
-            .checked_div(PPB_SCALE)
-            .ok_or(CoreError::Overflow)? as u64;
-        // Trader share absorbs rounding remainder so all sweepable lamports leave the rover.
-        let trader_sol = sweepable
-            .checked_sub(burn_sol).ok_or(CoreError::Overflow)?
-            .checked_sub(protocol_sol).ok_or(CoreError::Overflow)?;
-
-        **ctx.accounts.rover_authority.to_account_info().try_borrow_mut_lamports()? -= sweepable;
-        if burn_sol > 0 {
-            **ctx.accounts.burn_sol_vault.to_account_info().try_borrow_mut_lamports()? += burn_sol;
-        }
-        if trader_sol > 0 {
-            **ctx.accounts.trader_dest.try_borrow_mut_lamports()? += trader_sol;
-        }
-        if protocol_sol > 0 {
-            **ctx.accounts.bot_dest.try_borrow_mut_lamports()? += protocol_sol;
-        }
-
-        emit!(SweepCurveEvent {
-            total_sweepable: sweepable,
-            burn_sol,
-            trader_sol,
-            protocol_sol,
-            burn_ratio_ppb: burn_ratio_ppb as u64,
-            protocol_skim_ppb: protocol_skim_ppb as u64,
-            crank_supply,
-            initial_crank_supply: rover.initial_crank_supply,
-            burn_enabled: rover.burn_enabled,
-            timestamp: Clock::get()?.unix_timestamp,
-        });
-
-        msg!(
-            "Swept {} lamports — burn={} trader={} protocol={} (burn_ratio_ppb={} skim_ppb={})",
-            sweepable, burn_sol, trader_sol, protocol_sol, burn_ratio_ppb, protocol_skim_ppb
-        );
-        Ok(())
-    }
-
-    /// Close a token account owned by rover_authority. Permissionless.
-    /// For WSOL: unwraps WSOL balance to native SOL on rover_authority (picked up by sweep_rover).
-    /// For empty ATAs: reclaims rent to rover_authority.
-    /// Destination is always rover_authority itself — lamports cannot be extracted.
-    pub fn close_rover_token_account(ctx: Context<CloseRoverTokenAccount>) -> Result<()> {
-        let signer_seeds: &[&[u8]] = &[b"rover_authority", &[ctx.accounts.rover_authority.bump]];
-        let signer = &[signer_seeds];
-
-        anchor_spl::token::close_account(CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            anchor_spl::token::CloseAccount {
-                account: ctx.accounts.token_account.to_account_info(),
-                destination: ctx.accounts.rover_authority.to_account_info(),
-                authority: ctx.accounts.rover_authority.to_account_info(),
-            },
-            signer,
-        ))?;
-
-        msg!("Closed rover token account: {}", ctx.accounts.token_account.key());
-        Ok(())
-    }
-
-    /// Close a rover position. Bot-gated.
-    /// Removes liquidity, claims fees, closes Meteora position,
-    /// transfers tokens back to rover_authority ATAs, closes PDAs.
-    pub fn close_rover_position(ctx: Context<CloseRoverPosition>) -> Result<()> {
-        require!(ctx.accounts.bot.key() == ctx.accounts.config.bot, CoreError::Unauthorized);
-        require!(!ctx.accounts.config.bot_paused, CoreError::BotPaused);
-
-        let min_bin_id = ctx.accounts.position.min_bin_id;
-        let max_bin_id = ctx.accounts.position.max_bin_id;
-        let meteora_pos_key = ctx.accounts.position.meteora_position;
-
-        let vault_seeds: &[&[u8]] = &[
-            b"vault",
-            meteora_pos_key.as_ref(),
-            &[ctx.accounts.vault.bump],
-        ];
-        let signer = &[vault_seeds];
-
-        // 1. Remove ALL remaining liquidity
-        let remaining = &[
-            ctx.accounts.bin_array_lower.to_account_info(),
-            ctx.accounts.bin_array_upper.to_account_info(),
-        ];
-        remove_liquidity_by_range2(
-            &[
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.lb_pair.to_account_info(),
-                ctx.accounts.bin_array_bitmap_ext.to_account_info(),
-                ctx.accounts.vault_token_x.to_account_info(),
-                ctx.accounts.vault_token_y.to_account_info(),
-                ctx.accounts.reserve_x.to_account_info(),
-                ctx.accounts.reserve_y.to_account_info(),
-                ctx.accounts.token_x_mint.to_account_info(),
-                ctx.accounts.token_y_mint.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.token_x_program.to_account_info(),
-                ctx.accounts.token_y_program.to_account_info(),
-                ctx.accounts.memo_program.to_account_info(),
-                ctx.accounts.event_authority.to_account_info(),
-                ctx.accounts.dlmm_program.to_account_info(),
-            ],
-            min_bin_id,
-            max_bin_id,
-            10_000,
-            RemainingAccountsInfo::none(),
-            signer,
-            remaining,
-        )?;
-
-        // 2. Claim accrued trading fees
-        let remaining = &[
-            ctx.accounts.bin_array_lower.to_account_info(),
-            ctx.accounts.bin_array_upper.to_account_info(),
-        ];
-        claim_fee2(
-            &[
-                ctx.accounts.lb_pair.to_account_info(),
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.reserve_x.to_account_info(),
-                ctx.accounts.reserve_y.to_account_info(),
-                ctx.accounts.vault_token_x.to_account_info(),
-                ctx.accounts.vault_token_y.to_account_info(),
-                ctx.accounts.token_x_mint.to_account_info(),
-                ctx.accounts.token_y_mint.to_account_info(),
-                ctx.accounts.token_x_program.to_account_info(),
-                ctx.accounts.token_y_program.to_account_info(),
-                ctx.accounts.memo_program.to_account_info(),
-                ctx.accounts.event_authority.to_account_info(),
-                ctx.accounts.dlmm_program.to_account_info(),
-            ],
-            min_bin_id,
-            max_bin_id,
-            RemainingAccountsInfo::none(),
-            signer,
-            remaining,
-        )?;
-
-        // 3. Close Meteora position (rent -> bot)
-        close_position2(
-            &[
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.bot.to_account_info(),
-                ctx.accounts.event_authority.to_account_info(),
-                ctx.accounts.dlmm_program.to_account_info(),
-            ],
-            signer,
-        )?;
-
-        // 4. Transfer remaining tokens back to rover_authority ATAs (no fee — it's our money)
-        let x_decimals = read_mint_decimals(&ctx.accounts.token_x_mint)?;
-        let y_decimals = read_mint_decimals(&ctx.accounts.token_y_mint)?;
-
-        let x_amount = ctx.accounts.vault_token_x.amount;
-        if x_amount > 0 {
-            memo_cpi(&ctx.accounts.memo_program, &ctx.accounts.vault.to_account_info(), signer)?;
-            transfer_checked(CpiContext::new_with_signer(
-                ctx.accounts.token_x_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.vault_token_x.to_account_info(),
-                    mint: ctx.accounts.token_x_mint.to_account_info(),
-                    to: ctx.accounts.rover_token_x.to_account_info(),
-                    authority: ctx.accounts.vault.to_account_info(),
-                }, signer,
-            ), x_amount, x_decimals)?;
-        }
-
-        let y_amount = ctx.accounts.vault_token_y.amount;
-        if y_amount > 0 {
-            memo_cpi(&ctx.accounts.memo_program, &ctx.accounts.vault.to_account_info(), signer)?;
-            transfer_checked(CpiContext::new_with_signer(
-                ctx.accounts.token_y_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.vault_token_y.to_account_info(),
-                    mint: ctx.accounts.token_y_mint.to_account_info(),
-                    to: ctx.accounts.rover_token_y.to_account_info(),
-                    authority: ctx.accounts.vault.to_account_info(),
-                }, signer,
-            ), y_amount, y_decimals)?;
-        }
-
-        ctx.accounts.config.total_positions = ctx.accounts.config.total_positions.saturating_sub(1);
-
-        msg!(
-            "Rover position closed: {} | x={} y={}",
-            ctx.accounts.position.key(),
-            x_amount,
-            y_amount,
-        );
-        Ok(())
-    }
-
-    /// Open a fee rover position from accumulated token fees in rover_authority ATA.
-    /// Bot-gated. Uses BidAskOneSide distribution (more tokens at higher bins).
-    /// Bot pays rent for Position + Vault PDAs (refunded on close).
-    pub fn open_fee_rover<'info>(
-        ctx: Context<'_, '_, 'info, 'info, OpenFeeRover<'info>>,
-        amount: u64,
-        bin_step: u16,
-    ) -> Result<()> {
-        require!(amount > 0, CoreError::ZeroAmount);
-        require!(bin_step >= MIN_ROVER_BIN_STEP, CoreError::RoverBinStepTooSmall);
-
-        // Validate vault_token_x owner
-        {
-            let data = ctx.accounts.vault_token_x.try_borrow_data()?;
-            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
-            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
-            require!(owner == ctx.accounts.vault.key(), CoreError::InvalidTokenOwner);
-        }
-
-        // C1: Read active_id from on-chain lb_pair — never trust the caller
-        let active_id = {
-            let data = ctx.accounts.lb_pair.try_borrow_data()?;
-            // Validate data length before byte slice (prevents panic on malformed accounts)
-            require!(data.len() >= 80, CoreError::InvalidPool);
-            i32::from_le_bytes(data[76..80].try_into().map_err(|_| CoreError::Overflow)?)
-        };
-        require!(active_id > -443636 && active_id < 443636, CoreError::InvalidBinRange);
-
-        // Overflow accounts: event_authority, dlmm_program
-        require!(ctx.remaining_accounts.len() >= 2, CoreError::NoBinsProvided);
-        let event_authority = ctx.remaining_accounts[0].to_account_info();
-        let dlmm_program = ctx.remaining_accounts[1].to_account_info();
-        require!(dlmm_program.key() == METEORA_DLMM_PROGRAM_ID, CoreError::InvalidProgram);
-
-        // Same range as external rovers: active_id+1 to +70 max
-        let min_bin_id = active_id.checked_add(1).ok_or(CoreError::Overflow)?;
-        let width = core::cmp::min(70_i32, core::cmp::max(1_i32, 6931_i32 / (bin_step as i32)));
-        let max_bin_id = min_bin_id.checked_add(width).ok_or(CoreError::Overflow)?
-            .checked_sub(1).ok_or(CoreError::Overflow)?;
-        let max_active_bin_slippage = 10;
-
-        // Transfer from rover_authority ATA to vault ATA (rover_authority PDA signs)
-        let rover_signer_seeds: &[&[u8]] = &[b"rover_authority", &[ctx.accounts.rover_authority.bump]];
-        let rover_signer = &[rover_signer_seeds];
-
-        {
-            let transfer_ix = anchor_lang::solana_program::instruction::Instruction {
-                program_id: *ctx.accounts.token_x_program.key,
-                accounts: vec![
-                    anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_token_account.key(), false),
-                    anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_token_x.key(), false),
-                    anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.rover_authority.key(), true),
-                ],
-                data: {
-                    let mut d = vec![3u8];
-                    d.extend_from_slice(&amount.to_le_bytes());
-                    d
-                },
-            };
-            anchor_lang::solana_program::program::invoke_signed(
-                &transfer_ix,
-                &[
-                    ctx.accounts.rover_token_account.to_account_info(),
-                    ctx.accounts.vault_token_x.to_account_info(),
-                    ctx.accounts.rover_authority.to_account_info(),
-                    ctx.accounts.token_x_program.to_account_info(),
-                ],
-                rover_signer,
-            )?;
-        }
-
-        // Vault PDA signs Meteora CPIs
-        let meteora_pos_key = ctx.accounts.meteora_position.key();
-        let vault_seeds: &[&[u8]] = &[
-            b"vault",
-            meteora_pos_key.as_ref(),
-            &[ctx.bumps.vault],
-        ];
-        let signer = &[vault_seeds];
-
-        // Initialize Meteora position (vault PDA = owner)
-        initialize_position2(
-            &[
-                ctx.accounts.bot.to_account_info(),
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.lb_pair.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-                event_authority.clone(),
-                dlmm_program.clone(),
-            ],
-            min_bin_id,
-            width,
-            signer,
-        )?;
-
-        // Add sell-side liquidity with BidAsk distribution via V2 two-sided CPI
-        let liquidity_params = LiquidityParameterByStrategy {
-            amount_x: amount,
-            amount_y: 0,
-            active_id,
-            max_active_bin_slippage,
-            strategy_parameters: StrategyParameters::bid_ask_imbalanced(min_bin_id, max_bin_id),
-        };
-
-        add_liquidity_by_strategy2(
-            &[
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.lb_pair.to_account_info(),
-                ctx.accounts.bin_array_bitmap_ext.to_account_info(),
-                ctx.accounts.vault_token_x.to_account_info(),
-                ctx.accounts.vault_token_y.to_account_info(),
-                ctx.accounts.reserve_x.to_account_info(),
-                ctx.accounts.reserve_y.to_account_info(),
-                ctx.accounts.token_x_mint.to_account_info(),
-                ctx.accounts.token_y_mint.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.token_x_program.to_account_info(),
-                ctx.accounts.token_y_program.to_account_info(),
-                event_authority,
-                dlmm_program,
-            ],
-            liquidity_params,
-            RemainingAccountsInfo::empty_hooks(),
-            signer,
-            &[ctx.accounts.bin_array_lower.to_account_info(), ctx.accounts.bin_array_upper.to_account_info()],
-        )?;
-
-        // Store position metadata — owner is rover_authority, side is always Sell
-        let position_key = ctx.accounts.position.key();
-        let rover_key = ctx.accounts.rover_authority.key();
-        let lb_pair_key = ctx.accounts.lb_pair.key();
-        let created_at = Clock::get()?.unix_timestamp;
-
-        let position = &mut ctx.accounts.position;
-        position.user_vault = rover_key;
-        position.lb_pair = lb_pair_key;
-        position.meteora_position = ctx.accounts.meteora_position.key();
-        position.side = Side::Sell;
-        position.min_bin_id = min_bin_id;
-        position.max_bin_id = max_bin_id;
-        position.initial_amount = amount;
-        position.harvested_amount = 0;
-        position.created_at = created_at;
-        position.bump = ctx.bumps.position;
-
-        let vault = &mut ctx.accounts.vault;
-        vault.position = ctx.accounts.meteora_position.key();
-        vault.bump = ctx.bumps.vault;
-
-        let config = &mut ctx.accounts.config;
-        config.total_positions = config.total_positions.saturating_add(1);
-        config.total_volume = config.total_volume.saturating_add(amount);
-
-        let rover = &mut ctx.accounts.rover_authority;
-        rover.total_rover_positions = rover.total_rover_positions.saturating_add(1);
-
-        emit!(RoverOpenedEvent {
-            depositor: ctx.accounts.bot.key(),
-            lb_pair: lb_pair_key,
-            position: position_key,
-            token_mint: ctx.accounts.token_x_mint.key(),
-            amount,
-            active_id,
-            bin_step,
-            min_bin_id,
-            max_bin_id,
-            timestamp: created_at,
-        });
-
-        msg!("Fee rover opened: {} bins [{},{}] amount={}", width, min_bin_id, max_bin_id, amount);
-        Ok(())
-    }
-
-    /// Move SOL from burn_sol_vault to rover_authority's WSOL ATA.
-    /// Bot calls this, then calls SPL `sync_native` in the next ix of the same tx.
-    /// Direct lamport manipulation is allowed because both accounts are addressable
-    /// here: burn_sol_vault is bin-farm-owned (debit allowed), rover_wsol_account
-    /// is token-owned (credit-add allowed for any program).
-    pub fn wrap_burn_sol(ctx: Context<WrapBurnSol>, amount: u64) -> Result<()> {
-        require!(amount > 0, CoreError::ZeroAmount);
-
-        let rent = Rent::get()?.minimum_balance(BurnSolVault::SIZE);
-        let available = ctx.accounts.burn_sol_vault.to_account_info().lamports()
-            .saturating_sub(rent);
-        require!(amount <= available, CoreError::InsufficientBalance);
-
-        // sync_native must be called AFTER this ix (separate ix in same tx) — same
-        // pattern as wrap_sol_in_vault. CPI to sync_native here would observe a
-        // mid-instruction lamport delta and fail.
-        **ctx.accounts.burn_sol_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.rover_wsol_account.to_account_info().try_borrow_mut_lamports()? += amount;
-
-        msg!("Wrapped {} lamports from burn_sol_vault → rover WSOL ATA", amount);
-        Ok(())
-    }
-
-    /// Open a buy-side BidAsk DLMM position from rover_authority's WSOL ATA.
-    /// Mirrors `open_fee_rover` but: (1) deposits below active_id (buy side),
-    /// (2) Y-only (SOL/WSOL) deposit, (3) source ATA is rover's WSOL.
-    /// Bot-gated. Bot pays rent for Position + Vault PDAs.
-    pub fn open_rover_bid_position<'info>(
-        ctx: Context<'_, '_, 'info, 'info, OpenRoverBidPosition<'info>>,
-        amount: u64,
-        bin_step: u16,
-    ) -> Result<()> {
-        require!(amount > 0, CoreError::ZeroAmount);
-        require!(bin_step >= MIN_ROVER_BIN_STEP, CoreError::RoverBinStepTooSmall);
-
-        // Validate vault_token_y owner = vault PDA
-        {
-            let data = ctx.accounts.vault_token_y.try_borrow_data()?;
-            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
-            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
-            require!(owner == ctx.accounts.vault.key(), CoreError::InvalidTokenOwner);
-        }
-
-        // Read active_id from on-chain lb_pair
-        let active_id = {
-            let data = ctx.accounts.lb_pair.try_borrow_data()?;
-            require!(data.len() >= 80, CoreError::InvalidPool);
-            i32::from_le_bytes(data[76..80].try_into().map_err(|_| CoreError::Overflow)?)
-        };
-        require!(active_id > -443636 && active_id < 443636, CoreError::InvalidBinRange);
-
-        // Overflow accounts: event_authority, dlmm_program
-        require!(ctx.remaining_accounts.len() >= 2, CoreError::NoBinsProvided);
-        let event_authority = ctx.remaining_accounts[0].to_account_info();
-        let dlmm_program = ctx.remaining_accounts[1].to_account_info();
-        require!(dlmm_program.key() == METEORA_DLMM_PROGRAM_ID, CoreError::InvalidProgram);
-
-        // BUY SIDE: bins below active_id
-        let width = core::cmp::min(70_i32, core::cmp::max(1_i32, 6931_i32 / (bin_step as i32)));
-        let max_bin_id = active_id.checked_sub(1).ok_or(CoreError::Overflow)?;
-        let min_bin_id = max_bin_id
-            .checked_sub(width.checked_sub(1).ok_or(CoreError::Overflow)?)
-            .ok_or(CoreError::Overflow)?;
-        let max_active_bin_slippage = 10;
-
-        // Transfer WSOL from rover_wsol_account → vault_token_y (rover_authority signs)
-        let rover_signer_seeds: &[&[u8]] = &[b"rover_authority", &[ctx.accounts.rover_authority.bump]];
-        let rover_signer = &[rover_signer_seeds];
-
-        {
-            let transfer_ix = anchor_lang::solana_program::instruction::Instruction {
-                program_id: *ctx.accounts.token_y_program.key,
-                accounts: vec![
-                    anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_wsol_account.key(), false),
-                    anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_token_y.key(), false),
-                    anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.rover_authority.key(), true),
-                ],
-                data: {
-                    let mut d = vec![3u8];
-                    d.extend_from_slice(&amount.to_le_bytes());
-                    d
-                },
-            };
-            anchor_lang::solana_program::program::invoke_signed(
-                &transfer_ix,
-                &[
-                    ctx.accounts.rover_wsol_account.to_account_info(),
-                    ctx.accounts.vault_token_y.to_account_info(),
-                    ctx.accounts.rover_authority.to_account_info(),
-                    ctx.accounts.token_y_program.to_account_info(),
-                ],
-                rover_signer,
-            )?;
-        }
-
-        // Vault PDA signs Meteora CPIs
-        let meteora_pos_key = ctx.accounts.meteora_position.key();
-        let vault_seeds: &[&[u8]] = &[b"vault", meteora_pos_key.as_ref(), &[ctx.bumps.vault]];
-        let signer = &[vault_seeds];
-
-        // Initialize Meteora position (vault PDA = owner)
-        initialize_position2(
-            &[
-                ctx.accounts.bot.to_account_info(),
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.lb_pair.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-                event_authority.clone(),
-                dlmm_program.clone(),
-            ],
-            min_bin_id,
-            width,
-            signer,
-        )?;
-
-        // Add buy-side liquidity: amount_y only (WSOL/SOL deposited)
-        let liquidity_params = LiquidityParameterByStrategy {
-            amount_x: 0,
-            amount_y: amount,
-            active_id,
-            max_active_bin_slippage,
-            strategy_parameters: StrategyParameters::bid_ask_imbalanced(min_bin_id, max_bin_id),
-        };
-        add_liquidity_by_strategy2(
-            &[
-                ctx.accounts.meteora_position.to_account_info(),
-                ctx.accounts.lb_pair.to_account_info(),
-                ctx.accounts.bin_array_bitmap_ext.to_account_info(),
-                ctx.accounts.vault_token_x.to_account_info(),
-                ctx.accounts.vault_token_y.to_account_info(),
-                ctx.accounts.reserve_x.to_account_info(),
-                ctx.accounts.reserve_y.to_account_info(),
-                ctx.accounts.token_x_mint.to_account_info(),
-                ctx.accounts.token_y_mint.to_account_info(),
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.token_x_program.to_account_info(),
-                ctx.accounts.token_y_program.to_account_info(),
-                event_authority,
-                dlmm_program,
-            ],
-            liquidity_params,
-            RemainingAccountsInfo::empty_hooks(),
-            signer,
-            &[ctx.accounts.bin_array_lower.to_account_info(), ctx.accounts.bin_array_upper.to_account_info()],
-        )?;
-
-        // Position metadata — owner is rover_authority, side is Buy
-        let position_key = ctx.accounts.position.key();
-        let rover_key = ctx.accounts.rover_authority.key();
-        let lb_pair_key = ctx.accounts.lb_pair.key();
-        let created_at = Clock::get()?.unix_timestamp;
-
-        let position = &mut ctx.accounts.position;
-        position.user_vault = rover_key;
-        position.lb_pair = lb_pair_key;
-        position.meteora_position = ctx.accounts.meteora_position.key();
-        position.side = Side::Buy;
-        position.min_bin_id = min_bin_id;
-        position.max_bin_id = max_bin_id;
-        position.initial_amount = amount;
-        position.harvested_amount = 0;
-        position.created_at = created_at;
-        position.bump = ctx.bumps.position;
-
-        let vault = &mut ctx.accounts.vault;
-        vault.position = ctx.accounts.meteora_position.key();
-        vault.bump = ctx.bumps.vault;
-
-        let config = &mut ctx.accounts.config;
-        config.total_positions = config.total_positions.saturating_add(1);
-
-        let rover = &mut ctx.accounts.rover_authority;
-        rover.total_rover_positions = rover.total_rover_positions.saturating_add(1);
-
-        emit!(RoverOpenedEvent {
-            depositor: ctx.accounts.bot.key(),
-            lb_pair: lb_pair_key,
-            position: position_key,
-            token_mint: ctx.accounts.token_y_mint.key(),
-            amount,
-            active_id,
-            bin_step,
-            min_bin_id,
-            max_bin_id,
-            timestamp: created_at,
-        });
-
-        msg!("Rover bid opened: {} bins [{},{}] sol={}", width, min_bin_id, max_bin_id, amount);
-        Ok(())
-    }
 
     // ============ USER VAULT INSTRUCTIONS ============
 
@@ -2407,219 +1468,8 @@ pub mod bin_farm {
         Ok(())
     }
 
-    /// CPI wrapper: burn CRANK → mint BANK via bank-mint, on behalf of user vault.
-    pub fn vault_burn_and_mint(ctx: Context<VaultBurnAndMint>, amount: u64) -> Result<()> {
-        let caller = ctx.accounts.caller.key();
-        let is_authorized = caller == ctx.accounts.config.bot
-            || caller == ctx.accounts.user_vault.owner;
-        require!(is_authorized, CoreError::UnauthorizedCaller);
-        require!(amount > 0, CoreError::ZeroAmount);
 
-        // Validate bank-mint program ID
-        require!(
-            ctx.accounts.bank_mint_program.key() == BANK_MINT_PROGRAM_ID,
-            CoreError::InvalidExternalProgram
-        );
 
-        let owner_key = ctx.accounts.user_vault.owner;
-        let user_vault_seeds: &[&[u8]] = &[
-            b"user_vault",
-            owner_key.as_ref(),
-            &[ctx.accounts.user_vault.bump],
-        ];
-
-        // Build burn_and_mint instruction
-        let mut data = vec![0xcbu8, 0x8e, 0x42, 0x51, 0xc7, 0xaa, 0x43, 0x82]; // discriminator
-        data.extend_from_slice(&amount.to_le_bytes());
-
-        let ix = anchor_lang::solana_program::instruction::Instruction {
-            program_id: BANK_MINT_PROGRAM_ID,
-            accounts: vec![
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.user_vault.key(), true),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.bank_config.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.crank_mint.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.bank_mint.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_crank_ata.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.vault_bank_ata.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.crank_token_program.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.bank_token_program.key(), false),
-            ],
-            data,
-        };
-
-        anchor_lang::solana_program::program::invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.user_vault.to_account_info(),
-                ctx.accounts.bank_config.to_account_info(),
-                ctx.accounts.crank_mint.to_account_info(),
-                ctx.accounts.bank_mint.to_account_info(),
-                ctx.accounts.vault_crank_ata.to_account_info(),
-                ctx.accounts.vault_bank_ata.to_account_info(),
-                ctx.accounts.crank_token_program.to_account_info(),
-                ctx.accounts.bank_token_program.to_account_info(),
-                ctx.accounts.bank_mint_program.to_account_info(),
-            ],
-            &[user_vault_seeds],
-        )?;
-
-        msg!("Vault burned {} CRANK → minted BANK", amount);
-        Ok(())
-    }
-
-    /// Burn CRANK accumulated on rover_authority → mint BANK → forward to
-    /// bank-distributor vault for daily Merkle distribution.
-    ///
-    /// Two-step inside one instruction:
-    ///   1. CPI bank-mint::burn_and_mint with rover_authority as `user`.
-    ///      Burns rover's CRANK ATA, mints BANK to rover's BANK ATA.
-    ///   2. transfer_checked from rover's BANK ATA → bank_distributor_vault.
-    ///
-    /// Bot-gated. The full balance of rover's CRANK ATA is burned; caller
-    /// passes `amount` for explicit auditability.
-    pub fn rover_burn_and_mint(ctx: Context<RoverBurnAndMint>, amount: u64) -> Result<()> {
-        require!(amount > 0, CoreError::ZeroAmount);
-        require!(
-            ctx.accounts.bank_mint_program.key() == BANK_MINT_PROGRAM_ID,
-            CoreError::InvalidExternalProgram
-        );
-
-        let rover_seeds: &[&[u8]] = &[b"rover_authority", &[ctx.accounts.rover_authority.bump]];
-        let rover_signer = &[rover_seeds];
-
-        // Step 1: CPI burn_and_mint
-        let mut data = vec![0xcbu8, 0x8e, 0x42, 0x51, 0xc7, 0xaa, 0x43, 0x82];
-        data.extend_from_slice(&amount.to_le_bytes());
-
-        let ix = anchor_lang::solana_program::instruction::Instruction {
-            program_id: BANK_MINT_PROGRAM_ID,
-            accounts: vec![
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_authority.key(), true),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.bank_config.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.crank_mint.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.bank_mint.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_crank_ata.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.rover_bank_ata.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.crank_token_program.key(), false),
-                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.bank_token_program.key(), false),
-            ],
-            data,
-        };
-
-        anchor_lang::solana_program::program::invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.rover_authority.to_account_info(),
-                ctx.accounts.bank_config.to_account_info(),
-                ctx.accounts.crank_mint.to_account_info(),
-                ctx.accounts.bank_mint.to_account_info(),
-                ctx.accounts.rover_crank_ata.to_account_info(),
-                ctx.accounts.rover_bank_ata.to_account_info(),
-                ctx.accounts.crank_token_program.to_account_info(),
-                ctx.accounts.bank_token_program.to_account_info(),
-                ctx.accounts.bank_mint_program.to_account_info(),
-            ],
-            rover_signer,
-        )?;
-
-        // Step 2: forward BANK to bank-distributor vault (rover_authority signs)
-        transfer_checked(
-            CpiContext::new_with_signer(
-                ctx.accounts.bank_token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.rover_bank_ata.to_account_info(),
-                    mint: ctx.accounts.bank_mint.to_account_info(),
-                    to: ctx.accounts.bank_distributor_vault.to_account_info(),
-                    authority: ctx.accounts.rover_authority.to_account_info(),
-                },
-                rover_signer,
-            ),
-            amount,
-            BANK_MINT_DECIMALS,
-        )?;
-
-        msg!("Rover burned {} CRANK → minted BANK → forwarded to distributor vault", amount);
-        Ok(())
-    }
-
-    /// CPI wrapper: vote on gauge weights via gauge-voter, on behalf of user vault.
-    pub fn vault_vote<'info>(
-        ctx: Context<'_, '_, 'info, 'info, VaultVote<'info>>,
-        desired_allocations: Vec<PoolAllocation>,
-    ) -> Result<()> {
-        let caller = ctx.accounts.caller.key();
-        let is_authorized = caller == ctx.accounts.config.bot
-            || caller == ctx.accounts.user_vault.owner;
-        require!(is_authorized, CoreError::UnauthorizedCaller);
-
-        // Validate gauge-voter program ID
-        require!(
-            ctx.accounts.gauge_voter_program.key() == GAUGE_VOTER_PROGRAM_ID,
-            CoreError::InvalidExternalProgram
-        );
-
-        let owner_key = ctx.accounts.user_vault.owner;
-        let user_vault_seeds: &[&[u8]] = &[
-            b"user_vault",
-            owner_key.as_ref(),
-            &[ctx.accounts.user_vault.bump],
-        ];
-
-        // Build vote instruction data: discriminator + serialized Vec<PoolAllocation>
-        let mut data = vec![0xe3u8, 0x6e, 0x9b, 0x17, 0x88, 0x7e, 0xac, 0x19]; // discriminator
-        AnchorSerialize::serialize(&desired_allocations, &mut data)
-            .map_err(|_| CoreError::Overflow)?;
-
-        // Fixed accounts
-        let mut accounts = vec![
-            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.user_vault.key(), true),
-            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.gauge_config.key(), false),
-            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.bank_mint_account.key(), false),
-            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.vault_bank_ata.key(), false),
-            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
-        ];
-
-        // Defense-in-depth (v2-M-01): reject any remaining_account that isn't
-        // owned by gauge-voter before forwarding via CPI. Gauge-voter also
-        // checks this on its side (v1-M-03), but we enforce at the boundary
-        // so a future gauge-voter refactor can't regress this protocol into a
-        // config-corruption footgun.
-        for acc in ctx.remaining_accounts.iter() {
-            require!(
-                acc.owner == &GAUGE_VOTER_PROGRAM_ID,
-                CoreError::InvalidGaugeAccount
-            );
-        }
-
-        // Forward PoolGauge remaining_accounts (writable)
-        let mut account_infos = vec![
-            ctx.accounts.user_vault.to_account_info(),
-            ctx.accounts.gauge_config.to_account_info(),
-            ctx.accounts.bank_mint_account.to_account_info(),
-            ctx.accounts.vault_bank_ata.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
-            ctx.accounts.gauge_voter_program.to_account_info(),
-        ];
-        for acc in ctx.remaining_accounts.iter() {
-            accounts.push(anchor_lang::solana_program::instruction::AccountMeta::new(acc.key(), false));
-            account_infos.push(acc.clone());
-        }
-
-        let ix = anchor_lang::solana_program::instruction::Instruction {
-            program_id: GAUGE_VOTER_PROGRAM_ID,
-            accounts,
-            data,
-        };
-
-        anchor_lang::solana_program::program::invoke_signed(
-            &ix,
-            &account_infos,
-            &[user_vault_seeds],
-        )?;
-
-        msg!("Vault voted on {} pools", desired_allocations.len());
-        Ok(())
-    }
 
     /// Admin sets gas reimbursement amount per operation.
     pub fn update_gas_lamports(ctx: Context<AdminOnly>, gas_lamports: u64) -> Result<()> {
@@ -2695,8 +1545,8 @@ fn execute_close_transfers<'info>(
     vault_token_y: &mut InterfaceAccount<'info, ITokenAccount>,
     recipient_token_x: &AccountInfo<'info>,
     recipient_token_y: &AccountInfo<'info>,
-    rover_fee_token_y: &AccountInfo<'info>,
-    rover_fee_token_x: &AccountInfo<'info>,
+    fee_dest_token_y: &AccountInfo<'info>,
+    fee_dest_token_x: &AccountInfo<'info>,
     vault: &AccountInfo<'info>,
     _recipient: &AccountInfo<'info>,
     token_x_program: &AccountInfo<'info>,
@@ -2734,8 +1584,8 @@ fn execute_close_transfers<'info>(
     let y_to_recipient = vault_y_balance.checked_sub(y_fee).ok_or(CoreError::Overflow)?;
 
     // Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50: holders + bot)
-    //   TOKEN fees (Buy side, x_fee) → rover_fee_token_x for DLMM recycling
-    //   SOL fees (Sell side, y_fee)  → rover_fee_token_y (WSOL, unwrapped later)
+    //   TOKEN fees (Buy side, x_fee) → fee_dest_token_x for DLMM recycling
+    //   SOL fees (Sell side, y_fee)  → fee_dest_token_y (WSOL, unwrapped later)
     // B2 FIX: Prepend memo before each transfer (supports Memo Transfer extension)
     if x_fee > 0 {
         memo_cpi(memo_program, vault, signer)?;
@@ -2744,7 +1594,7 @@ fn execute_close_transfers<'info>(
             TransferChecked {
                 from: vault_token_x.to_account_info(),
                 mint: token_x_mint.to_account_info(),
-                to: rover_fee_token_x.to_account_info(),
+                to: fee_dest_token_x.to_account_info(),
                 authority: vault.to_account_info(),
             }, signer,
         ), x_fee, x_decimals)?;
@@ -2756,7 +1606,7 @@ fn execute_close_transfers<'info>(
             TransferChecked {
                 from: vault_token_y.to_account_info(),
                 mint: token_y_mint.to_account_info(),
-                to: rover_fee_token_y.to_account_info(),
+                to: fee_dest_token_y.to_account_info(),
                 authority: vault.to_account_info(),
             }, signer,
         ), y_fee, y_decimals)?;
@@ -2858,31 +1708,6 @@ pub struct FeeAppliedEvent {
     pub new_fee_bps: u16,
 }
 
-#[event]
-pub struct BurnCurveInitializedEvent {
-    pub initial_crank_supply: u64,
-    pub timestamp: i64,
-}
-
-#[event]
-pub struct BurnEnabledEvent {
-    pub enabled: bool,
-    pub timestamp: i64,
-}
-
-#[event]
-pub struct SweepCurveEvent {
-    pub total_sweepable: u64,
-    pub burn_sol: u64,
-    pub trader_sol: u64,
-    pub protocol_sol: u64,
-    pub burn_ratio_ppb: u64,
-    pub protocol_skim_ppb: u64,
-    pub crank_supply: u64,
-    pub initial_crank_supply: u64,
-    pub burn_enabled: bool,
-    pub timestamp: i64,
-}
 
 #[event]
 pub struct EmergencyCloseEvent {
@@ -2932,8 +1757,13 @@ pub struct Config {
     pub last_bot_sweep_slot: u64,        // Slot of last bot-initiated sweep_rover
     // --- Gas reimbursement (carved from reserved) ---
     pub gas_lamports: u64,               // Per-operation gas deduction from user vault → bot
-    // Reserved space for future fields
-    pub _reserved: [u8; 88],
+    // --- Fee destination (carved from reserved 2026-04-29) ---
+    // Single sink for all harvest_bins protocol fees (SOL or token). When
+    // Pubkey::default(), falls back to `bot` for legacy callers. Will be
+    // retargeted to the Hopper program PDA once Hopper ships.
+    pub fee_dest: Pubkey,
+    // Reserved space for future fields (was [u8; 88], 32 bytes carved → 56)
+    pub _reserved: [u8; 56],
 }
 
 impl Config {
@@ -2941,7 +1771,7 @@ impl Config {
     // + 8+8 (positions, volume) + 1+1+1 (paused, bot_paused, bump)
     // + 8+2+8+8 (harvest slot, keeper_tip, priority, harvested)
     // + 32+8 (emergency close) + 8+8 (close/sweep slots) + 8 (gas_lamports) + 88 (reserved)
-    pub const SIZE: usize = 8 + 32 + 32 + 32 + 2 + 2 + 8 + 8 + 8 + 1 + 1 + 1 + 8 + 2 + 8 + 8 + 32 + 8 + 8 + 8 + 8 + 88;
+    pub const SIZE: usize = 8 + 32 + 32 + 32 + 2 + 2 + 8 + 8 + 8 + 1 + 1 + 1 + 8 + 2 + 8 + 8 + 32 + 8 + 8 + 8 + 8 + 32 + 56;
 }
 
 #[account]
@@ -2997,56 +1827,6 @@ impl UserVault {
     pub const SIZE: usize = 8 + 32 + 1;
 }
 
-/// Rover authority PDA — owns rover (bribe) positions.
-/// Harvest proceeds accumulate here. sweep_rover splits SOL via the supply-driven
-/// burn curve into three destinations:
-///   burn_ratio        → burn_sol_vault PDA (staging for buy-side CRANK bids)
-///   trader_sol_frac   → trader_dest (bridge_vault, distributed as SOL via Merkle)
-///   protocol_skim     → Config.bot (operations)
-///
-/// burn_ratio = min(1.0, (current_supply / initial_crank_supply) / 0.75)
-/// protocol_skim = 0.20 * (1 - burn_ratio)
-/// trader_sol_frac = 1 - burn_ratio - protocol_skim
-///
-/// Kill switch: when burn_enabled = false, burn_ratio is clamped to 0 and
-/// all SOL flows 80% trader / 20% protocol.
-///
-/// `revenue_dest` is LEGACY — held for backwards-compat of the on-chain account
-/// layout but not referenced by sweep_rover anymore. Its former timelock slots
-/// (pending/change_at) have been repurposed for the trader_dest propose/apply
-/// timelock — same bytes, new meaning.
-#[account]
-pub struct RoverAuthority {
-    pub revenue_dest: Pubkey,              // LEGACY (was holder share dest; unused in curve model)
-    pub total_rover_positions: u64,        // Lifetime count
-    pub bump: u8,
-    pub pending_trader_dest: Pubkey,       // Pending trader_dest (propose/apply timelock)
-    pub trader_dest_change_at: i64,        // Unix ts when pending_trader_dest may be applied
-    pub trader_dest: Pubkey,               // Trader SOL share destination (bridge_vault)
-    // Carved from _reserved (post-amendment):
-    pub initial_crank_supply: u64,         // Snapshot of crank_mint.supply at curve init (immutable after init)
-    pub burn_enabled: bool,                // Kill switch — when false, sweep_rover skips burn portion
-    pub _reserved: [u8; 23],               // 32 - 8 (u64) - 1 (bool) = 23 bytes remaining
-}
-
-impl RoverAuthority {
-    // 8 (disc) + 32 (revenue_dest) + 8 (total_rover_positions) + 1 (bump)
-    // + 32 (pending_trader_dest) + 8 (trader_dest_change_at) + 32 (trader_dest)
-    // + 8 (initial_crank_supply) + 1 (burn_enabled) + 23 (_reserved)
-    pub const SIZE: usize = 8 + 32 + 8 + 1 + 32 + 8 + 32 + 8 + 1 + 23;
-}
-
-/// Burn SOL staging vault PDA. Bin-farm-owned (so we can direct-debit lamports
-/// without going through system_program::transfer with PDA signer + ownership
-/// edge cases). Holds native SOL between sweep_rover and wrap_burn_sol.
-#[account]
-pub struct BurnSolVault {
-    pub bump: u8,
-}
-
-impl BurnSolVault {
-    pub const SIZE: usize = 8 + 1;
-}
 
 // ============ CONTEXTS ============
 
@@ -3270,15 +2050,15 @@ pub struct ClosePosition<'info> {
     #[account(mut, constraint = owner_token_y.owner == position.user_vault @ CoreError::InvalidTokenOwner)]
     pub owner_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
-    #[account(seeds = [b"rover_authority"], bump = rover_authority.bump)]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
+    // --- Fee routing: all fees → Config.fee_dest ATAs (or Config.bot fallback) ---
+    /// CHECK: validated in handler against config.fee_dest (or config.bot fallback)
+    pub fee_dest: AccountInfo<'info>,
 
-    #[account(mut, constraint = rover_fee_token_x.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_fee_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
+    #[account(mut, constraint = fee_dest_token_x.owner == fee_dest.key() @ CoreError::InvalidTokenOwner)]
+    pub fee_dest_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = rover_fee_token_y.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_fee_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
+    #[account(mut, constraint = fee_dest_token_y.owner == fee_dest.key() @ CoreError::InvalidTokenOwner)]
+    pub fee_dest_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     /// CHECK: Token X program — must be SPL Token or Token-2022
     #[account(constraint = *token_x_program.key == anchor_spl::token::ID || *token_x_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
@@ -3389,15 +2169,15 @@ pub struct BotHarvest<'info> {
     #[account(mut, constraint = owner_token_y.owner == position.user_vault @ CoreError::InvalidTokenOwner)]
     pub owner_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
-    #[account(seeds = [b"rover_authority"], bump = rover_authority.bump)]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
+    // --- Fee routing: all fees → Config.fee_dest ATAs (or Config.bot fallback) ---
+    /// CHECK: validated in handler against config.fee_dest (or config.bot fallback)
+    pub fee_dest: AccountInfo<'info>,
 
-    #[account(mut, constraint = rover_fee_token_x.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_fee_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
+    #[account(mut, constraint = fee_dest_token_x.owner == fee_dest.key() @ CoreError::InvalidTokenOwner)]
+    pub fee_dest_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = rover_fee_token_y.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_fee_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
+    #[account(mut, constraint = fee_dest_token_y.owner == fee_dest.key() @ CoreError::InvalidTokenOwner)]
+    pub fee_dest_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     /// CHECK: Token X program — must be SPL Token or Token-2022
     #[account(constraint = *token_x_program.key == anchor_spl::token::ID || *token_x_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
@@ -3500,15 +2280,15 @@ pub struct UserClose<'info> {
     #[account(mut, constraint = user_token_y.owner == user_vault.key() @ CoreError::InvalidTokenOwner)]
     pub user_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    // --- Fee routing: all fees → rover_authority ATAs (sweep_rover splits 50/50) ---
-    #[account(seeds = [b"rover_authority"], bump = rover_authority.bump)]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
+    // --- Fee routing: all fees → Config.fee_dest ATAs (or Config.bot fallback) ---
+    /// CHECK: validated in handler against config.fee_dest (or config.bot fallback)
+    pub fee_dest: AccountInfo<'info>,
 
-    #[account(mut, constraint = rover_fee_token_x.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_fee_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
+    #[account(mut, constraint = fee_dest_token_x.owner == fee_dest.key() @ CoreError::InvalidTokenOwner)]
+    pub fee_dest_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    #[account(mut, constraint = rover_fee_token_y.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_fee_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
+    #[account(mut, constraint = fee_dest_token_y.owner == fee_dest.key() @ CoreError::InvalidTokenOwner)]
+    pub fee_dest_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     /// CHECK: Token X program — must be SPL Token or Token-2022
     #[account(constraint = *token_x_program.key == anchor_spl::token::ID || *token_x_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
@@ -3748,127 +2528,8 @@ pub struct UnwrapWsolInVault<'info> {
 
 // ============ CPI WRAPPER CONTEXTS ============
 
-#[derive(Accounts)]
-pub struct RoverBurnAndMint<'info> {
-    /// Bot-gated.
-    #[account(mut, constraint = caller.key() == config.bot @ CoreError::Unauthorized)]
-    pub caller: Signer<'info>,
 
-    #[account(seeds = [b"config"], bump = config.bump)]
-    pub config: Box<Account<'info, Config>>,
 
-    #[account(mut, seeds = [b"rover_authority"], bump = rover_authority.bump)]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
-
-    /// CHECK: bank-mint BankConfig PDA
-    #[account(mut)]
-    pub bank_config: AccountInfo<'info>,
-
-    /// CHECK: CRANK mint
-    #[account(mut, address = CRANK_MINT @ CoreError::InvalidCrankMint)]
-    pub crank_mint: AccountInfo<'info>,
-
-    /// CHECK: BANK mint
-    #[account(mut)]
-    pub bank_mint: AccountInfo<'info>,
-
-    /// CHECK: Rover's CRANK ATA — source of burn
-    #[account(mut)]
-    pub rover_crank_ata: AccountInfo<'info>,
-
-    /// CHECK: Rover's BANK ATA — receives minted BANK before forwarding
-    #[account(mut)]
-    pub rover_bank_ata: AccountInfo<'info>,
-
-    /// CHECK: Bank distributor vault — final BANK destination for daily Merkle distribution
-    #[account(mut)]
-    pub bank_distributor_vault: AccountInfo<'info>,
-
-    /// CHECK: Token program for CRANK
-    pub crank_token_program: AccountInfo<'info>,
-
-    /// CHECK: Token program for BANK
-    pub bank_token_program: AccountInfo<'info>,
-
-    /// CHECK: bank-mint program (validated against BANK_MINT_PROGRAM_ID)
-    pub bank_mint_program: AccountInfo<'info>,
-}
-
-#[derive(Accounts)]
-pub struct VaultBurnAndMint<'info> {
-    #[account(mut)]
-    pub caller: Signer<'info>,
-
-    #[account(seeds = [b"config"], bump = config.bump)]
-    pub config: Account<'info, Config>,
-
-    #[account(
-        mut,
-        seeds = [b"user_vault", user_vault.owner.as_ref()],
-        bump = user_vault.bump,
-    )]
-    pub user_vault: Account<'info, UserVault>,
-
-    /// CHECK: bank-mint BankConfig PDA
-    #[account(mut)]
-    pub bank_config: AccountInfo<'info>,
-
-    /// CHECK: CRANK mint
-    #[account(mut)]
-    pub crank_mint: AccountInfo<'info>,
-
-    /// CHECK: BANK mint
-    #[account(mut)]
-    pub bank_mint: AccountInfo<'info>,
-
-    /// CHECK: Vault's CRANK ATA (owned by user_vault PDA)
-    #[account(mut)]
-    pub vault_crank_ata: AccountInfo<'info>,
-
-    /// CHECK: Vault's BANK ATA (owned by user_vault PDA)
-    #[account(mut)]
-    pub vault_bank_ata: AccountInfo<'info>,
-
-    /// CHECK: Token program for CRANK
-    pub crank_token_program: AccountInfo<'info>,
-
-    /// CHECK: Token program for BANK
-    pub bank_token_program: AccountInfo<'info>,
-
-    /// CHECK: bank-mint program — validated in handler
-    pub bank_mint_program: AccountInfo<'info>,
-}
-
-#[derive(Accounts)]
-pub struct VaultVote<'info> {
-    #[account(mut)]
-    pub caller: Signer<'info>,
-
-    #[account(seeds = [b"config"], bump = config.bump)]
-    pub config: Account<'info, Config>,
-
-    #[account(
-        seeds = [b"user_vault", user_vault.owner.as_ref()],
-        bump = user_vault.bump,
-    )]
-    pub user_vault: Account<'info, UserVault>,
-
-    /// CHECK: gauge-voter GaugeConfig PDA
-    pub gauge_config: AccountInfo<'info>,
-
-    /// CHECK: BANK mint
-    pub bank_mint_account: AccountInfo<'info>,
-
-    /// CHECK: Vault's BANK ATA (owned by user_vault PDA)
-    pub vault_bank_ata: AccountInfo<'info>,
-
-    /// CHECK: Token program
-    pub token_program: AccountInfo<'info>,
-
-    /// CHECK: gauge-voter program — validated in handler
-    pub gauge_voter_program: AccountInfo<'info>,
-    // PoolGauge accounts passed via remaining_accounts
-}
 
 // ============ ADMIN CONTEXTS ============
 
@@ -3957,556 +2618,6 @@ pub struct AcceptAuthority<'info> {
     pub config: Account<'info, Config>,
 }
 
-// ============ ROVER CONTEXTS ============
-
-#[derive(Accounts)]
-pub struct InitializeRover<'info> {
-    #[account(
-        mut,
-        constraint = authority.key() == config.authority @ CoreError::Unauthorized
-    )]
-    pub authority: Signer<'info>,
-
-    #[account(seeds = [b"config"], bump = config.bump)]
-    pub config: Account<'info, Config>,
-
-    #[account(
-        init,
-        payer = authority,
-        space = RoverAuthority::SIZE,
-        seeds = [b"rover_authority"],
-        bump
-    )]
-    pub rover_authority: Account<'info, RoverAuthority>,
-
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-#[instruction(amount: u64, bin_step: u16)]
-pub struct OpenRoverPosition<'info> {
-    /// Anyone can deposit tokens as a rover bribe
-    #[account(mut)]
-    pub depositor: Signer<'info>,
-
-    #[account(mut, seeds = [b"config"], bump = config.bump)]
-    pub config: Box<Account<'info, Config>>,
-
-    #[account(
-        mut,
-        seeds = [b"rover_authority"],
-        bump = rover_authority.bump
-    )]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
-
-    // --- Meteora accounts ---
-
-    /// CHECK: Validated by Meteora CPI
-    #[account(mut)]
-    pub lb_pair: AccountInfo<'info>,
-
-    /// New position keypair (frontend generates)
-    #[account(mut)]
-    pub meteora_position: Signer<'info>,
-
-    /// CHECK: Bitmap extension — writable only when real account exists
-    pub bin_array_bitmap_ext: AccountInfo<'info>,
-
-    /// CHECK: Pool reserve X
-    #[account(mut)]
-    pub reserve_x: AccountInfo<'info>,
-
-    /// CHECK: Pool reserve Y
-    #[account(mut)]
-    pub reserve_y: AccountInfo<'info>,
-
-    /// CHECK: Bin array lower
-    #[account(mut)]
-    pub bin_array_lower: AccountInfo<'info>,
-
-    /// CHECK: Bin array upper
-    #[account(mut)]
-    pub bin_array_upper: AccountInfo<'info>,
-
-    // --- crank.money accounts ---
-
-    #[account(
-        init,
-        payer = depositor,
-        space = Position::SIZE,
-        seeds = [b"position", meteora_position.key().as_ref()],
-        bump
-    )]
-    pub position: Box<Account<'info, Position>>,
-
-    #[account(
-        init,
-        payer = depositor,
-        space = Vault::SIZE,
-        seeds = [b"vault", meteora_position.key().as_ref()],
-        bump
-    )]
-    pub vault: Box<Account<'info, Vault>>,
-
-    /// CHECK: Depositor's token account. Validated in handler.
-    #[account(mut)]
-    pub depositor_token_account: AccountInfo<'info>,
-
-    /// CHECK: Vault token X account. Validated in handler.
-    #[account(mut)]
-    pub vault_token_x: AccountInfo<'info>,
-
-    /// CHECK: Vault token Y account. Validated in handler.
-    #[account(mut)]
-    pub vault_token_y: AccountInfo<'info>,
-
-    /// CHECK: Token X mint
-    pub token_x_mint: AccountInfo<'info>,
-
-    /// CHECK: Token Y mint
-    pub token_y_mint: AccountInfo<'info>,
-
-    /// CHECK: Token X program — SPL Token or Token-2022
-    pub token_x_program: AccountInfo<'info>,
-
-    /// CHECK: Token Y program — SPL Token or Token-2022
-    pub token_y_program: AccountInfo<'info>,
-
-    pub system_program: Program<'info, System>,
-
-    // event_authority, dlmm_program, memo_program passed via remaining_accounts
-    // to fit within BPF 4KB stack frame with 2 init accounts
-}
-
-#[derive(Accounts)]
-// Shared admin context for rover dist-pool setters (set_trader_dest init,
-// propose_trader_dest, cancel_pending_trader_dest, set_fee_bps).
-pub struct UpdateRoverDistPool<'info> {
-    #[account(constraint = authority.key() == config.authority @ CoreError::Unauthorized)]
-    pub authority: Signer<'info>,
-
-    #[account(seeds = [b"config"], bump = config.bump)]
-    pub config: Account<'info, Config>,
-
-    #[account(
-        mut,
-        seeds = [b"rover_authority"],
-        bump = rover_authority.bump
-    )]
-    pub rover_authority: Account<'info, RoverAuthority>,
-}
-
-/// Initialize the burn curve. One-shot. Snapshots CRANK supply, enables burn,
-/// creates the burn_sol_vault PDA. Admin only.
-#[derive(Accounts)]
-pub struct InitializeBurnCurve<'info> {
-    #[account(
-        mut,
-        constraint = authority.key() == config.authority @ CoreError::Unauthorized,
-    )]
-    pub authority: Signer<'info>,
-
-    #[account(seeds = [b"config"], bump = config.bump)]
-    pub config: Account<'info, Config>,
-
-    #[account(
-        mut,
-        seeds = [b"rover_authority"],
-        bump = rover_authority.bump
-    )]
-    pub rover_authority: Account<'info, RoverAuthority>,
-
-    /// CRANK SPL mint — supply read here for the snapshot.
-    #[account(address = CRANK_MINT @ CoreError::InvalidCrankMint)]
-    pub crank_mint: InterfaceAccount<'info, Mint>,
-
-    /// Burn SOL staging vault. Bin-farm-owned PDA — sweep_rover credits via direct
-    /// lamport ADD, wrap_burn_sol direct-debits to fund DLMM bid positions.
-    #[account(
-        init,
-        payer = authority,
-        space = BurnSolVault::SIZE,
-        seeds = [b"burn_sol_vault"],
-        bump,
-    )]
-    pub burn_sol_vault: Box<Account<'info, BurnSolVault>>,
-
-    pub system_program: Program<'info, System>,
-}
-
-/// Permissionless apply for trader_dest after 24hr timelock
-#[derive(Accounts)]
-pub struct ApplyTraderDest<'info> {
-    pub caller: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"rover_authority"],
-        bump = rover_authority.bump
-    )]
-    pub rover_authority: Account<'info, RoverAuthority>,
-}
-
-#[derive(Accounts)]
-pub struct SweepRover<'info> {
-    /// Anyone can call sweep — permissionless
-    #[account(mut)]
-    pub caller: Signer<'info>,
-
-    #[account(mut, seeds = [b"config"], bump = config.bump)]
-    pub config: Account<'info, Config>,
-
-    #[account(
-        mut,
-        seeds = [b"rover_authority"],
-        bump = rover_authority.bump
-    )]
-    pub rover_authority: Account<'info, RoverAuthority>,
-
-    /// CRANK SPL mint — supply read here for the burn curve.
-    #[account(address = CRANK_MINT @ CoreError::InvalidCrankMint)]
-    pub crank_mint: Box<InterfaceAccount<'info, Mint>>,
-
-    /// Burn SOL staging vault PDA — receives the burn portion of the curve.
-    #[account(
-        mut,
-        seeds = [b"burn_sol_vault"],
-        bump = burn_sol_vault.bump,
-    )]
-    pub burn_sol_vault: Box<Account<'info, BurnSolVault>>,
-
-    /// CHECK: Trader reward destination (SOL portion — bridge_vault PDA)
-    #[account(
-        mut,
-        constraint = trader_dest.key() == rover_authority.trader_dest @ CoreError::InvalidTraderDest,
-        constraint = rover_authority.trader_dest != Pubkey::default() @ CoreError::TraderDestNotSet,
-        constraint = !trader_dest.executable @ CoreError::InvalidTraderDest
-    )]
-    pub trader_dest: AccountInfo<'info>,
-
-    /// CHECK: Operator destination — bot keypair from Config (protocol skim)
-    #[account(
-        mut,
-        constraint = bot_dest.key() == config.bot @ CoreError::InvalidBot,
-        constraint = !bot_dest.executable @ CoreError::InvalidBot
-    )]
-    pub bot_dest: AccountInfo<'info>,
-}
-
-/// Close a token account owned by rover_authority. Permissionless.
-/// Lamports (balance + rent) always go to rover_authority itself — no extraction possible.
-#[derive(Accounts)]
-pub struct CloseRoverTokenAccount<'info> {
-    /// Anyone can call — permissionless
-    pub caller: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"rover_authority"],
-        bump = rover_authority.bump
-    )]
-    pub rover_authority: Account<'info, RoverAuthority>,
-
-    /// Token account to close — must be owned by rover_authority
-    #[account(
-        mut,
-        constraint = token_account.owner == rover_authority.key() @ CoreError::InvalidTokenOwner
-    )]
-    pub token_account: InterfaceAccount<'info, ITokenAccount>,
-
-    /// CHECK: SPL Token or Token-2022
-    #[account(constraint = *token_program.key == anchor_spl::token::ID || *token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
-    pub token_program: AccountInfo<'info>,
-}
-
-#[derive(Accounts)]
-pub struct CloseRoverPosition<'info> {
-    #[account(mut)]
-    pub bot: Signer<'info>,
-
-    #[account(mut, seeds = [b"config"], bump = config.bump)]
-    pub config: Box<Account<'info, Config>>,
-
-    #[account(mut, seeds = [b"rover_authority"], bump = rover_authority.bump)]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
-
-    #[account(
-        mut,
-        seeds = [b"position", position.meteora_position.as_ref()],
-        bump = position.bump,
-        constraint = position.user_vault == rover_authority.key() @ CoreError::Unauthorized,
-        close = bot
-    )]
-    pub position: Box<Account<'info, Position>>,
-
-    #[account(
-        mut,
-        seeds = [b"vault", position.meteora_position.as_ref()],
-        bump = vault.bump,
-        close = bot
-    )]
-    pub vault: Box<Account<'info, Vault>>,
-
-    /// CHECK: Meteora position
-    #[account(mut, constraint = meteora_position.key() == position.meteora_position @ CoreError::InvalidPosition)]
-    pub meteora_position: AccountInfo<'info>,
-
-    /// CHECK: DLMM pool
-    #[account(mut, constraint = lb_pair.key() == position.lb_pair @ CoreError::InvalidPool)]
-    pub lb_pair: AccountInfo<'info>,
-
-    /// CHECK: Bitmap ext
-    pub bin_array_bitmap_ext: AccountInfo<'info>,
-
-    /// CHECK: Bin array lower
-    #[account(mut)]
-    pub bin_array_lower: AccountInfo<'info>,
-
-    /// CHECK: Bin array upper
-    #[account(mut)]
-    pub bin_array_upper: AccountInfo<'info>,
-
-    /// CHECK: Reserve X
-    #[account(mut)]
-    pub reserve_x: AccountInfo<'info>,
-
-    /// CHECK: Reserve Y
-    #[account(mut)]
-    pub reserve_y: AccountInfo<'info>,
-
-    /// CHECK: Token X mint
-    pub token_x_mint: UncheckedAccount<'info>,
-    /// CHECK: Token Y mint
-    pub token_y_mint: UncheckedAccount<'info>,
-
-    /// CHECK: Event authority
-    pub event_authority: AccountInfo<'info>,
-
-    /// CHECK: DLMM program
-    #[account(constraint = dlmm_program.key() == METEORA_DLMM_PROGRAM_ID @ CoreError::InvalidProgram)]
-    pub dlmm_program: AccountInfo<'info>,
-
-    #[account(mut, constraint = vault_token_x.owner == vault.key() @ CoreError::InvalidTokenOwner)]
-    pub vault_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
-
-    #[account(mut, constraint = vault_token_y.owner == vault.key() @ CoreError::InvalidTokenOwner)]
-    pub vault_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
-
-    #[account(mut, constraint = rover_token_x.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
-
-    #[account(mut, constraint = rover_token_y.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
-
-    /// CHECK: Token X program
-    pub token_x_program: AccountInfo<'info>,
-    /// CHECK: Token Y program
-    pub token_y_program: AccountInfo<'info>,
-
-    /// CHECK: Memo program
-    pub memo_program: AccountInfo<'info>,
-
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct WrapBurnSol<'info> {
-    /// Bot-gated.
-    pub caller: Signer<'info>,
-
-    #[account(seeds = [b"config"], bump = config.bump,
-        constraint = caller.key() == config.bot @ CoreError::Unauthorized)]
-    pub config: Box<Account<'info, Config>>,
-
-    #[account(seeds = [b"rover_authority"], bump = rover_authority.bump)]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
-
-    #[account(mut, seeds = [b"burn_sol_vault"], bump = burn_sol_vault.bump)]
-    pub burn_sol_vault: Box<Account<'info, BurnSolVault>>,
-
-    /// Rover authority's WSOL ATA. Receives lamports here; bot calls SPL
-    /// `sync_native` in the next ix to update the WSOL token balance.
-    #[account(mut,
-        constraint = rover_wsol_account.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_wsol_account: Box<InterfaceAccount<'info, ITokenAccount>>,
-}
-
-#[derive(Accounts)]
-pub struct OpenRoverBidPosition<'info> {
-    /// Bot-gated — pays rent for Position + Vault PDAs
-    #[account(mut, constraint = bot.key() == config.bot @ CoreError::Unauthorized)]
-    pub bot: Signer<'info>,
-
-    #[account(mut, seeds = [b"config"], bump = config.bump)]
-    pub config: Box<Account<'info, Config>>,
-
-    #[account(mut, seeds = [b"rover_authority"], bump = rover_authority.bump)]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
-
-    /// Source: rover_authority's WSOL ATA, pre-funded by wrap_burn_sol + sync_native.
-    #[account(mut,
-        constraint = rover_wsol_account.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_wsol_account: Box<InterfaceAccount<'info, ITokenAccount>>,
-
-    // --- Meteora accounts ---
-    /// CHECK: Validated by Meteora CPI
-    #[account(mut)]
-    pub lb_pair: AccountInfo<'info>,
-
-    /// New position keypair (bot generates)
-    #[account(mut)]
-    pub meteora_position: Signer<'info>,
-
-    /// CHECK: Bitmap extension
-    pub bin_array_bitmap_ext: AccountInfo<'info>,
-
-    /// CHECK: Pool reserve X
-    #[account(mut)]
-    pub reserve_x: AccountInfo<'info>,
-
-    /// CHECK: Pool reserve Y
-    #[account(mut)]
-    pub reserve_y: AccountInfo<'info>,
-
-    /// CHECK: Bin array lower
-    #[account(mut)]
-    pub bin_array_lower: AccountInfo<'info>,
-
-    /// CHECK: Bin array upper
-    #[account(mut)]
-    pub bin_array_upper: AccountInfo<'info>,
-
-    // --- crank.money accounts ---
-    #[account(init, payer = bot, space = Position::SIZE,
-        seeds = [b"position", meteora_position.key().as_ref()], bump)]
-    pub position: Box<Account<'info, Position>>,
-
-    #[account(init, payer = bot, space = Vault::SIZE,
-        seeds = [b"vault", meteora_position.key().as_ref()], bump)]
-    pub vault: Box<Account<'info, Vault>>,
-
-    /// CHECK: Vault token X account (CRANK side — receives filled CRANK)
-    #[account(mut)]
-    pub vault_token_x: AccountInfo<'info>,
-
-    /// CHECK: Vault token Y account (WSOL side — bid liquidity)
-    #[account(mut)]
-    pub vault_token_y: AccountInfo<'info>,
-
-    /// CHECK: Token X mint (CRANK)
-    pub token_x_mint: AccountInfo<'info>,
-
-    /// CHECK: Token Y mint (WSOL)
-    pub token_y_mint: AccountInfo<'info>,
-
-    /// CHECK: Token X program
-    pub token_x_program: AccountInfo<'info>,
-
-    /// CHECK: Token Y program
-    pub token_y_program: AccountInfo<'info>,
-
-    pub system_program: Program<'info, System>,
-
-    // event_authority + dlmm_program via remaining_accounts (BPF stack)
-}
-
-#[derive(Accounts)]
-pub struct OpenFeeRover<'info> {
-    /// Bot-gated — pays rent for Position + Vault PDAs
-    #[account(
-        mut,
-        constraint = bot.key() == config.bot @ CoreError::Unauthorized
-    )]
-    pub bot: Signer<'info>,
-
-    #[account(mut, seeds = [b"config"], bump = config.bump)]
-    pub config: Box<Account<'info, Config>>,
-
-    #[account(mut, seeds = [b"rover_authority"], bump = rover_authority.bump)]
-    pub rover_authority: Box<Account<'info, RoverAuthority>>,
-
-    // --- Meteora accounts ---
-
-    /// CHECK: Validated by Meteora CPI
-    #[account(mut)]
-    pub lb_pair: AccountInfo<'info>,
-
-    /// New position keypair (bot generates)
-    #[account(mut)]
-    pub meteora_position: Signer<'info>,
-
-    /// CHECK: Bitmap extension — writable only when real account exists
-    pub bin_array_bitmap_ext: AccountInfo<'info>,
-
-    /// CHECK: Pool reserve X
-    #[account(mut)]
-    pub reserve_x: AccountInfo<'info>,
-
-    /// CHECK: Pool reserve Y
-    #[account(mut)]
-    pub reserve_y: AccountInfo<'info>,
-
-    /// CHECK: Bin array lower
-    #[account(mut)]
-    pub bin_array_lower: AccountInfo<'info>,
-
-    /// CHECK: Bin array upper
-    #[account(mut)]
-    pub bin_array_upper: AccountInfo<'info>,
-
-    // --- crank.money accounts ---
-
-    #[account(init, payer = bot, space = Position::SIZE, seeds = [b"position", meteora_position.key().as_ref()], bump)]
-    pub position: Box<Account<'info, Position>>,
-
-    #[account(init, payer = bot, space = Vault::SIZE, seeds = [b"vault", meteora_position.key().as_ref()], bump)]
-    pub vault: Box<Account<'info, Vault>>,
-
-    /// Source: rover_authority's token account (accumulated fee tokens)
-    #[account(mut, constraint = rover_token_account.owner == rover_authority.key() @ CoreError::InvalidTokenOwner)]
-    pub rover_token_account: Box<InterfaceAccount<'info, ITokenAccount>>,
-
-    /// CHECK: Vault token X account. Validated in handler.
-    #[account(mut)]
-    pub vault_token_x: AccountInfo<'info>,
-
-    /// CHECK: Vault token Y account. Validated in handler.
-    #[account(mut)]
-    pub vault_token_y: AccountInfo<'info>,
-
-    /// CHECK: Token X mint
-    pub token_x_mint: AccountInfo<'info>,
-
-    /// CHECK: Token Y mint
-    pub token_y_mint: AccountInfo<'info>,
-
-    /// CHECK: Token X program — SPL Token or Token-2022
-    pub token_x_program: AccountInfo<'info>,
-
-    /// CHECK: Token Y program — SPL Token or Token-2022
-    pub token_y_program: AccountInfo<'info>,
-
-    pub system_program: Program<'info, System>,
-
-    // event_authority, dlmm_program, memo_program passed via remaining_accounts
-    // to fit within BPF 4KB stack frame with 2 init accounts
-}
-
-// ============ ROVER EVENTS ============
-
-#[event]
-pub struct RoverOpenedEvent {
-    pub depositor: Pubkey,
-    pub lb_pair: Pubkey,
-    pub position: Pubkey,
-    pub token_mint: Pubkey,    // What token was deposited
-    pub amount: u64,
-    pub active_id: i32,        // On-chain activeId that determined range
-    pub bin_step: u16,         // Needed to compute price range
-    pub min_bin_id: i32,
-    pub max_bin_id: i32,
-    pub timestamp: i64,
-}
 
 
 // ============ ERRORS ============
@@ -4587,8 +2698,6 @@ pub enum CoreError {
     TraderDestNotSet,
     #[msg("Trader destination already set — use propose_trader_dest for changes")]
     TraderDestAlreadySet,
-    #[msg("remaining_account owner is not gauge-voter program")]
-    InvalidGaugeAccount,
     #[msg("Insufficient vault balance for withdrawal")]
     InsufficientBalance,
     #[msg("Invalid vault owner — does not match PDA seed")]
@@ -4605,4 +2714,6 @@ pub enum CoreError {
     InvalidCrankMint,
     #[msg("Invalid burn SOL vault PDA")]
     InvalidBurnSolVault,
+    #[msg("Fee destination account does not match Config.fee_dest (or Config.bot if unset)")]
+    InvalidFeeDest,
 }
