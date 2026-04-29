@@ -66,9 +66,9 @@ export type ClosePositionInstruction<
   TAccountVaultTokenY extends string | AccountMeta<string> = string,
   TAccountOwnerTokenX extends string | AccountMeta<string> = string,
   TAccountOwnerTokenY extends string | AccountMeta<string> = string,
-  TAccountRoverAuthority extends string | AccountMeta<string> = string,
-  TAccountRoverFeeTokenX extends string | AccountMeta<string> = string,
-  TAccountRoverFeeTokenY extends string | AccountMeta<string> = string,
+  TAccountFeeDest extends string | AccountMeta<string> = string,
+  TAccountFeeDestTokenX extends string | AccountMeta<string> = string,
+  TAccountFeeDestTokenY extends string | AccountMeta<string> = string,
   TAccountTokenXProgram extends string | AccountMeta<string> = string,
   TAccountTokenYProgram extends string | AccountMeta<string> = string,
   TAccountMemoProgram extends string | AccountMeta<string> = string,
@@ -139,15 +139,15 @@ export type ClosePositionInstruction<
       TAccountOwnerTokenY extends string
         ? WritableAccount<TAccountOwnerTokenY>
         : TAccountOwnerTokenY,
-      TAccountRoverAuthority extends string
-        ? ReadonlyAccount<TAccountRoverAuthority>
-        : TAccountRoverAuthority,
-      TAccountRoverFeeTokenX extends string
-        ? WritableAccount<TAccountRoverFeeTokenX>
-        : TAccountRoverFeeTokenX,
-      TAccountRoverFeeTokenY extends string
-        ? WritableAccount<TAccountRoverFeeTokenY>
-        : TAccountRoverFeeTokenY,
+      TAccountFeeDest extends string
+        ? ReadonlyAccount<TAccountFeeDest>
+        : TAccountFeeDest,
+      TAccountFeeDestTokenX extends string
+        ? WritableAccount<TAccountFeeDestTokenX>
+        : TAccountFeeDestTokenX,
+      TAccountFeeDestTokenY extends string
+        ? WritableAccount<TAccountFeeDestTokenY>
+        : TAccountFeeDestTokenY,
       TAccountTokenXProgram extends string
         ? ReadonlyAccount<TAccountTokenXProgram>
         : TAccountTokenXProgram,
@@ -214,9 +214,9 @@ export type ClosePositionAsyncInput<
   TAccountVaultTokenY extends string = string,
   TAccountOwnerTokenX extends string = string,
   TAccountOwnerTokenY extends string = string,
-  TAccountRoverAuthority extends string = string,
-  TAccountRoverFeeTokenX extends string = string,
-  TAccountRoverFeeTokenY extends string = string,
+  TAccountFeeDest extends string = string,
+  TAccountFeeDestTokenX extends string = string,
+  TAccountFeeDestTokenY extends string = string,
   TAccountTokenXProgram extends string = string,
   TAccountTokenYProgram extends string = string,
   TAccountMemoProgram extends string = string,
@@ -243,9 +243,9 @@ export type ClosePositionAsyncInput<
   vaultTokenY: Address<TAccountVaultTokenY>;
   ownerTokenX: Address<TAccountOwnerTokenX>;
   ownerTokenY: Address<TAccountOwnerTokenY>;
-  roverAuthority?: Address<TAccountRoverAuthority>;
-  roverFeeTokenX: Address<TAccountRoverFeeTokenX>;
-  roverFeeTokenY: Address<TAccountRoverFeeTokenY>;
+  feeDest: Address<TAccountFeeDest>;
+  feeDestTokenX: Address<TAccountFeeDestTokenX>;
+  feeDestTokenY: Address<TAccountFeeDestTokenY>;
   tokenXProgram: Address<TAccountTokenXProgram>;
   tokenYProgram: Address<TAccountTokenYProgram>;
   memoProgram: Address<TAccountMemoProgram>;
@@ -273,9 +273,9 @@ export async function getClosePositionInstructionAsync<
   TAccountVaultTokenY extends string,
   TAccountOwnerTokenX extends string,
   TAccountOwnerTokenY extends string,
-  TAccountRoverAuthority extends string,
-  TAccountRoverFeeTokenX extends string,
-  TAccountRoverFeeTokenY extends string,
+  TAccountFeeDest extends string,
+  TAccountFeeDestTokenX extends string,
+  TAccountFeeDestTokenY extends string,
   TAccountTokenXProgram extends string,
   TAccountTokenYProgram extends string,
   TAccountMemoProgram extends string,
@@ -303,9 +303,9 @@ export async function getClosePositionInstructionAsync<
     TAccountVaultTokenY,
     TAccountOwnerTokenX,
     TAccountOwnerTokenY,
-    TAccountRoverAuthority,
-    TAccountRoverFeeTokenX,
-    TAccountRoverFeeTokenY,
+    TAccountFeeDest,
+    TAccountFeeDestTokenX,
+    TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
@@ -335,9 +335,9 @@ export async function getClosePositionInstructionAsync<
     TAccountVaultTokenY,
     TAccountOwnerTokenX,
     TAccountOwnerTokenY,
-    TAccountRoverAuthority,
-    TAccountRoverFeeTokenX,
-    TAccountRoverFeeTokenY,
+    TAccountFeeDest,
+    TAccountFeeDestTokenX,
+    TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
@@ -372,9 +372,9 @@ export async function getClosePositionInstructionAsync<
     vaultTokenY: { value: input.vaultTokenY ?? null, isWritable: true },
     ownerTokenX: { value: input.ownerTokenX ?? null, isWritable: true },
     ownerTokenY: { value: input.ownerTokenY ?? null, isWritable: true },
-    roverAuthority: { value: input.roverAuthority ?? null, isWritable: false },
-    roverFeeTokenX: { value: input.roverFeeTokenX ?? null, isWritable: true },
-    roverFeeTokenY: { value: input.roverFeeTokenY ?? null, isWritable: true },
+    feeDest: { value: input.feeDest ?? null, isWritable: false },
+    feeDestTokenX: { value: input.feeDestTokenX ?? null, isWritable: true },
+    feeDestTokenY: { value: input.feeDestTokenY ?? null, isWritable: true },
     tokenXProgram: { value: input.tokenXProgram ?? null, isWritable: false },
     tokenYProgram: { value: input.tokenYProgram ?? null, isWritable: false },
     memoProgram: { value: input.memoProgram ?? null, isWritable: false },
@@ -391,19 +391,6 @@ export async function getClosePositionInstructionAsync<
       programAddress,
       seeds: [
         getBytesEncoder().encode(new Uint8Array([99, 111, 110, 102, 105, 103])),
-      ],
-    });
-  }
-  if (!accounts.roverAuthority.value) {
-    accounts.roverAuthority.value = await getProgramDerivedAddress({
-      programAddress,
-      seeds: [
-        getBytesEncoder().encode(
-          new Uint8Array([
-            114, 111, 118, 101, 114, 95, 97, 117, 116, 104, 111, 114, 105, 116,
-            121,
-          ])
-        ),
       ],
     });
   }
@@ -435,9 +422,9 @@ export async function getClosePositionInstructionAsync<
       getAccountMeta(accounts.vaultTokenY),
       getAccountMeta(accounts.ownerTokenX),
       getAccountMeta(accounts.ownerTokenY),
-      getAccountMeta(accounts.roverAuthority),
-      getAccountMeta(accounts.roverFeeTokenX),
-      getAccountMeta(accounts.roverFeeTokenY),
+      getAccountMeta(accounts.feeDest),
+      getAccountMeta(accounts.feeDestTokenX),
+      getAccountMeta(accounts.feeDestTokenY),
       getAccountMeta(accounts.tokenXProgram),
       getAccountMeta(accounts.tokenYProgram),
       getAccountMeta(accounts.memoProgram),
@@ -467,9 +454,9 @@ export async function getClosePositionInstructionAsync<
     TAccountVaultTokenY,
     TAccountOwnerTokenX,
     TAccountOwnerTokenY,
-    TAccountRoverAuthority,
-    TAccountRoverFeeTokenX,
-    TAccountRoverFeeTokenY,
+    TAccountFeeDest,
+    TAccountFeeDestTokenX,
+    TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
@@ -498,9 +485,9 @@ export type ClosePositionInput<
   TAccountVaultTokenY extends string = string,
   TAccountOwnerTokenX extends string = string,
   TAccountOwnerTokenY extends string = string,
-  TAccountRoverAuthority extends string = string,
-  TAccountRoverFeeTokenX extends string = string,
-  TAccountRoverFeeTokenY extends string = string,
+  TAccountFeeDest extends string = string,
+  TAccountFeeDestTokenX extends string = string,
+  TAccountFeeDestTokenY extends string = string,
   TAccountTokenXProgram extends string = string,
   TAccountTokenYProgram extends string = string,
   TAccountMemoProgram extends string = string,
@@ -527,9 +514,9 @@ export type ClosePositionInput<
   vaultTokenY: Address<TAccountVaultTokenY>;
   ownerTokenX: Address<TAccountOwnerTokenX>;
   ownerTokenY: Address<TAccountOwnerTokenY>;
-  roverAuthority: Address<TAccountRoverAuthority>;
-  roverFeeTokenX: Address<TAccountRoverFeeTokenX>;
-  roverFeeTokenY: Address<TAccountRoverFeeTokenY>;
+  feeDest: Address<TAccountFeeDest>;
+  feeDestTokenX: Address<TAccountFeeDestTokenX>;
+  feeDestTokenY: Address<TAccountFeeDestTokenY>;
   tokenXProgram: Address<TAccountTokenXProgram>;
   tokenYProgram: Address<TAccountTokenYProgram>;
   memoProgram: Address<TAccountMemoProgram>;
@@ -557,9 +544,9 @@ export function getClosePositionInstruction<
   TAccountVaultTokenY extends string,
   TAccountOwnerTokenX extends string,
   TAccountOwnerTokenY extends string,
-  TAccountRoverAuthority extends string,
-  TAccountRoverFeeTokenX extends string,
-  TAccountRoverFeeTokenY extends string,
+  TAccountFeeDest extends string,
+  TAccountFeeDestTokenX extends string,
+  TAccountFeeDestTokenY extends string,
   TAccountTokenXProgram extends string,
   TAccountTokenYProgram extends string,
   TAccountMemoProgram extends string,
@@ -587,9 +574,9 @@ export function getClosePositionInstruction<
     TAccountVaultTokenY,
     TAccountOwnerTokenX,
     TAccountOwnerTokenY,
-    TAccountRoverAuthority,
-    TAccountRoverFeeTokenX,
-    TAccountRoverFeeTokenY,
+    TAccountFeeDest,
+    TAccountFeeDestTokenX,
+    TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
@@ -618,9 +605,9 @@ export function getClosePositionInstruction<
   TAccountVaultTokenY,
   TAccountOwnerTokenX,
   TAccountOwnerTokenY,
-  TAccountRoverAuthority,
-  TAccountRoverFeeTokenX,
-  TAccountRoverFeeTokenY,
+  TAccountFeeDest,
+  TAccountFeeDestTokenX,
+  TAccountFeeDestTokenY,
   TAccountTokenXProgram,
   TAccountTokenYProgram,
   TAccountMemoProgram,
@@ -654,9 +641,9 @@ export function getClosePositionInstruction<
     vaultTokenY: { value: input.vaultTokenY ?? null, isWritable: true },
     ownerTokenX: { value: input.ownerTokenX ?? null, isWritable: true },
     ownerTokenY: { value: input.ownerTokenY ?? null, isWritable: true },
-    roverAuthority: { value: input.roverAuthority ?? null, isWritable: false },
-    roverFeeTokenX: { value: input.roverFeeTokenX ?? null, isWritable: true },
-    roverFeeTokenY: { value: input.roverFeeTokenY ?? null, isWritable: true },
+    feeDest: { value: input.feeDest ?? null, isWritable: false },
+    feeDestTokenX: { value: input.feeDestTokenX ?? null, isWritable: true },
+    feeDestTokenY: { value: input.feeDestTokenY ?? null, isWritable: true },
     tokenXProgram: { value: input.tokenXProgram ?? null, isWritable: false },
     tokenYProgram: { value: input.tokenYProgram ?? null, isWritable: false },
     memoProgram: { value: input.memoProgram ?? null, isWritable: false },
@@ -696,9 +683,9 @@ export function getClosePositionInstruction<
       getAccountMeta(accounts.vaultTokenY),
       getAccountMeta(accounts.ownerTokenX),
       getAccountMeta(accounts.ownerTokenY),
-      getAccountMeta(accounts.roverAuthority),
-      getAccountMeta(accounts.roverFeeTokenX),
-      getAccountMeta(accounts.roverFeeTokenY),
+      getAccountMeta(accounts.feeDest),
+      getAccountMeta(accounts.feeDestTokenX),
+      getAccountMeta(accounts.feeDestTokenY),
       getAccountMeta(accounts.tokenXProgram),
       getAccountMeta(accounts.tokenYProgram),
       getAccountMeta(accounts.memoProgram),
@@ -728,9 +715,9 @@ export function getClosePositionInstruction<
     TAccountVaultTokenY,
     TAccountOwnerTokenX,
     TAccountOwnerTokenY,
-    TAccountRoverAuthority,
-    TAccountRoverFeeTokenX,
-    TAccountRoverFeeTokenY,
+    TAccountFeeDest,
+    TAccountFeeDestTokenX,
+    TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
@@ -765,9 +752,9 @@ export type ParsedClosePositionInstruction<
     vaultTokenY: TAccountMetas[17];
     ownerTokenX: TAccountMetas[18];
     ownerTokenY: TAccountMetas[19];
-    roverAuthority: TAccountMetas[20];
-    roverFeeTokenX: TAccountMetas[21];
-    roverFeeTokenY: TAccountMetas[22];
+    feeDest: TAccountMetas[20];
+    feeDestTokenX: TAccountMetas[21];
+    feeDestTokenY: TAccountMetas[22];
     tokenXProgram: TAccountMetas[23];
     tokenYProgram: TAccountMetas[24];
     memoProgram: TAccountMetas[25];
@@ -817,9 +804,9 @@ export function parseClosePositionInstruction<
       vaultTokenY: getNextAccount(),
       ownerTokenX: getNextAccount(),
       ownerTokenY: getNextAccount(),
-      roverAuthority: getNextAccount(),
-      roverFeeTokenX: getNextAccount(),
-      roverFeeTokenY: getNextAccount(),
+      feeDest: getNextAccount(),
+      feeDestTokenX: getNextAccount(),
+      feeDestTokenY: getNextAccount(),
       tokenXProgram: getNextAccount(),
       tokenYProgram: getNextAccount(),
       memoProgram: getNextAccount(),

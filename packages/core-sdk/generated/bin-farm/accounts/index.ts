@@ -6,10 +6,8 @@
  * @see https://github.com/codama-idl/codama
  */
 
-export * from './burnSolVault';
 export * from './config';
 export * from './position';
 export * from './positionCounter';
-export * from './roverAuthority';
 export * from './userVault';
 export * from './vault';

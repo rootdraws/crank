@@ -77,6 +77,7 @@ export type Config = {
   lastBotCloseSlot: bigint;
   lastBotSweepSlot: bigint;
   gasLamports: bigint;
+  feeDest: Address;
   reserved: Array<number>;
 };
 
@@ -101,6 +102,7 @@ export type ConfigArgs = {
   lastBotCloseSlot: number | bigint;
   lastBotSweepSlot: number | bigint;
   gasLamports: number | bigint;
+  feeDest: Address;
   reserved: Array<number>;
 };
 
@@ -128,7 +130,8 @@ export function getConfigEncoder(): FixedSizeEncoder<ConfigArgs> {
       ['lastBotCloseSlot', getU64Encoder()],
       ['lastBotSweepSlot', getU64Encoder()],
       ['gasLamports', getU64Encoder()],
-      ['reserved', getArrayEncoder(getU8Encoder(), { size: 88 })],
+      ['feeDest', getAddressEncoder()],
+      ['reserved', getArrayEncoder(getU8Encoder(), { size: 56 })],
     ]),
     (value) => ({ ...value, discriminator: CONFIG_DISCRIMINATOR })
   );
@@ -157,7 +160,8 @@ export function getConfigDecoder(): FixedSizeDecoder<Config> {
     ['lastBotCloseSlot', getU64Decoder()],
     ['lastBotSweepSlot', getU64Decoder()],
     ['gasLamports', getU64Decoder()],
-    ['reserved', getArrayDecoder(getU8Decoder(), { size: 88 })],
+    ['feeDest', getAddressDecoder()],
+    ['reserved', getArrayDecoder(getU8Decoder(), { size: 56 })],
   ]);
 }
 

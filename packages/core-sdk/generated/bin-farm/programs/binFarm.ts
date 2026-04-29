@@ -16,31 +16,18 @@ import {
 import {
   type ParsedAcceptAuthorityInstruction,
   type ParsedApplyEmergencyCloseInstruction,
-  type ParsedApplyRevenueDestInstruction,
   type ParsedBotPauseInstruction,
   type ParsedBotUnpauseInstruction,
-  type ParsedCancelPendingRevenueDestInstruction,
   type ParsedClaimFeesInstruction,
   type ParsedClosePositionInstruction,
-  type ParsedCloseRoverPositionInstruction,
-  type ParsedCloseRoverTokenAccountInstruction,
   type ParsedCreateVaultInstruction,
   type ParsedHarvestBinsInstruction,
-  type ParsedInitializeBurnCurveInstruction,
   type ParsedInitializeInstruction,
-  type ParsedInitializeRoverInstruction,
-  type ParsedOpenFeeRoverInstruction,
   type ParsedOpenPositionV2Instruction,
-  type ParsedOpenRoverBidPositionInstruction,
-  type ParsedOpenRoverPositionInstruction,
   type ParsedPauseInstruction,
   type ParsedProposeEmergencyCloseInstruction,
-  type ParsedProposeRevenueDestInstruction,
-  type ParsedRoverBurnAndMintInstruction,
-  type ParsedSetBurnEnabledInstruction,
   type ParsedSetFeeBpsInstruction,
-  type ParsedSetTraderDestInstruction,
-  type ParsedSweepRoverInstruction,
+  type ParsedSetFeeDestInstruction,
   type ParsedTransferAuthorityInstruction,
   type ParsedUnpauseInstruction,
   type ParsedUnwrapWsolInVaultInstruction,
@@ -49,23 +36,18 @@ import {
   type ParsedUpdateKeeperTipBpsInstruction,
   type ParsedUpdatePrioritySlotsInstruction,
   type ParsedUserCloseInstruction,
-  type ParsedVaultBurnAndMintInstruction,
-  type ParsedVaultVoteInstruction,
   type ParsedWithdrawSolInstruction,
   type ParsedWithdrawTokenInstruction,
-  type ParsedWrapBurnSolInstruction,
   type ParsedWrapSolInVaultInstruction,
 } from '../instructions';
 
 export const BIN_FARM_PROGRAM_ADDRESS =
-  '8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia' as Address<'8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia'>;
+  '4329kBCQFq4VrL68Xb9JiwTJGibVr3bhAULjSDmxobUw' as Address<'4329kBCQFq4VrL68Xb9JiwTJGibVr3bhAULjSDmxobUw'>;
 
 export enum BinFarmAccount {
-  BurnSolVault,
   Config,
   Position,
   PositionCounter,
-  RoverAuthority,
   UserVault,
   Vault,
 }
@@ -74,17 +56,6 @@ export function identifyBinFarmAccount(
   account: { data: ReadonlyUint8Array } | ReadonlyUint8Array
 ): BinFarmAccount {
   const data = 'data' in account ? account.data : account;
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([52, 50, 14, 196, 94, 123, 213, 62])
-      ),
-      0
-    )
-  ) {
-    return BinFarmAccount.BurnSolVault;
-  }
   if (
     containsBytes(
       data,
@@ -122,17 +93,6 @@ export function identifyBinFarmAccount(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([65, 247, 130, 146, 26, 34, 182, 71])
-      ),
-      0
-    )
-  ) {
-    return BinFarmAccount.RoverAuthority;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([23, 76, 96, 159, 210, 10, 5, 22])
       ),
       0
@@ -159,31 +119,18 @@ export function identifyBinFarmAccount(
 export enum BinFarmInstruction {
   AcceptAuthority,
   ApplyEmergencyClose,
-  ApplyRevenueDest,
   BotPause,
   BotUnpause,
-  CancelPendingRevenueDest,
   ClaimFees,
   ClosePosition,
-  CloseRoverPosition,
-  CloseRoverTokenAccount,
   CreateVault,
   HarvestBins,
   Initialize,
-  InitializeBurnCurve,
-  InitializeRover,
-  OpenFeeRover,
   OpenPositionV2,
-  OpenRoverBidPosition,
-  OpenRoverPosition,
   Pause,
   ProposeEmergencyClose,
-  ProposeRevenueDest,
-  RoverBurnAndMint,
-  SetBurnEnabled,
   SetFeeBps,
-  SetTraderDest,
-  SweepRover,
+  SetFeeDest,
   TransferAuthority,
   Unpause,
   UnwrapWsolInVault,
@@ -192,11 +139,8 @@ export enum BinFarmInstruction {
   UpdateKeeperTipBps,
   UpdatePrioritySlots,
   UserClose,
-  VaultBurnAndMint,
-  VaultVote,
   WithdrawSol,
   WithdrawToken,
-  WrapBurnSol,
   WrapSolInVault,
 }
 
@@ -230,17 +174,6 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([112, 217, 50, 135, 51, 128, 208, 199])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.ApplyRevenueDest;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([213, 92, 15, 33, 223, 8, 193, 96])
       ),
       0
@@ -263,17 +196,6 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([239, 171, 2, 229, 113, 216, 82, 15])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.CancelPendingRevenueDest;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([82, 251, 233, 156, 12, 52, 184, 202])
       ),
       0
@@ -291,28 +213,6 @@ export function identifyBinFarmInstruction(
     )
   ) {
     return BinFarmInstruction.ClosePosition;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([122, 197, 132, 123, 97, 214, 57, 58])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.CloseRoverPosition;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([131, 235, 65, 77, 221, 30, 20, 139])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.CloseRoverTokenAccount;
   }
   if (
     containsBytes(
@@ -351,67 +251,12 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([179, 28, 210, 186, 75, 145, 191, 14])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.InitializeBurnCurve;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([48, 101, 239, 119, 204, 154, 97, 18])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.InitializeRover;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([165, 220, 232, 227, 61, 123, 142, 117])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.OpenFeeRover;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([77, 184, 74, 214, 112, 86, 241, 199])
       ),
       0
     )
   ) {
     return BinFarmInstruction.OpenPositionV2;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([122, 47, 120, 4, 204, 111, 210, 236])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.OpenRoverBidPosition;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([242, 48, 23, 106, 252, 194, 30, 50])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.OpenRoverPosition;
   }
   if (
     containsBytes(
@@ -439,39 +284,6 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([66, 201, 224, 148, 215, 200, 177, 47])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.ProposeRevenueDest;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([80, 8, 65, 207, 236, 195, 180, 109])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.RoverBurnAndMint;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([212, 123, 17, 60, 84, 35, 243, 77])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.SetBurnEnabled;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([2, 161, 245, 141, 111, 32, 39, 198])
       ),
       0
@@ -483,23 +295,12 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([236, 205, 125, 198, 131, 178, 44, 212])
+        new Uint8Array([103, 137, 160, 217, 44, 114, 235, 121])
       ),
       0
     )
   ) {
-    return BinFarmInstruction.SetTraderDest;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([199, 22, 58, 214, 89, 187, 187, 249])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.SweepRover;
+    return BinFarmInstruction.SetFeeDest;
   }
   if (
     containsBytes(
@@ -593,28 +394,6 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([166, 113, 37, 160, 70, 112, 253, 159])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.VaultBurnAndMint;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([238, 243, 209, 135, 30, 54, 178, 226])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.VaultVote;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([145, 131, 74, 136, 65, 137, 42, 38])
       ),
       0
@@ -637,17 +416,6 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
-        new Uint8Array([253, 0, 187, 181, 140, 15, 4, 26])
-      ),
-      0
-    )
-  ) {
-    return BinFarmInstruction.WrapBurnSol;
-  }
-  if (
-    containsBytes(
-      data,
-      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([178, 209, 149, 140, 92, 202, 99, 167])
       ),
       0
@@ -661,7 +429,7 @@ export function identifyBinFarmInstruction(
 }
 
 export type ParsedBinFarmInstruction<
-  TProgram extends string = '8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia',
+  TProgram extends string = '4329kBCQFq4VrL68Xb9JiwTJGibVr3bhAULjSDmxobUw',
 > =
   | ({
       instructionType: BinFarmInstruction.AcceptAuthority;
@@ -670,29 +438,17 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.ApplyEmergencyClose;
     } & ParsedApplyEmergencyCloseInstruction<TProgram>)
   | ({
-      instructionType: BinFarmInstruction.ApplyRevenueDest;
-    } & ParsedApplyRevenueDestInstruction<TProgram>)
-  | ({
       instructionType: BinFarmInstruction.BotPause;
     } & ParsedBotPauseInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.BotUnpause;
     } & ParsedBotUnpauseInstruction<TProgram>)
   | ({
-      instructionType: BinFarmInstruction.CancelPendingRevenueDest;
-    } & ParsedCancelPendingRevenueDestInstruction<TProgram>)
-  | ({
       instructionType: BinFarmInstruction.ClaimFees;
     } & ParsedClaimFeesInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.ClosePosition;
     } & ParsedClosePositionInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.CloseRoverPosition;
-    } & ParsedCloseRoverPositionInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.CloseRoverTokenAccount;
-    } & ParsedCloseRoverTokenAccountInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.CreateVault;
     } & ParsedCreateVaultInstruction<TProgram>)
@@ -703,23 +459,8 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.Initialize;
     } & ParsedInitializeInstruction<TProgram>)
   | ({
-      instructionType: BinFarmInstruction.InitializeBurnCurve;
-    } & ParsedInitializeBurnCurveInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.InitializeRover;
-    } & ParsedInitializeRoverInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.OpenFeeRover;
-    } & ParsedOpenFeeRoverInstruction<TProgram>)
-  | ({
       instructionType: BinFarmInstruction.OpenPositionV2;
     } & ParsedOpenPositionV2Instruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.OpenRoverBidPosition;
-    } & ParsedOpenRoverBidPositionInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.OpenRoverPosition;
-    } & ParsedOpenRoverPositionInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.Pause;
     } & ParsedPauseInstruction<TProgram>)
@@ -727,23 +468,11 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.ProposeEmergencyClose;
     } & ParsedProposeEmergencyCloseInstruction<TProgram>)
   | ({
-      instructionType: BinFarmInstruction.ProposeRevenueDest;
-    } & ParsedProposeRevenueDestInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.RoverBurnAndMint;
-    } & ParsedRoverBurnAndMintInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.SetBurnEnabled;
-    } & ParsedSetBurnEnabledInstruction<TProgram>)
-  | ({
       instructionType: BinFarmInstruction.SetFeeBps;
     } & ParsedSetFeeBpsInstruction<TProgram>)
   | ({
-      instructionType: BinFarmInstruction.SetTraderDest;
-    } & ParsedSetTraderDestInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.SweepRover;
-    } & ParsedSweepRoverInstruction<TProgram>)
+      instructionType: BinFarmInstruction.SetFeeDest;
+    } & ParsedSetFeeDestInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.TransferAuthority;
     } & ParsedTransferAuthorityInstruction<TProgram>)
@@ -769,20 +498,11 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.UserClose;
     } & ParsedUserCloseInstruction<TProgram>)
   | ({
-      instructionType: BinFarmInstruction.VaultBurnAndMint;
-    } & ParsedVaultBurnAndMintInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.VaultVote;
-    } & ParsedVaultVoteInstruction<TProgram>)
-  | ({
       instructionType: BinFarmInstruction.WithdrawSol;
     } & ParsedWithdrawSolInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.WithdrawToken;
     } & ParsedWithdrawTokenInstruction<TProgram>)
-  | ({
-      instructionType: BinFarmInstruction.WrapBurnSol;
-    } & ParsedWrapBurnSolInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.WrapSolInVault;
     } & ParsedWrapSolInVaultInstruction<TProgram>);

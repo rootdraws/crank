@@ -86,22 +86,26 @@ export const BIN_FARM_ERROR__INVALID_BOT = 0x1791; // 6033
 export const BIN_FARM_ERROR__INVALID_TRADER_DEST = 0x1792; // 6034
 /** TraderDestNotSet: Trader destination not set — call set_trader_dest first */
 export const BIN_FARM_ERROR__TRADER_DEST_NOT_SET = 0x1793; // 6035
+/** TraderDestAlreadySet: Trader destination already set — use propose_trader_dest for changes */
+export const BIN_FARM_ERROR__TRADER_DEST_ALREADY_SET = 0x1794; // 6036
 /** InsufficientBalance: Insufficient vault balance for withdrawal */
-export const BIN_FARM_ERROR__INSUFFICIENT_BALANCE = 0x1794; // 6036
+export const BIN_FARM_ERROR__INSUFFICIENT_BALANCE = 0x1795; // 6037
 /** InvalidVaultOwner: Invalid vault owner — does not match PDA seed */
-export const BIN_FARM_ERROR__INVALID_VAULT_OWNER = 0x1795; // 6037
+export const BIN_FARM_ERROR__INVALID_VAULT_OWNER = 0x1796; // 6038
 /** UnauthorizedCaller: Caller must be authorized bot or vault owner */
-export const BIN_FARM_ERROR__UNAUTHORIZED_CALLER = 0x1796; // 6038
+export const BIN_FARM_ERROR__UNAUTHORIZED_CALLER = 0x1797; // 6039
 /** InvalidExternalProgram: Invalid external program ID */
-export const BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM = 0x1797; // 6039
+export const BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM = 0x1798; // 6040
 /** BurnCurveAlreadyInitialized: Burn curve already initialized — initial_crank_supply is immutable */
-export const BIN_FARM_ERROR__BURN_CURVE_ALREADY_INITIALIZED = 0x1798; // 6040
+export const BIN_FARM_ERROR__BURN_CURVE_ALREADY_INITIALIZED = 0x1799; // 6041
 /** BurnCurveNotInitialized: Burn curve not initialized — call initialize_burn_curve first */
-export const BIN_FARM_ERROR__BURN_CURVE_NOT_INITIALIZED = 0x1799; // 6041
+export const BIN_FARM_ERROR__BURN_CURVE_NOT_INITIALIZED = 0x179a; // 6042
 /** InvalidCrankMint: CRANK mint account does not match expected mint */
-export const BIN_FARM_ERROR__INVALID_CRANK_MINT = 0x179a; // 6042
+export const BIN_FARM_ERROR__INVALID_CRANK_MINT = 0x179b; // 6043
 /** InvalidBurnSolVault: Invalid burn SOL vault PDA */
-export const BIN_FARM_ERROR__INVALID_BURN_SOL_VAULT = 0x179b; // 6043
+export const BIN_FARM_ERROR__INVALID_BURN_SOL_VAULT = 0x179c; // 6044
+/** InvalidFeeDest: Fee destination account does not match Config.fee_dest (or Config.bot if unset) */
+export const BIN_FARM_ERROR__INVALID_FEE_DEST = 0x179d; // 6045
 
 export type BinFarmError =
   | typeof BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE
@@ -120,6 +124,7 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__INVALID_CRANK_MINT
   | typeof BIN_FARM_ERROR__INVALID_DIST_POOL
   | typeof BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM
+  | typeof BIN_FARM_ERROR__INVALID_FEE_DEST
   | typeof BIN_FARM_ERROR__INVALID_MINT_DATA
   | typeof BIN_FARM_ERROR__INVALID_POOL
   | typeof BIN_FARM_ERROR__INVALID_POSITION
@@ -144,6 +149,7 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__ROVER_BIN_STEP_TOO_SMALL
   | typeof BIN_FARM_ERROR__ROVER_DEPOSIT_TOO_SMALL
   | typeof BIN_FARM_ERROR__TOO_MANY_BINS
+  | typeof BIN_FARM_ERROR__TRADER_DEST_ALREADY_SET
   | typeof BIN_FARM_ERROR__TRADER_DEST_NOT_SET
   | typeof BIN_FARM_ERROR__UNAUTHORIZED
   | typeof BIN_FARM_ERROR__UNAUTHORIZED_CALLER
@@ -168,6 +174,7 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__INVALID_CRANK_MINT]: `CRANK mint account does not match expected mint`,
     [BIN_FARM_ERROR__INVALID_DIST_POOL]: `dist_pool cannot be the null address`,
     [BIN_FARM_ERROR__INVALID_EXTERNAL_PROGRAM]: `Invalid external program ID`,
+    [BIN_FARM_ERROR__INVALID_FEE_DEST]: `Fee destination account does not match Config.fee_dest (or Config.bot if unset)`,
     [BIN_FARM_ERROR__INVALID_MINT_DATA]: `Invalid mint account data (too short to read decimals)`,
     [BIN_FARM_ERROR__INVALID_POOL]: `Invalid pool`,
     [BIN_FARM_ERROR__INVALID_POSITION]: `Invalid Meteora position`,
@@ -192,6 +199,7 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__ROVER_BIN_STEP_TOO_SMALL]: `Rover bin_step too small (minimum 20 — prevents instant liquidation on tight pools)`,
     [BIN_FARM_ERROR__ROVER_DEPOSIT_TOO_SMALL]: `Rover deposit below minimum (anti-griefing)`,
     [BIN_FARM_ERROR__TOO_MANY_BINS]: `Too many bins (max 70 per call)`,
+    [BIN_FARM_ERROR__TRADER_DEST_ALREADY_SET]: `Trader destination already set — use propose_trader_dest for changes`,
     [BIN_FARM_ERROR__TRADER_DEST_NOT_SET]: `Trader destination not set — call set_trader_dest first`,
     [BIN_FARM_ERROR__UNAUTHORIZED]: `Not authorized`,
     [BIN_FARM_ERROR__UNAUTHORIZED_CALLER]: `Caller must be authorized bot or vault owner`,

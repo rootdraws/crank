@@ -27,7 +27,6 @@ import {
   type Instruction,
   type InstructionWithAccounts,
   type InstructionWithData,
-  type ReadonlyAccount,
   type ReadonlySignerAccount,
   type ReadonlyUint8Array,
   type TransactionSigner,
@@ -36,21 +35,20 @@ import {
 import { BIN_FARM_PROGRAM_ADDRESS } from '../programs';
 import { getAccountMetaFactory, type ResolvedAccount } from '../shared';
 
-export const SET_TRADER_DEST_DISCRIMINATOR = new Uint8Array([
-  236, 205, 125, 198, 131, 178, 44, 212,
+export const SET_FEE_DEST_DISCRIMINATOR = new Uint8Array([
+  103, 137, 160, 217, 44, 114, 235, 121,
 ]);
 
-export function getSetTraderDestDiscriminatorBytes() {
+export function getSetFeeDestDiscriminatorBytes() {
   return fixEncoderSize(getBytesEncoder(), 8).encode(
-    SET_TRADER_DEST_DISCRIMINATOR
+    SET_FEE_DEST_DISCRIMINATOR
   );
 }
 
-export type SetTraderDestInstruction<
+export type SetFeeDestInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
   TAccountAuthority extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
-  TAccountRoverAuthority extends string | AccountMeta<string> = string,
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
@@ -61,79 +59,64 @@ export type SetTraderDestInstruction<
             AccountSignerMeta<TAccountAuthority>
         : TAccountAuthority,
       TAccountConfig extends string
-        ? ReadonlyAccount<TAccountConfig>
+        ? WritableAccount<TAccountConfig>
         : TAccountConfig,
-      TAccountRoverAuthority extends string
-        ? WritableAccount<TAccountRoverAuthority>
-        : TAccountRoverAuthority,
       ...TRemainingAccounts,
     ]
   >;
 
-export type SetTraderDestInstructionData = {
+export type SetFeeDestInstructionData = {
   discriminator: ReadonlyUint8Array;
-  traderDest: Address;
+  newFeeDest: Address;
 };
 
-export type SetTraderDestInstructionDataArgs = { traderDest: Address };
+export type SetFeeDestInstructionDataArgs = { newFeeDest: Address };
 
-export function getSetTraderDestInstructionDataEncoder(): FixedSizeEncoder<SetTraderDestInstructionDataArgs> {
+export function getSetFeeDestInstructionDataEncoder(): FixedSizeEncoder<SetFeeDestInstructionDataArgs> {
   return transformEncoder(
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
-      ['traderDest', getAddressEncoder()],
+      ['newFeeDest', getAddressEncoder()],
     ]),
-    (value) => ({ ...value, discriminator: SET_TRADER_DEST_DISCRIMINATOR })
+    (value) => ({ ...value, discriminator: SET_FEE_DEST_DISCRIMINATOR })
   );
 }
 
-export function getSetTraderDestInstructionDataDecoder(): FixedSizeDecoder<SetTraderDestInstructionData> {
+export function getSetFeeDestInstructionDataDecoder(): FixedSizeDecoder<SetFeeDestInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
-    ['traderDest', getAddressDecoder()],
+    ['newFeeDest', getAddressDecoder()],
   ]);
 }
 
-export function getSetTraderDestInstructionDataCodec(): FixedSizeCodec<
-  SetTraderDestInstructionDataArgs,
-  SetTraderDestInstructionData
+export function getSetFeeDestInstructionDataCodec(): FixedSizeCodec<
+  SetFeeDestInstructionDataArgs,
+  SetFeeDestInstructionData
 > {
   return combineCodec(
-    getSetTraderDestInstructionDataEncoder(),
-    getSetTraderDestInstructionDataDecoder()
+    getSetFeeDestInstructionDataEncoder(),
+    getSetFeeDestInstructionDataDecoder()
   );
 }
 
-export type SetTraderDestAsyncInput<
+export type SetFeeDestAsyncInput<
   TAccountAuthority extends string = string,
   TAccountConfig extends string = string,
-  TAccountRoverAuthority extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config?: Address<TAccountConfig>;
-  roverAuthority?: Address<TAccountRoverAuthority>;
-  traderDest: SetTraderDestInstructionDataArgs['traderDest'];
+  newFeeDest: SetFeeDestInstructionDataArgs['newFeeDest'];
 };
 
-export async function getSetTraderDestInstructionAsync<
+export async function getSetFeeDestInstructionAsync<
   TAccountAuthority extends string,
   TAccountConfig extends string,
-  TAccountRoverAuthority extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
-  input: SetTraderDestAsyncInput<
-    TAccountAuthority,
-    TAccountConfig,
-    TAccountRoverAuthority
-  >,
+  input: SetFeeDestAsyncInput<TAccountAuthority, TAccountConfig>,
   config?: { programAddress?: TProgramAddress }
 ): Promise<
-  SetTraderDestInstruction<
-    TProgramAddress,
-    TAccountAuthority,
-    TAccountConfig,
-    TAccountRoverAuthority
-  >
+  SetFeeDestInstruction<TProgramAddress, TAccountAuthority, TAccountConfig>
 > {
   // Program address.
   const programAddress = config?.programAddress ?? BIN_FARM_PROGRAM_ADDRESS;
@@ -141,8 +124,7 @@ export async function getSetTraderDestInstructionAsync<
   // Original accounts.
   const originalAccounts = {
     authority: { value: input.authority ?? null, isWritable: false },
-    config: { value: input.config ?? null, isWritable: false },
-    roverAuthority: { value: input.roverAuthority ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -161,76 +143,48 @@ export async function getSetTraderDestInstructionAsync<
       ],
     });
   }
-  if (!accounts.roverAuthority.value) {
-    accounts.roverAuthority.value = await getProgramDerivedAddress({
-      programAddress,
-      seeds: [
-        getBytesEncoder().encode(
-          new Uint8Array([
-            114, 111, 118, 101, 114, 95, 97, 117, 116, 104, 111, 114, 105, 116,
-            121,
-          ])
-        ),
-      ],
-    });
-  }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
       getAccountMeta(accounts.authority),
       getAccountMeta(accounts.config),
-      getAccountMeta(accounts.roverAuthority),
     ],
-    data: getSetTraderDestInstructionDataEncoder().encode(
-      args as SetTraderDestInstructionDataArgs
+    data: getSetFeeDestInstructionDataEncoder().encode(
+      args as SetFeeDestInstructionDataArgs
     ),
     programAddress,
-  } as SetTraderDestInstruction<
+  } as SetFeeDestInstruction<
     TProgramAddress,
     TAccountAuthority,
-    TAccountConfig,
-    TAccountRoverAuthority
+    TAccountConfig
   >);
 }
 
-export type SetTraderDestInput<
+export type SetFeeDestInput<
   TAccountAuthority extends string = string,
   TAccountConfig extends string = string,
-  TAccountRoverAuthority extends string = string,
 > = {
   authority: TransactionSigner<TAccountAuthority>;
   config: Address<TAccountConfig>;
-  roverAuthority: Address<TAccountRoverAuthority>;
-  traderDest: SetTraderDestInstructionDataArgs['traderDest'];
+  newFeeDest: SetFeeDestInstructionDataArgs['newFeeDest'];
 };
 
-export function getSetTraderDestInstruction<
+export function getSetFeeDestInstruction<
   TAccountAuthority extends string,
   TAccountConfig extends string,
-  TAccountRoverAuthority extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
-  input: SetTraderDestInput<
-    TAccountAuthority,
-    TAccountConfig,
-    TAccountRoverAuthority
-  >,
+  input: SetFeeDestInput<TAccountAuthority, TAccountConfig>,
   config?: { programAddress?: TProgramAddress }
-): SetTraderDestInstruction<
-  TProgramAddress,
-  TAccountAuthority,
-  TAccountConfig,
-  TAccountRoverAuthority
-> {
+): SetFeeDestInstruction<TProgramAddress, TAccountAuthority, TAccountConfig> {
   // Program address.
   const programAddress = config?.programAddress ?? BIN_FARM_PROGRAM_ADDRESS;
 
   // Original accounts.
   const originalAccounts = {
     authority: { value: input.authority ?? null, isWritable: false },
-    config: { value: input.config ?? null, isWritable: false },
-    roverAuthority: { value: input.roverAuthority ?? null, isWritable: true },
+    config: { value: input.config ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -245,21 +199,19 @@ export function getSetTraderDestInstruction<
     accounts: [
       getAccountMeta(accounts.authority),
       getAccountMeta(accounts.config),
-      getAccountMeta(accounts.roverAuthority),
     ],
-    data: getSetTraderDestInstructionDataEncoder().encode(
-      args as SetTraderDestInstructionDataArgs
+    data: getSetFeeDestInstructionDataEncoder().encode(
+      args as SetFeeDestInstructionDataArgs
     ),
     programAddress,
-  } as SetTraderDestInstruction<
+  } as SetFeeDestInstruction<
     TProgramAddress,
     TAccountAuthority,
-    TAccountConfig,
-    TAccountRoverAuthority
+    TAccountConfig
   >);
 }
 
-export type ParsedSetTraderDestInstruction<
+export type ParsedSetFeeDestInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
   TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
@@ -267,20 +219,19 @@ export type ParsedSetTraderDestInstruction<
   accounts: {
     authority: TAccountMetas[0];
     config: TAccountMetas[1];
-    roverAuthority: TAccountMetas[2];
   };
-  data: SetTraderDestInstructionData;
+  data: SetFeeDestInstructionData;
 };
 
-export function parseSetTraderDestInstruction<
+export function parseSetFeeDestInstruction<
   TProgram extends string,
   TAccountMetas extends readonly AccountMeta[],
 >(
   instruction: Instruction<TProgram> &
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
-): ParsedSetTraderDestInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 3) {
+): ParsedSetFeeDestInstruction<TProgram, TAccountMetas> {
+  if (instruction.accounts.length < 2) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -292,11 +243,7 @@ export function parseSetTraderDestInstruction<
   };
   return {
     programAddress: instruction.programAddress,
-    accounts: {
-      authority: getNextAccount(),
-      config: getNextAccount(),
-      roverAuthority: getNextAccount(),
-    },
-    data: getSetTraderDestInstructionDataDecoder().decode(instruction.data),
+    accounts: { authority: getNextAccount(), config: getNextAccount() },
+    data: getSetFeeDestInstructionDataDecoder().decode(instruction.data),
   };
 }
