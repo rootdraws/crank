@@ -339,31 +339,6 @@ export class ProtocolPnlAggregator {
 
 // ═══ RELAY SERVER ═══
 
-/**
- * Fee pipeline state returned by the /api/fees endpoint.
- *
- * Three holding tanks:
- *   1. roverAuthority   — pre-sweep (token fees + WSOL from harvests)
- *   2. bridgeVault      — post-sweep, pre-drain (80% of sweeps, native SOL)
- *   3. distributorVault — funded epoch rewards waiting for user claims (WSOL)
- *
- * totalInPipeline is the sum of all live balances across the three stages.
- * distributorState surfaces cumulative counters from the on-chain Distributor account.
- */
-export interface FeePipelineState {
-  roverAuthority: { address: string; solBalance: number; wsolBalance: number };
-  bridgeVault: { address: string; solBalance: number };
-  distributorVault: { address: string; wsolBalance: number };
-  distributorState: {
-    currentEpoch: string;
-    totalAmountFunded: string;
-    totalAmountClaimed: string;
-    paused: boolean;
-  } | null;
-  totalInPipeline: number;
-  timestamp: number;
-}
-
 export class RelayServer {
   private wss: InstanceType<typeof WebSocketServer> | null = null;
   private clients: Set<WebSocket> = new Set();
@@ -373,7 +348,6 @@ export class RelayServer {
   private connection: Connection;
   private coreProgramId: PublicKey;
   private botWalletProvider: (() => any) | null;
-  private feeProvider: (() => Promise<FeePipelineState>) | null;
   private healthProvider: (() => { lastHarvestAt: number | null; lastKeeperRunAt: number | null; startTime: number; botSolBalance: number | null }) | null;
 
   // Rover TVL cache (computed by keeper, exposed via REST)
@@ -404,7 +378,6 @@ export class RelayServer {
     connection: Connection,
     coreProgramId: PublicKey,
     botWalletProvider?: () => any,
-    feeProvider?: () => Promise<FeePipelineState>,
   ) {
     this.subscriber = subscriber;
     this.executor = executor;
@@ -412,7 +385,6 @@ export class RelayServer {
     this.connection = connection;
     this.coreProgramId = coreProgramId;
     this.botWalletProvider = botWalletProvider ?? null;
-    this.feeProvider = feeProvider ?? null;
     this.healthProvider = null;
   }
 
@@ -581,9 +553,6 @@ export class RelayServer {
           return this.handleHealth(res);
         case '/api/bot-wallet':
           return this.handleBotWallet(res);
-        case '/api/fees':
-          this.handleFees(res);
-          return true;
         case '/api/feed':
           this.handleFeed(res);
           return true;
@@ -786,20 +755,6 @@ export class RelayServer {
     }
     this.json(res, 200, this.botWalletProvider());
     return true;
-  }
-
-  private async handleFees(res: ServerResponse): Promise<void> {
-    if (!this.feeProvider) {
-      this.json(res, 503, { error: 'Fee pipeline info not available' });
-      return;
-    }
-    try {
-      const state = await this.feeProvider();
-      this.json(res, 200, state);
-    } catch (e: any) {
-      logger.error(`[relay] Fee pipeline query error: ${e.message}`);
-      this.json(res, 500, { error: 'Failed to query fee pipeline' });
-    }
   }
 
   private handleFeed(res: ServerResponse): void {

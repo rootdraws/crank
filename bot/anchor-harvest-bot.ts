@@ -2,16 +2,16 @@
  * anchor-harvest-bot.ts
  *
  * crank.money orchestrator. Wires together:
- *   - GeyserSubscriber: gRPC stream for real-time price monitoring
+ *   - GeyserSubscriber: gRPC stream for real-time DLMM position monitoring
  *   - HarvestExecutor: job queue for harvest/close transactions
- *   - MonkeKeeper: daily fee sequencer (unwrap → sweep → stake_and_forward → fee rovers → new_epoch → cleanup)
+ *   - MonkeKeeper: daily orchestration (unwrap WSOL → sweep → fee rovers → cleanup)
  *
- * The bot never holds user funds or revenue SOL.
- * Revenue SOL flows: rover_authority → 40/40/20 split → SOL direct to users.
- * 40/40/20 split: 40% holders + 40% traders + 20% Config.bot. Hardcoded in sweep_rover.
- * The bot only cranks permissionless instructions.
+ * The bot is a stateless operator — never custodies user funds. User funds live
+ * in PDA-derived UserVault accounts, withdrawable only to the registered owner.
  *
- * Daily cadence: keeper sequence (unwrap WSOL → sweep → stake_and_forward → fee rovers → new_epoch → cleanup).
+ * Post-2026-04-28 pivot: BANK distribution and Merkle epoch flows are retired.
+ * Curve-driven sweep_rover and open_fee_rovers remain on-chain pending the
+ * follow-up bin-farm cleanup upgrade.
  */
 
 import {
@@ -30,7 +30,7 @@ import * as fs from 'fs';
 import { GeyserSubscriber, HarvestJob } from './geyser-subscriber';
 import { HarvestExecutor } from './harvest-executor';
 import { MonkeKeeper } from './keeper';
-import { RelayServer, FeePipelineState } from './relay-server';
+import { RelayServer } from './relay-server';
 import { logger } from './logger';
 import { getDLMMCacheSize, getDLMM } from './meteora-accounts';
 import { initAlerter, alertLowBalance, alertGrpcDisconnect, alertGrpcReconnect, alertKeeperFailure } from './alerter';
@@ -75,10 +75,6 @@ function requireEnvPubkey(name: string): PublicKey {
 }
 
 const CORE_PROGRAM_ID       = requireEnvPubkey('CORE_PROGRAM_ID');
-const DISTRIBUTOR_PROGRAM_ID = requireEnvPubkey('DISTRIBUTOR_PROGRAM_ID');
-
-// epoch-vault program (formerly pegged-bridge) holds the bridge_vault PDA —
-// 80% of swept fees land here as native SOL, drained daily by drain_vault.
 
 const COMMITMENT: Commitment    = 'confirmed';
 const KEEPER_ACTIVE_INTERVAL_MS = parseInt(process.env.KEEPER_CHECK_INTERVAL_MS || '3600000'); // 1hr during Active
@@ -114,8 +110,6 @@ class HarvestBot {
   private connection: Connection;
   private provider: AnchorProvider;
   private coreProgram!: Program;
-  private distributorProgram!: Program;
-  private epochVaultProgram!: Program;
 
   // Modules
   private subscriber!: GeyserSubscriber;
@@ -233,54 +227,6 @@ class HarvestBot {
     };
   }
 
-  async getFeePipelineState(): Promise<FeePipelineState> {
-    const [roverPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from('rover_authority')], CORE_PROGRAM_ID
-    );
-    const [distPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from('distributor')], DISTRIBUTOR_PROGRAM_ID
-    );
-    const [bridgeVaultPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from('bridge_vault')], this.epochVaultProgram.programId
-    );
-    const wsolMint = new PublicKey('So11111111111111111111111111111111111111112');
-
-    const { getAssociatedTokenAddressSync: getAta } = await import('@solana/spl-token');
-    const roverWsolAta = getAta(wsolMint, roverPDA, true);
-    const distWsolAta  = getAta(wsolMint, distPDA,  true);
-
-    const [roverSol, bridgeVaultSol, roverWsolInfo, distWsolInfo, distAcctInfo] = await Promise.all([
-      this.connection.getBalance(roverPDA),
-      this.connection.getBalance(bridgeVaultPDA),
-      this.connection.getAccountInfo(roverWsolAta),
-      this.connection.getAccountInfo(distWsolAta),
-      (this.distributorProgram.account as any).distributor.fetch(distPDA).catch(() => null),
-    ]);
-
-    // SPL token account amount is u64 LE at offset 64
-    const parseWsol = (info: { data: Buffer } | null): number =>
-      info && info.data.length >= 72 ? Number(info.data.readBigUInt64LE(64)) : 0;
-
-    const roverWsol = parseWsol(roverWsolInfo);
-    const distWsol  = parseWsol(distWsolInfo);
-
-    const distributorState = distAcctInfo ? {
-      currentEpoch:       distAcctInfo.currentEpoch?.toString()       ?? '0',
-      totalAmountFunded:  distAcctInfo.totalAmountFunded?.toString()  ?? '0',
-      totalAmountClaimed: distAcctInfo.totalAmountClaimed?.toString() ?? '0',
-      paused:             distAcctInfo.paused ?? false,
-    } : null;
-
-    return {
-      roverAuthority:   { address: roverPDA.toBase58(),        solBalance: roverSol,       wsolBalance: roverWsol },
-      bridgeVault:      { address: bridgeVaultPDA.toBase58(),  solBalance: bridgeVaultSol },
-      distributorVault: { address: distWsolAta.toBase58(),     wsolBalance: distWsol },
-      distributorState,
-      totalInPipeline: roverSol + roverWsol + bridgeVaultSol + distWsol,
-      timestamp: Date.now(),
-    };
-  }
-
   private startHealthServer(): void {
     this.healthServer = http.createServer((req, res) => {
       // Try relay REST routes first (/api/*)
@@ -346,12 +292,6 @@ class HarvestBot {
     const coreIdl = loadIdl('bin_farm');
     this.coreProgram = new Program(coreIdl, this.provider);
 
-    const distributorIdl = loadIdl('merkle_distributor');
-    this.distributorProgram = new Program(distributorIdl, this.provider);
-
-    const epochVaultIdl = loadIdl('epoch_vault');
-    this.epochVaultProgram = new Program(epochVaultIdl, this.provider);
-
     // Verify bot authorization
     const [configPDA] = coreConfigPDA();
     const config = await this.coreProgram.account.config.fetch(configPDA);
@@ -391,11 +331,8 @@ class HarvestBot {
     this.keeper = new MonkeKeeper({
       connection: this.connection,
       coreProgram: this.coreProgram,
-      distributorProgram: this.distributorProgram,
-      epochVaultProgram: this.epochVaultProgram,
       botKeypair,
       coreProgramId: CORE_PROGRAM_ID,
-      distributorProgramId: DISTRIBUTOR_PROGRAM_ID,
       walletService: null, // set after discord bot starts
       getWatchedPools: () => this.subscriber.getWatchedPools(),
     });
@@ -517,7 +454,6 @@ class HarvestBot {
       this.subscriber, this.executor, this.keeper,
       this.connection, CORE_PROGRAM_ID,
       () => this.getBotWalletInfo(),
-      () => this.getFeePipelineState(),
     );
     if (this.healthServer) {
       this.relay.attach(this.healthServer);

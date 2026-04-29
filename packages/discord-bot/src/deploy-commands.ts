@@ -75,20 +75,6 @@ const commands = [
     .setDescription('List covered pools and APR'),
 
   new SlashCommandBuilder()
-    .setName('vote')
-    .setDescription('Allocate vote weight to trading pairs')
-    .addStringOption(opt =>
-      opt.setName('allocation')
-        .setDescription('POOL PCT POOL PCT — e.g. SOL 50 CRANK 50')
-        .setRequired(false)),
-
-  new SlashCommandBuilder()
-    .setName('burn')
-    .setDescription('Burn CRANK → mint BANK 1:1, or /burn status for protocol burn-curve state')
-    .addStringOption(opt =>
-      opt.setName('amount').setDescription('Amount of CRANK to burn (or "status" for curve state)').setRequired(false)),
-
-  new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show all CrankBot commands'),
 

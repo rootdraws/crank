@@ -19,7 +19,7 @@ export async function handleBalance(interaction: ChatInputCommandInteraction, ct
   const withdrawAddr = ctx.walletService.getWithdrawAddress(userId);
 
   // PDA vault: no WSOL auto-unwrap on balance check. Vault holds native SOL
-  // directly; WSOL in vault ATAs is from harvests/claims and is unwrapped on
+  // directly; WSOL in vault ATAs is from harvests and is unwrapped on
   // /withdraw SOL via unwrap_wsol_in_vault.
   const solBalance = await ctx.connection.getBalance(pubkey);
   const tokenAccounts = await ctx.connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });

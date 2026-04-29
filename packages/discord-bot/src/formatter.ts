@@ -286,33 +286,6 @@ export function formatFeedHarvested(params: {
   return `${actor} ${verb} ${link}.`;
 }
 
-export function formatFeedVote(params: {
-  allocations: { token: string; pct: number }[];
-  bankAmount: string;
-  txSig: string;
-  actorId?: string;
-}): string {
-  const actor = params.actorId ? `<@${params.actorId}>` : 'someone';
-  let phrase: string;
-  if (params.allocations.length === 1) {
-    const a = params.allocations[0];
-    phrase = `allocated ${a.pct}% of voting power to ${a.token}`;
-  } else {
-    const list = params.allocations.map(a => `${a.pct}% to ${a.token}`).join(', ');
-    phrase = `allocated voting power — ${list}`;
-  }
-  return `${actor} has ${phrase} · [${params.bankAmount} BANK](${SOLSCAN_TX}${params.txSig}).`;
-}
-
-export function formatFeedBurn(params: {
-  amount: string;
-  txSig: string;
-  actorId?: string;
-}): string {
-  const actor = params.actorId ? `<@${params.actorId}>` : 'someone';
-  return `${actor} has burned [${params.amount} CRANK](${SOLSCAN_TX}${params.txSig}), and increased voting power by ${params.amount} BANK.`;
-}
-
 export function formatFeedClosed(params: {
   side: 'Buy' | 'Sell';
   poolName: string;

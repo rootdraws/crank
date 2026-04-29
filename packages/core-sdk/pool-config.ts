@@ -84,16 +84,6 @@ export function setPoolSupply(mintAddress: string, humanSupply: number): number 
   return touched;
 }
 
-/**
- * Load gauge map: token symbol → LbPair address.
- * One gauge per trading pair. Used by /vote to resolve token names to
- * the on-chain PoolGauge PDA. Bin step pools are a routing detail —
- * the gauge represents the pair.
- */
-export function loadGauges(configPath?: string): Record<string, string> {
-  return loadRaw(configPath).gauges ?? {};
-}
-
 export function clearPoolCache(): void {
   cachedRaw = null;
 }

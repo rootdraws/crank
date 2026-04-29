@@ -28,8 +28,6 @@ import { handlePositions } from './commands/positions';
 import { handleClose } from './commands/close';
 import { handleWithdraw } from './commands/withdraw';
 import { handlePools } from './commands/pools';
-import { handleVote } from './commands/vote';
-import { handleBurn } from './commands/burn';
 import { handleHelp } from './commands/help';
 import { handleLeaderboard } from './commands/leaderboard';
 import { handleStats } from './commands/stats';
@@ -157,8 +155,6 @@ export class DiscordBot {
           case 'close':     return await handleClose(interaction, ctx);
           case 'withdraw':  return await handleWithdraw(interaction, ctx);
           case 'pools':     return await handlePools(interaction, ctx);
-          case 'vote':      return await handleVote(interaction, ctx);
-          case 'burn':      return await handleBurn(interaction, ctx);
           case 'help':        return await handleHelp(interaction, ctx);
           case 'leaderboard': return await handleLeaderboard(interaction, ctx);
           case 'stats':       return await handleStats(interaction, ctx);

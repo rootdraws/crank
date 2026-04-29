@@ -267,23 +267,6 @@ export class DiscordNotifier {
    * across wildly different token magnitudes (1.2345 SOL vs 3,450,000 CRANK).
    */
 
-  /**
-   * Called after new_epoch completes. Auto-claim itself is handled by
-   * epoch-computer in the keeper's daily sequence — bot fronts the tx fee
-   * and is reimbursed from each user's vault PDA via deduct_gas on the
-   * bundled unwrap_wsol_in_vault. This stub is a placeholder for future
-   * per-user DM notifications after distribution lands.
-   */
-  async onEpochComplete(data: {
-    epoch: number;
-    ipfsCid: string;
-    leaves: Array<{ wallet: string; cumulative_amount: string; index: number; proof: number[][] }>;
-  }): Promise<void> {
-    // Auto-claim is now handled by epoch-computer.ts in the keeper daily sequence.
-    // This stub remains for DM notifications after epoch distribution.
-    console.log(`[notifier] onEpochComplete — epoch ${data.epoch}, ${data.leaves.length} leaves`);
-  }
-
   async postToFeed(text: string): Promise<void> {
     await this.sendToFeed(text);
   }

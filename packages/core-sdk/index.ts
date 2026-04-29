@@ -15,4 +15,3 @@ export * from './range-parser';
 export * from './pool-router';
 export * from './price-source';
 export * from './jup-quote';
-export * from './burn-curve';

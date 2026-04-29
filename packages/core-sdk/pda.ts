@@ -8,11 +8,6 @@
 import { PublicKey } from '@solana/web3.js';
 import {
   BIN_FARM_PROGRAM_ID,
-  BANK_MINT_PROGRAM_ID,
-  GAUGE_VOTER_PROGRAM_ID,
-  MERKLE_DISTRIBUTOR_PROGRAM_ID,
-  BANK_DISTRIBUTOR_PROGRAM_ID,
-  EPOCH_VAULT_PROGRAM_ID,
   METEORA_DLMM_PROGRAM_ID,
 } from './constants';
 
@@ -86,79 +81,6 @@ export function getBurnSolVaultPDA(): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [Buffer.from('burn_sol_vault')],
     BIN_FARM_PROGRAM_ID
-  );
-}
-
-// ─── bank_mint PDAs ───────────────────────────────────────────────────────
-
-export function getBankConfigPDA(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('bank_config')],
-    BANK_MINT_PROGRAM_ID
-  );
-}
-
-// ─── gauge_voter PDAs ─────────────────────────────────────────────────────
-
-export function getGaugeConfigPDA(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('gauge_config')],
-    GAUGE_VOTER_PROGRAM_ID
-  );
-}
-
-export function getPoolGaugePDA(lbPair: PublicKey): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('pool_gauge'), lbPair.toBuffer()],
-    GAUGE_VOTER_PROGRAM_ID
-  );
-}
-
-// ─── merkle_distributor PDAs (SOL) ────────────────────────────────────────
-
-export function getDistributorPDA(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('distributor')],
-    MERKLE_DISTRIBUTOR_PROGRAM_ID
-  );
-}
-
-export function getClaimStatusPDA(distributor: PublicKey, claimant: PublicKey): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('claim_status'), distributor.toBuffer(), claimant.toBuffer()],
-    MERKLE_DISTRIBUTOR_PROGRAM_ID
-  );
-}
-
-// ─── bank_distributor PDAs (BANK) — same seeds, different program ────────
-
-export function getBankDistributorPDA(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('distributor')],
-    BANK_DISTRIBUTOR_PROGRAM_ID
-  );
-}
-
-export function getBankClaimStatusPDA(distributor: PublicKey, claimant: PublicKey): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('claim_status'), distributor.toBuffer(), claimant.toBuffer()],
-    BANK_DISTRIBUTOR_PROGRAM_ID
-  );
-}
-
-// ─── epoch_vault PDAs (was pegged_bridge — same program ID, same seeds) ──
-
-export function getBridgeConfigPDA(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('bridge_config')],
-    EPOCH_VAULT_PROGRAM_ID
-  );
-}
-
-export function getBridgeVaultPDA(): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('bridge_vault')],
-    EPOCH_VAULT_PROGRAM_ID
   );
 }
 

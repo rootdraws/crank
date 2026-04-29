@@ -9,13 +9,8 @@ import { PublicKey } from '@solana/web3.js';
 
 // ─── Program IDs ───────────────────────────────────────────────────────────
 
-export const BIN_FARM_PROGRAM_ID          = new PublicKey('8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia');
-export const BANK_MINT_PROGRAM_ID         = new PublicKey('FjK8AaLTfj8fP8bf88tmwCxu2xyhTXhaSkHGzCEZyczk');
-export const GAUGE_VOTER_PROGRAM_ID       = new PublicKey('DRhe2EXWWPM3G9qRUeGmnVWsV4joxQ5pBw2qXPereQrA');
-export const MERKLE_DISTRIBUTOR_PROGRAM_ID = new PublicKey('DWmPoHsRQ4PAff3zY8wuLMpogukmmiCxfFewmB5WQ8kV');
-export const BANK_DISTRIBUTOR_PROGRAM_ID  = new PublicKey('9sqcwp65VGxkbLG3KN85BrzZz2Q77xnfbpPcBfn1kj7M');
-export const EPOCH_VAULT_PROGRAM_ID       = new PublicKey('7oHSUPzkPDDtxjXcvjRYKHmSjoBigJ4HUvPRRhf1SCgN');
-export const METEORA_DLMM_PROGRAM_ID      = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+export const BIN_FARM_PROGRAM_ID     = new PublicKey('8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia');
+export const METEORA_DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 
 // ─── Token Programs ────────────────────────────────────────────────────────
 
@@ -62,20 +57,6 @@ export const DEFAULT_FEE_BPS          = 50;       // 0.5%
 export const MAX_POSITION_WIDTH       = 70;       // max bins per position
 export const MIN_POSITION_AMOUNT      = 10_000n;  // base units, anti-griefing
 export const DEFAULT_PRIORITY_ULAMPORTS = 100_000; // microlamports per CU
-
-// ─── Burn curve (sweep_rover) ──────────────────────────────────────────────
-// Mirrors `compute_curve` in programs/bin-farm/src/lib.rs. Used by /burn status
-// and by tests to validate on-chain math against a TS reference.
-
-export const BURN_CURVE_BREAKPOINT_PPB = 750_000_000n; // 0.75 ppb
-export const MAX_PROTOCOL_SKIM_PPB     = 200_000_000n; // 0.20 ppb at endgame
-export const PPB_SCALE                 = 1_000_000_000n;
-
-// ─── Rover bid sizing (protocol-LP defaults mirrored) ─────────────────────
-
-export const ROVER_BID_BIN_COUNT       = 70;             // DLMM hard cap
-export const ROVER_BID_MIN_LAMPORTS    = 2_000_000_000n; // 2 SOL min to deploy
-export const ROVER_BID_RESERVE_LAMPORTS = 50_000_000n;   // 0.05 SOL kept for rent
 
 // ─── Known Token Symbols (for display) ────────────────────────────────────
 
