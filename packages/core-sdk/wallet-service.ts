@@ -459,23 +459,7 @@ export class WalletService {
     return total;
   }
 
-  // ─── Activity Queries (leaderboard + role pruner) ───────────────────────
-
-  isActiveWithin(userId: string, sinceMs: number): boolean {
-    const user = this.data.users[userId];
-    if (!user) return false;
-    // Grace period: if the user registered within the window, treat as active.
-    // Protects newcomers who joined the trading floor but haven't placed a
-    // trade yet — they get `windowDays` to open a position before being boot-eligible.
-    if (user.created_at >= sinceMs) return true;
-    for (const p of Object.values(this.data.positions)) {
-      if (p.user_id === userId && p.status === 'open') return true;
-    }
-    for (const h of this.data.harvests) {
-      if (h.vault_pda === user.vault_pda && h.created_at >= sinceMs) return true;
-    }
-    return false;
-  }
+  // ─── Activity Queries (leaderboard) ─────────────────────────────────────
 
   /**
    * Aggregated per-user activity since `sinceMs`. Sorted by harvest volume desc.

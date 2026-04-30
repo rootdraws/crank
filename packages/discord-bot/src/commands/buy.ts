@@ -21,7 +21,6 @@ import {
 } from '@crankbot/core-sdk';
 import { formatPositionOpened, formatPositionEphemeral, formatFeedOpened, formatError, formatErrorBig } from '../formatter';
 import type { BotContext } from '../index';
-import { grantCrankRoleIfMissing } from '../role-service';
 import { fetchJupQuote, fetchDexScreenerPrice as fetchUsd } from '@crankbot/core-sdk';
 
 const SOL_MINT_STR = 'So11111111111111111111111111111111111111112';
@@ -579,9 +578,6 @@ export async function handleOpenPosition(
       content: formatPositionEphemeral(positionPDAs[0].toBase58(), sigs[0]),
       ephemeral: true,
     });
-
-    // Auto-grant crank role on successful action (no-op if already held).
-    grantCrankRoleIfMissing(ctx.client, interaction.user.id);
 
     // Feed channel
     if (ctx.feedChannelId) {

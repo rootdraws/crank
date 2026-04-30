@@ -73,15 +73,7 @@ export class DiscordBot {
     const token = process.env.DISCORD_TOKEN;
     if (!token) throw new Error('DISCORD_TOKEN not set');
 
-    // Enable GuildMembers only when the operator has toggled the privileged
-    // "Server Members Intent" in the Discord developer portal. Required by
-    // the keeper's crank-role pruner; without it, pruning is a no-op but
-    // every other command still works.
-    const intents = [GatewayIntentBits.Guilds];
-    if (process.env.DISCORD_ENABLE_MEMBER_INTENT === 'true') {
-      intents.push(GatewayIntentBits.GuildMembers);
-    }
-    this.client = new Client({ intents });
+    this.client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
     this.walletService = new WalletService(process.env.DB_PATH);
     this.notifier = new DiscordNotifier(this.client, this.walletService);

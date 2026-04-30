@@ -7,7 +7,7 @@
  * are all retired. Fee accumulation now flows directly to Config.fee_dest.
  *
  * Daily sequence (runs once per UTC day):
- *   1. prune_inactive_members   — drop crank role from idle Discord members
+ *   1. hopper_sweep             — drain HopperVault SOL via on-chain 40/40/20 routing
  *   2. refresh_supplies         — refresh in-memory CRANK supply for /buy math
  *   3. daily_stats_post         — post protocol-wide volume summary to #crank-stats
  *
@@ -133,13 +133,10 @@ export class MonkeKeeper {
     //         Threshold-gated; no-op below sol_threshold_lamports.
     await this.crankHopperSweep();
 
-    // Step 2: Prune the crank role from idle Discord members (best-effort).
-    await this.crankPruneInactiveMembers();
-
-    // Step 3: Refresh in-memory pool supplies from on-chain mint state.
+    // Step 2: Refresh in-memory pool supplies from on-chain mint state.
     await this.crankRefreshSupplies();
 
-    // Step 4: Post a daily volume summary to #crank-stats.
+    // Step 3: Post a daily volume summary to #crank-stats.
     await this.crankDailyStatsPost();
 
     this.lastRunDay = today;
@@ -306,64 +303,6 @@ export class MonkeKeeper {
       logger.info(`  [keeper] ✓ refresh_supplies — ${updated} pool row(s) updated`);
     } catch (e: any) {
       logger.warn(`  [keeper] refresh_supplies error: ${e.message?.slice(0, 80)}`);
-    }
-  }
-
-  // ─── CRANK: PRUNE INACTIVE MEMBERS ───
-  //
-  // Removes the "crank" Discord role from users with no open position AND no
-  // harvest in the rolling window. Keeps the trading floor signal-only — idle
-  // wallets drop back to #the-lobby.
-  //
-  // No-op unless all of DISCORD_CRANK_ROLE_ID, DISCORD_GUILD_ID, and
-  // discordClient are set. Never throws.
-  private async crankPruneInactiveMembers(): Promise<void> {
-    const roleId = process.env.DISCORD_CRANK_ROLE_ID;
-    const guildId = process.env.DISCORD_GUILD_ID;
-    const dryRun = process.env.CRANK_ROLE_PRUNE_DRY_RUN === 'true';
-
-    if (!roleId || !guildId || !this.discordClient || !this.walletService) {
-      logger.info(`[keeper] prune skipped — roleId=${!!roleId} guildId=${!!guildId} client=${!!this.discordClient} ws=${!!this.walletService}`);
-      return;
-    }
-
-    try {
-      const windowDays = parseInt(process.env.CRANK_ROLE_PRUNE_WINDOW_DAYS || '7', 10);
-      const sinceMs = Date.now() - windowDays * 86_400_000;
-
-      const guild = await this.discordClient.guilds.fetch(guildId);
-      const role = await guild.roles.fetch(roleId);
-      if (!role) {
-        logger.warn(`[keeper] prune abort — crank role ${roleId} not found in guild ${guildId}`);
-        return;
-      }
-
-      // Fetch full member list to hydrate role members (role.members is a cache).
-      await guild.members.fetch();
-
-      const members = [...role.members.values()];
-      let pruned = 0;
-      let candidates = 0;
-      for (const member of members) {
-        const userId = `discord:${member.id}`;
-        if (!this.walletService.isRegistered(userId)) continue;
-        if (this.walletService.isActiveWithin(userId, sinceMs)) continue;
-        candidates += 1;
-        if (dryRun) {
-          logger.info(`[keeper] prune DRY — would remove from ${member.user?.tag || member.id}`);
-          continue;
-        }
-        try {
-          await member.roles.remove(role, `inactive ${windowDays}d — no position, no fills`);
-          pruned += 1;
-        } catch (e: any) {
-          logger.warn(`[keeper] failed to remove crank role from ${member.id}: ${e.message}`);
-        }
-      }
-
-      logger.info(`[keeper] prune done — members=${members.length} candidates=${candidates} pruned=${pruned} window=${windowDays}d dryRun=${dryRun}`);
-    } catch (e: any) {
-      logger.warn(`[keeper] crankPruneInactiveMembers error: ${e.message}`);
     }
   }
 
