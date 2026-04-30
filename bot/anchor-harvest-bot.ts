@@ -110,6 +110,8 @@ class HarvestBot {
   private connection: Connection;
   private provider: AnchorProvider;
   private coreProgram!: Program;
+  private hopperProgram: Program | null = null;
+  private hopperProgramId: PublicKey | null = null;
   private feeDest!: PublicKey;
 
   // Modules
@@ -293,6 +295,21 @@ class HarvestBot {
     const coreIdl = loadIdl('bin_farm');
     this.coreProgram = new Program(coreIdl, this.provider);
 
+    // Hopper program is optional — only required for the keeper sweep step.
+    // If the IDL is missing, sweep step skips silently.
+    let hopperProgram: Program | null = null;
+    let hopperProgramId: PublicKey | null = null;
+    try {
+      const hopperIdl = loadIdl('hopper');
+      hopperProgram = new Program(hopperIdl, this.provider);
+      hopperProgramId = new PublicKey(hopperIdl.address);
+      logger.info(`hopper: ${hopperProgramId.toBase58()}`);
+    } catch (e: any) {
+      logger.warn(`hopper IDL missing — sweep step disabled: ${e.message?.slice(0, 80)}`);
+    }
+    this.hopperProgram = hopperProgram;
+    this.hopperProgramId = hopperProgramId;
+
     // Verify bot authorization + resolve fee_dest
     const [configPDA] = coreConfigPDA();
     const config = await this.coreProgram.account.config.fetch(configPDA);
@@ -345,6 +362,8 @@ class HarvestBot {
       coreProgram: this.coreProgram,
       botKeypair,
       coreProgramId: CORE_PROGRAM_ID,
+      hopperProgram: this.hopperProgram,
+      hopperProgramId: this.hopperProgramId,
       walletService: null, // set after discord bot starts
       getWatchedPools: () => this.subscriber.getWatchedPools(),
     });

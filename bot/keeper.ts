@@ -23,6 +23,12 @@ import {
 } from '@solana/web3.js';
 import { Program } from '@coral-xyz/anchor';
 import { logger } from './logger';
+import { withRetry as sharedWithRetry } from './retry';
+
+const KEEPER_RETRY_BASE_MS = 2000;
+function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  return sharedWithRetry(fn, label, KEEPER_RETRY_BASE_MS);
+}
 
 // Priority fee floor/cap (micro-lamports per compute unit)
 const KEEPER_PRIORITY_FEE_FLOOR = 10_000;
@@ -54,6 +60,8 @@ interface KeeperConfig {
   coreProgram: Program;
   botKeypair: Keypair;
   coreProgramId: PublicKey;
+  hopperProgram?: Program | null;
+  hopperProgramId?: PublicKey | null;
   walletService: any;
   getWatchedPools?: () => string[];
 }
@@ -63,6 +71,8 @@ interface KeeperConfig {
 export class MonkeKeeper {
   private connection: Connection;
   private coreProgram: Program;
+  private hopperProgram: Program | null;
+  private hopperProgramId: PublicKey | null;
   private botKeypair: Keypair;
   private walletService: any;
   private coreProgramId: PublicKey;
@@ -81,6 +91,8 @@ export class MonkeKeeper {
   constructor(config: KeeperConfig) {
     this.connection = config.connection;
     this.coreProgram = config.coreProgram;
+    this.hopperProgram = config.hopperProgram ?? null;
+    this.hopperProgramId = config.hopperProgramId ?? null;
     this.botKeypair = config.botKeypair;
     this.walletService = config.walletService;
     this.coreProgramId = config.coreProgramId;
@@ -117,19 +129,98 @@ export class MonkeKeeper {
     // Refresh priority fees for this sequence
     this.priorityIxs = await buildKeeperPriorityIxs(this.connection);
 
-    // Step 1: Prune the crank role from idle Discord members (best-effort).
+    // Step 1: Sweep HopperVault SOL to W-Buy / Treasury / Personal per RoutingConfig.
+    //         Threshold-gated; no-op below sol_threshold_lamports.
+    await this.crankHopperSweep();
+
+    // Step 2: Prune the crank role from idle Discord members (best-effort).
     await this.crankPruneInactiveMembers();
 
-    // Step 2: Refresh in-memory pool supplies from on-chain mint state.
+    // Step 3: Refresh in-memory pool supplies from on-chain mint state.
     await this.crankRefreshSupplies();
 
-    // Step 3: Post a daily volume summary to #crank-stats.
+    // Step 4: Post a daily volume summary to #crank-stats.
     await this.crankDailyStatsPost();
 
     this.lastRunDay = today;
     this.lastRunTimestamp = Date.now();
     logger.info(`[keeper] ${ts} Daily sequence complete`);
     return 'Processing';
+  }
+
+  /**
+   * Drain accumulated HopperVault SOL via the on-chain 40/40/20 routing.
+   * Threshold-gated by RoutingConfig.sol_threshold_lamports — no-op below.
+   * No-op entirely if Hopper IDL isn't loaded (sweep step disabled).
+   *
+   * Permissionless: bot acts as cranker. cranker_tip_bps in RoutingConfig
+   * (currently 0) controls whether the bot earns a tip slice.
+   */
+  private async crankHopperSweep(): Promise<void> {
+    if (!this.hopperProgram || !this.hopperProgramId) {
+      return; // Hopper not wired — skip silently.
+    }
+
+    const [routingConfigPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('routing_config')],
+      this.hopperProgramId,
+    );
+    const [hopperVaultPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('hopper_vault')],
+      this.hopperProgramId,
+    );
+
+    let cfg: any;
+    try {
+      cfg = await this.hopperProgram.account.routingConfig.fetch(routingConfigPda);
+    } catch {
+      logger.info('  [keeper] hopper sweep skipped — RoutingConfig not initialized');
+      return;
+    }
+
+    if (cfg.paused) {
+      logger.info('  [keeper] hopper sweep skipped — paused');
+      return;
+    }
+
+    const balance = await this.connection.getBalance(hopperVaultPda);
+    // HopperVault account size = 9 bytes (8 disc + 1 bump)
+    const rentMin = await this.connection.getMinimumBalanceForRentExemption(9);
+    const sweepable = Math.max(0, balance - rentMin);
+    const threshold = Number(cfg.solThresholdLamports.toString());
+
+    if (sweepable < threshold || sweepable === 0) {
+      logger.info(
+        `  [keeper] hopper sweep skipped — sweepable ${(sweepable / 1e9).toFixed(6)} SOL ` +
+          `< threshold ${(threshold / 1e9).toFixed(6)} SOL`,
+      );
+      return;
+    }
+
+    try {
+      const sig = await withRetry(
+        () =>
+          this.hopperProgram!.methods
+            .sweepSol()
+            .accounts({
+              cranker: this.botKeypair.publicKey,
+              routingConfig: routingConfigPda,
+              hopperVault: hopperVaultPda,
+              wBuy: cfg.wBuy,
+              treasury: cfg.treasury,
+              personal: cfg.personal,
+              systemProgram: new PublicKey('11111111111111111111111111111111'),
+            })
+            .signers([this.botKeypair])
+            .rpc(),
+        'hopper.sweep_sol',
+      );
+      logger.info(
+        `  [keeper] ✓ sweep_sol — ${(sweepable / 1e9).toFixed(4)} SOL routed (sig ${sig.slice(0, 8)})`,
+      );
+    } catch (e: any) {
+      logger.warn(`[keeper] sweep_sol error: ${e.message?.slice(0, 200)}`);
+    }
   }
 
   /**
