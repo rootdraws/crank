@@ -42,7 +42,7 @@ import {
 } from '../instructions';
 
 export const BIN_FARM_PROGRAM_ADDRESS =
-  '4329kBCQFq4VrL68Xb9JiwTJGibVr3bhAULjSDmxobUw' as Address<'4329kBCQFq4VrL68Xb9JiwTJGibVr3bhAULjSDmxobUw'>;
+  '8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia' as Address<'8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia'>;
 
 export enum BinFarmAccount {
   Config,
@@ -429,7 +429,7 @@ export function identifyBinFarmInstruction(
 }
 
 export type ParsedBinFarmInstruction<
-  TProgram extends string = '4329kBCQFq4VrL68Xb9JiwTJGibVr3bhAULjSDmxobUw',
+  TProgram extends string = '8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia',
 > =
   | ({
       instructionType: BinFarmInstruction.AcceptAuthority;
