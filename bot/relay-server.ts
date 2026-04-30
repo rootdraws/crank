@@ -2,7 +2,7 @@
  * relay-server.ts
  *
  * WebSocket + REST relay for crank.money bot.
- * Exposes the bot's LaserStream-powered in-memory state to API consumers.
+ * Exposes the bot's Yellowstone-gRPC-powered in-memory state to API consumers.
  *
  * Plugs into the existing HTTP health server (anchor-harvest-bot.ts).
  * No new ports — extends the same :8080 server with:

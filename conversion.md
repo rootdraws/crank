@@ -1,5 +1,25 @@
 # Helius → Alchemy gRPC migration prep
 
+## Status: shipped 2026-04-30
+
+Cutover live on droplet (`crank-harvester` PM2). Stream connected, byte-offset
+validation passing, harvest jobs flowing. See commit `3d351fc`.
+
+**Plan-vs-reality deltas worth remembering:**
+- **Endpoint format** — plan said `solana-mainnet.g.alchemy.com:443` (no scheme).
+  Reality: Triton 5.x rejects that with a transport error. Working form is
+  `https://solana-mainnet.g.alchemy.com` (scheme required, no port).
+- **Triton 5.x explicit `connect()`** — `client.subscribe()` throws
+  `"Client not connected. Call connect() first"` if you skip the explicit
+  `await client.connect()`. Not in any docs we found; surfaced via probe.
+- **`scripts/test-laserstream.ts`** — plan said rename to `test-yellowstone.ts`.
+  Actually deleted; `scripts/probe-alchemy-grpc.ts` (untracked, throwaway)
+  covers connectivity validation.
+
+The rest of this doc is the original prep / target / migration plan. Kept as
+context for the Yellowstone-protocol-specific decisions (slot tracking, ping
+reply, reconnect backoff).
+
 ## Why
 
 The current Helius LaserStream subscription is paid; Root has 90 days of free Alchemy gRPC sitting in the trial. Net-zero option-value to migrate before the trial expires. This doc captures every surface that would change so the actual cutover is a single-file diff plus an env rename.
