@@ -4,11 +4,12 @@
  * Geyser/gRPC stream subscriber for crank.money harvest bot.
  * Replaces polling with event-driven monitoring.
  *
- * Optimized for Helius LaserStream gRPC (Yellowstone-compatible):
- *   - Auth via x-token extracted from endpoint URL query param
- *   - Built-in ping/pong for connection health (replaces DIY heartbeat)
- *   - CONFIRMED commitment level (1)
- *   - datasize filter on LbPair subscriptions (904 bytes)
+ * Targets Alchemy Yellowstone gRPC (@triton-one/yellowstone-grpc client):
+ *   - Auth via x-token header on the gRPC channel (token from GRPC_TOKEN env)
+ *   - Server-initiated Ping → reply with ping in SubscribeRequest (else server drops us)
+ *   - Replay on reconnect via fromSlot (caller-tracked latestSlot, −32 slot reorg buffer)
+ *   - CONFIRMED commitment level
+ *   - Caller-managed exponential reconnect backoff (100ms → 60s)
  *
  * Subscribes to:
  *   - lb_pair accounts (active bin changes → trigger harvest checks)
@@ -18,12 +19,6 @@
  * (sanity check), tokenXMint, tokenYMint, reserves, and token program
  * flags (token program resolution for V2 CPI). Pool metadata flows through
  * HarvestJob to the executor, eliminating redundant DLMM SDK calls.
- *
- * Reliability:
- *   - Auto-reconnect with exponential backoff
- *   - Ping/pong monitoring (stale stream detection)
- *   - Persistent position cache for fast restarts
- *   - Full position re-sync on reconnect
  */
 
 import {
@@ -196,6 +191,15 @@ export class GeyserSubscriber extends EventEmitter {
   private connected = false;
   private totalReconnects = 0;
   private shuttingDown = false;
+  // Latest slot observed on the stream — used to set fromSlot on resubscribe so we
+  // replay anything missed during a disconnect. Cleared back to 0 only on shutdown.
+  private latestSlot = 0;
+  // Held so the data handler can write Pong replies and shutdown can close cleanly.
+  private stream: any = null;
+  // Exponential backoff for reconnect: 100ms → 60s, doubles per failed attempt,
+  // resets to 100ms once subscribe succeeds.
+  private reconnectDelayMs = 100;
+  private reconnectTimer: NodeJS.Timeout | null = null;
 
   // Safety-net polling
   private safetyPollTimer: NodeJS.Timeout | null = null;
@@ -525,89 +529,172 @@ export class GeyserSubscriber extends EventEmitter {
   // ─── GRPC CONNECTION ───
 
   /**
-   * Connect to Helius LaserStream using the official SDK.
-   * SDK handles reconnection, ping/pong, and 24h historical replay.
+   * Connect to Alchemy Yellowstone gRPC via @triton-one/yellowstone-grpc.
+   *
+   * Reconnect, replay (fromSlot), and Ping reply are all caller-managed —
+   * the Triton client is a thin wrapper around a gRPC duplex, unlike the
+   * Helius SDK which handled these internally.
    */
   async connect(): Promise<void> {
     if (this.shuttingDown) return;
 
-    const { subscribe, CommitmentLevel } = await import('helius-laserstream');
+    const { default: Client, CommitmentLevel } = await import('@triton-one/yellowstone-grpc');
 
-    const url = new URL(this.grpcEndpoint);
-    const apiKey = url.searchParams.get('api-key')
-      || url.searchParams.get('x-token')
-      || process.env.GRPC_TOKEN
-      || '';
-    const endpoint = `${url.protocol}//${url.host}${url.pathname}`;
+    // Endpoint: plain "host:port" (no scheme) OR "https://host:port" — Triton accepts both.
+    // Token: x-token. Prefer GRPC_TOKEN env. Fall back to ?x-token=... in the URL only
+    // for backwards-compat with the old Helius-style env value during cutover.
+    let endpoint = this.grpcEndpoint;
+    let token = process.env.GRPC_TOKEN || '';
+    if (!token && endpoint.includes('?')) {
+      const url = new URL(endpoint.startsWith('http') ? endpoint : `https://${endpoint}`);
+      token = url.searchParams.get('x-token') || url.searchParams.get('api-key') || '';
+      endpoint = `${url.protocol}//${url.host}${url.pathname}`.replace(/\/$/, '');
+    }
 
-    const config = { apiKey, endpoint, replay: true };
+    const client = new Client(endpoint, token, undefined);
+    // Triton 5.x: connect() establishes the native gRPC client; subscribe() needs it.
+    await client.connect();
+    const stream = await client.subscribe();
+    this.stream = stream;
 
     // Watch specific LbPair accounts + all bin-farm program accounts
     const accountAddresses = [...this.getWatchedPools()];
     const lbPairFilters: Record<string, any> = {};
     for (const pool of accountAddresses) {
-      lbPairFilters[`lb_${pool}`] = { account: [pool] };
+      lbPairFilters[`lb_${pool}`] = { account: [pool], owner: [], filters: [] };
     }
     const request: any = {
       accounts: {
         ...lbPairFilters,
-        positions: { owner: [this.coreProgramId.toBase58()] },
+        positions: { account: [], owner: [this.coreProgramId.toBase58()], filters: [] },
       },
+      slots: {},
+      transactions: {},
+      transactionsStatus: {},
+      blocks: {},
+      blocksMeta: {},
+      entry: {},
+      accountsDataSlice: [],
       commitment: CommitmentLevel.CONFIRMED,
     };
+    if (this.latestSlot > 0) {
+      // −32 slots buffers reorgs (Alchemy best-practice guidance).
+      request.fromSlot = String(Math.max(0, this.latestSlot - 32));
+    }
 
-    logger.info(`[geyser] Connecting to LaserStream: ${endpoint}`);
-    logger.info(`[geyser] apiKey present: ${apiKey.length > 0}, length: ${apiKey.length}`);
-    logger.info(`[geyser] Subscribing: ${accountAddresses.length} pools, owner=${this.coreProgramId.toBase58().slice(0, 8)}`);
+    const safeEndpoint = endpoint.split('?')[0];
+    logger.info(`[geyser] Connecting to Yellowstone gRPC: ${safeEndpoint}`);
+    logger.info(`[geyser] x-token present: ${token.length > 0}, length: ${token.length}`);
+    logger.info(`[geyser] Subscribing: ${accountAddresses.length} pools, owner=${this.coreProgramId.toBase58().slice(0, 8)}, fromSlot=${request.fromSlot ?? 'none'}`);
 
     let firstMessage = true;
-    await subscribe(
-      config,
-      request,
-      (message: any) => {
-        if (firstMessage) {
-          firstMessage = false;
-          logger.info(`[geyser] First message received — stream delivering data`);
-        }
+    stream.on('data', (update: any) => {
+      // Track latest slot from any update that carries one — used as fromSlot on
+      // the next resubscribe to replay anything we missed during a disconnect.
+      const slot = update.account?.slot ?? update.slot?.slot;
+      if (slot) {
+        const s = typeof slot === 'string' ? Number(slot) : slot;
+        if (s > this.latestSlot) this.latestSlot = s;
+      }
 
+      // Server-initiated Ping. Must reply with a SubscribeRequest carrying ping or the
+      // server drops the connection (Alchemy/Yellowstone heartbeat protocol).
+      if (update.ping) {
         try {
-          // SubscribeUpdate → .account (SubscribeUpdateAccount) → .account (SubscribeUpdateAccountInfo)
-          const info = message.account?.account;
-          if (!info?.pubkey || !info?.data) return;
-
-          const pubkey = new PublicKey(info.pubkey).toBase58();
-          const data = Buffer.from(info.data);
-
-          if (this.positionsByPool.has(pubkey)) {
-            this.handleLbPairUpdate(pubkey, data);
-          } else if (this.isBinFarmPosition(data)) {
-            this.handlePositionUpdate(pubkey, data);
-          }
+          stream.write({
+            accounts: {}, slots: {}, transactions: {}, transactionsStatus: {},
+            blocks: {}, blocksMeta: {}, entry: {}, accountsDataSlice: [],
+            ping: { id: 1 },
+          });
         } catch (e: any) {
-          logger.warn(`[geyser] Failed to parse stream message: ${e.message}`);
+          logger.warn(`[geyser] Pong write failed: ${e.message}`);
         }
-      },
-      (error: any) => {
-        logger.error(`[geyser] Stream error: ${error.message || error}`);
-        this.connected = false;
-        this.totalReconnects++;
-        this.emit('disconnected');
-      },
-    );
+        return;
+      }
 
-    // subscribe() resolves once the gRPC handshake is complete and the stream
-    // is open. Mark connected here — previously this only flipped on first
-    // data message, which never arrives when the protocol is quiet + 0 positions.
+      if (firstMessage) {
+        firstMessage = false;
+        logger.info(`[geyser] First message received — stream delivering data`);
+      }
+
+      try {
+        // SubscribeUpdate → .account (SubscribeUpdateAccount) → .account (SubscribeUpdateAccountInfo)
+        const info = update.account?.account;
+        if (!info?.pubkey || !info?.data) return;
+
+        const pubkey = new PublicKey(info.pubkey).toBase58();
+        const data = Buffer.from(info.data);
+
+        if (this.positionsByPool.has(pubkey)) {
+          this.handleLbPairUpdate(pubkey, data);
+        } else if (this.isBinFarmPosition(data)) {
+          this.handlePositionUpdate(pubkey, data);
+        }
+      } catch (e: any) {
+        logger.warn(`[geyser] Failed to parse stream message: ${e.message}`);
+      }
+    });
+
+    let terminalFired = false;
+    const onTerminal = (label: string, err?: any) => {
+      if (terminalFired) return;
+      terminalFired = true;
+      // If updateSubscription() already swapped in a new stream, ignore — that path
+      // schedules its own connect.
+      if (this.stream !== stream) return;
+      if (this.shuttingDown) return;
+      const msg = err?.message ?? err ?? label;
+      logger.error(`[geyser] Stream ${label}: ${msg}`);
+      this.connected = false;
+      this.totalReconnects++;
+      this.stream = null;
+      this.emit('disconnected');
+      this.scheduleReconnect();
+    };
+    stream.on('error', (err: any) => onTerminal('error', err));
+    stream.on('end', () => onTerminal('end'));
+    stream.on('close', () => onTerminal('close'));
+
+    // Send the subscription request to begin streaming.
+    await new Promise<void>((resolve, reject) => {
+      stream.write(request, (err: any) => err ? reject(err) : resolve());
+    });
+
     this.connected = true;
+    this.reconnectDelayMs = 100; // reset backoff on successful subscribe
     logger.info(`[geyser] Connected. Watching ${this.positionsByPool.size} pools, ${this.positions.size} positions`);
   }
 
   /**
-   * Update subscription not needed — helius-laserstream SDK manages the stream.
-   * On registry changes that add new pools, reconnect to pick them up.
+   * Schedule a reconnect after exponential backoff. 100ms → 60s, doubles each failure,
+   * resets to 100ms inside connect() once the subscribe write succeeds.
+   */
+  private scheduleReconnect(): void {
+    if (this.shuttingDown || this.reconnectTimer) return;
+    const delay = this.reconnectDelayMs;
+    logger.info(`[geyser] Reconnecting in ${delay}ms`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect().catch(e => {
+        logger.error(`[geyser] Reconnect attempt failed: ${e.message}`);
+        this.scheduleReconnect();
+      });
+    }, delay);
+    this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 60_000);
+  }
+
+  /**
+   * On registry changes that add/remove pools, reconnect to refresh the subscription.
+   * Yellowstone allows updating an active subscription via stream.write(newRequest),
+   * but reconnect is simpler and the pool set changes infrequently.
    */
   private updateSubscription(): void {
     logger.info('[geyser] Pool set changed — reconnecting to update subscription');
+    if (this.stream) {
+      try { this.stream.end(); } catch { /* ignore */ }
+      this.stream = null;
+    }
+    this.connected = false;
     this.connect().catch(e => logger.error(`[geyser] Reconnect failed: ${e.message}`));
   }
 
@@ -700,8 +787,15 @@ export class GeyserSubscriber extends EventEmitter {
       this.safetyPollTimer = null;
     }
 
-    const { shutdownAllStreams } = await import('helius-laserstream');
-    await shutdownAllStreams();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    if (this.stream) {
+      try { this.stream.end(); } catch { /* ignore */ }
+      this.stream = null;
+    }
 
     this.connected = false;
     logger.info('[geyser] Subscriber shut down');
