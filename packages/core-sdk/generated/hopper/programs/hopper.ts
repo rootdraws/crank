@@ -15,6 +15,7 @@ import {
 } from '@solana/kit';
 import {
   type ParsedAcceptAdminInstruction,
+  type ParsedExpandRoutingConfigV2Instruction,
   type ParsedInitializeInstruction,
   type ParsedPauseInstruction,
   type ParsedRegisterTokenRouteInstruction,
@@ -78,6 +79,7 @@ export function identifyHopperAccount(
 
 export enum HopperInstruction {
   AcceptAdmin,
+  ExpandRoutingConfigV2,
   Initialize,
   Pause,
   RegisterTokenRoute,
@@ -102,6 +104,17 @@ export function identifyHopperInstruction(
     )
   ) {
     return HopperInstruction.AcceptAdmin;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([203, 105, 5, 214, 160, 173, 196, 198])
+      ),
+      0
+    )
+  ) {
+    return HopperInstruction.ExpandRoutingConfigV2;
   }
   if (
     containsBytes(
@@ -202,6 +215,9 @@ export type ParsedHopperInstruction<
   | ({
       instructionType: HopperInstruction.AcceptAdmin;
     } & ParsedAcceptAdminInstruction<TProgram>)
+  | ({
+      instructionType: HopperInstruction.ExpandRoutingConfigV2;
+    } & ParsedExpandRoutingConfigV2Instruction<TProgram>)
   | ({
       instructionType: HopperInstruction.Initialize;
     } & ParsedInitializeInstruction<TProgram>)

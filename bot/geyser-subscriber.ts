@@ -563,10 +563,13 @@ export class GeyserSubscriber extends EventEmitter {
     for (const pool of accountAddresses) {
       lbPairFilters[`lb_${pool}`] = { account: [pool], owner: [], filters: [] };
     }
+    // Owner-program filters are rejected by Alchemy ("Unsupported plan type").
+    // Position discovery + close detection runs through the 5s safety poll
+    // (program.account.position.all() via RPC); gRPC only carries fast LbPair
+    // active-bin updates.
     const request: any = {
       accounts: {
         ...lbPairFilters,
-        positions: { account: [], owner: [this.coreProgramId.toBase58()], filters: [] },
       },
       slots: {},
       transactions: {},

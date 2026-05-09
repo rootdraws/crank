@@ -1,8 +1,9 @@
 // hopper — routing program for crank.money protocol revenue.
 //
-// Holds SOL + tribe token ATAs. Routes by on-chain rule:
-//   - SOL: 40/40/20 split to W-Buy / Treasury / Personal (configurable bps).
-//   - Token: per-mint route to a single destination wallet (W-{TOKEN}).
+// Holds SOL + tribe token ATAs. Routes by on-chain rule (v2 layout, 4-way):
+//   - SOL: split N-way (default 25/25/25/25) across treasury / admin / ops / tax.
+//   - Token: per-mint enable/threshold gate; sweep distributes 4-way using the
+//     same RoutingConfig destinations (one ATA per destination per mint).
 //
 // Permissionless sweep cranking — anyone can fire sweep_sol / sweep_token.
 // Replay safety: every sweep validates destinations against the live
@@ -14,7 +15,6 @@
 // per sweep).
 
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::system_program;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{
     self, Mint, TokenAccount as ITokenAccount, TokenInterface, TransferChecked,
@@ -33,10 +33,11 @@ pub mod hopper {
 
     pub fn initialize(
         ctx: Context<Initialize>,
-        w_buy: Pubkey,
-        treasury: Pubkey,
-        personal: Pubkey,
-        sol_split_bps: [u16; 3],
+        dest_treasury: Pubkey,
+        dest_admin: Pubkey,
+        dest_ops: Pubkey,
+        dest_tax: Pubkey,
+        sol_split_bps: [u16; 4],
         sol_threshold_lamports: u64,
         cranker_tip_bps: u16,
     ) -> Result<()> {
@@ -45,16 +46,17 @@ pub mod hopper {
             HopperError::InvalidSplit
         );
         require!(cranker_tip_bps <= MAX_CRANKER_TIP_BPS, HopperError::TipTooHigh);
-        require!(w_buy != Pubkey::default(), HopperError::InvalidDestination);
-        require!(treasury != Pubkey::default(), HopperError::InvalidDestination);
-        require!(personal != Pubkey::default(), HopperError::InvalidDestination);
+        for p in [dest_treasury, dest_admin, dest_ops, dest_tax] {
+            require!(p != Pubkey::default(), HopperError::InvalidDestination);
+        }
 
         let cfg = &mut ctx.accounts.routing_config;
         cfg.admin = ctx.accounts.admin.key();
         cfg.pending_admin = Pubkey::default();
-        cfg.w_buy = w_buy;
-        cfg.treasury = treasury;
-        cfg.personal = personal;
+        cfg.dest_treasury = dest_treasury;
+        cfg.dest_admin = dest_admin;
+        cfg.dest_ops = dest_ops;
+        cfg.dest_tax = dest_tax;
         cfg.sol_split_bps = sol_split_bps;
         cfg.sol_threshold_lamports = sol_threshold_lamports;
         cfg.cranker_tip_bps = cranker_tip_bps;
@@ -66,9 +68,10 @@ pub mod hopper {
 
         emit!(InitializedEvent {
             admin: cfg.admin,
-            w_buy,
-            treasury,
-            personal,
+            dest_treasury,
+            dest_admin,
+            dest_ops,
+            dest_tax,
             sol_split_bps,
             sol_threshold_lamports,
             cranker_tip_bps,
@@ -79,25 +82,30 @@ pub mod hopper {
 
     pub fn update_routing(
         ctx: Context<AdminOnly>,
-        new_w_buy: Option<Pubkey>,
-        new_treasury: Option<Pubkey>,
-        new_personal: Option<Pubkey>,
-        new_sol_split_bps: Option<[u16; 3]>,
+        new_dest_treasury: Option<Pubkey>,
+        new_dest_admin: Option<Pubkey>,
+        new_dest_ops: Option<Pubkey>,
+        new_dest_tax: Option<Pubkey>,
+        new_sol_split_bps: Option<[u16; 4]>,
         new_sol_threshold_lamports: Option<u64>,
         new_cranker_tip_bps: Option<u16>,
     ) -> Result<()> {
         let cfg = &mut ctx.accounts.routing_config;
-        if let Some(p) = new_w_buy {
+        if let Some(p) = new_dest_treasury {
             require!(p != Pubkey::default(), HopperError::InvalidDestination);
-            cfg.w_buy = p;
+            cfg.dest_treasury = p;
         }
-        if let Some(p) = new_treasury {
+        if let Some(p) = new_dest_admin {
             require!(p != Pubkey::default(), HopperError::InvalidDestination);
-            cfg.treasury = p;
+            cfg.dest_admin = p;
         }
-        if let Some(p) = new_personal {
+        if let Some(p) = new_dest_ops {
             require!(p != Pubkey::default(), HopperError::InvalidDestination);
-            cfg.personal = p;
+            cfg.dest_ops = p;
+        }
+        if let Some(p) = new_dest_tax {
+            require!(p != Pubkey::default(), HopperError::InvalidDestination);
+            cfg.dest_tax = p;
         }
         if let Some(s) = new_sol_split_bps {
             require!(
@@ -123,21 +131,16 @@ pub mod hopper {
 
     pub fn register_token_route(
         ctx: Context<RegisterTokenRoute>,
-        destination: Pubkey,
         threshold: u64,
     ) -> Result<()> {
-        require!(destination != Pubkey::default(), HopperError::InvalidDestination);
-
         let route = &mut ctx.accounts.token_route;
         route.mint = ctx.accounts.mint.key();
-        route.destination = destination;
         route.threshold = threshold;
         route.enabled = true;
         route.bump = ctx.bumps.token_route;
 
         emit!(TokenRouteRegisteredEvent {
             mint: route.mint,
-            destination,
             threshold,
             ts: Clock::get()?.unix_timestamp,
         });
@@ -146,15 +149,10 @@ pub mod hopper {
 
     pub fn update_token_route(
         ctx: Context<UpdateTokenRoute>,
-        new_destination: Option<Pubkey>,
         new_threshold: Option<u64>,
         new_enabled: Option<bool>,
     ) -> Result<()> {
         let route = &mut ctx.accounts.token_route;
-        if let Some(d) = new_destination {
-            require!(d != Pubkey::default(), HopperError::InvalidDestination);
-            route.destination = d;
-        }
         if let Some(t) = new_threshold {
             route.threshold = t;
         }
@@ -164,7 +162,6 @@ pub mod hopper {
 
         emit!(TokenRouteUpdatedEvent {
             mint: route.mint,
-            destination: route.destination,
             threshold: route.threshold,
             enabled: route.enabled,
             ts: Clock::get()?.unix_timestamp,
@@ -205,6 +202,90 @@ pub mod hopper {
         Ok(())
     }
 
+    /// One-shot migration of an existing v1 RoutingConfig (3-way) to the v2
+    /// (4-way) layout. Idempotent: skips if already at v2 size. Authority is
+    /// verified by reading the on-chain `admin` field manually since the v2
+    /// `Account<RoutingConfig>` deserializer would fail against a v1-sized
+    /// account before this handler runs.
+    ///
+    /// Post-expand the dest_* fields contain v1's (w_buy, treasury, personal)
+    /// bytes plus zeros for dest_tax. Caller MUST follow up with
+    /// `update_routing(new_dest_treasury, new_dest_admin, new_dest_ops,
+    /// new_dest_tax, new_sol_split_bps, ...)` to overwrite the carry-over.
+    pub fn expand_routing_config_v2(ctx: Context<ExpandRoutingConfigV2>) -> Result<()> {
+        let info = &ctx.accounts.routing_config.to_account_info();
+        // Allow re-runs at v2 size (data_len == SIZE) so a second call can
+        // re-zero structural fields + rewrite bump if the prior call left
+        // them garbage. Reject anything that's neither v1 nor v2.
+        require!(
+            info.data_len() == RoutingConfig::SIZE
+                || info.data_len() == RoutingConfig::SIZE_V1,
+            HopperError::Unauthorized
+        );
+
+        // admin pubkey at offset 8 (after Anchor disc).
+        {
+            let data = info.try_borrow_data()?;
+            require!(data.len() >= 8 + 32, HopperError::Unauthorized);
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&data[8..8 + 32]);
+            require!(
+                ctx.accounts.admin.key() == Pubkey::new_from_array(buf),
+                HopperError::Unauthorized
+            );
+        }
+
+        let new_size = RoutingConfig::SIZE;
+        if info.data_len() < new_size {
+            let needed = Rent::get()?.minimum_balance(new_size);
+            let have = info.lamports();
+            if needed > have {
+                let topup = needed - have;
+                anchor_lang::system_program::transfer(
+                    CpiContext::new(
+                        ctx.accounts.system_program.to_account_info(),
+                        anchor_lang::system_program::Transfer {
+                            from: ctx.accounts.admin.to_account_info(),
+                            to: info.clone(),
+                        },
+                    ),
+                    topup,
+                )?;
+            }
+            info.realloc(new_size, true)?;
+        }
+
+        // After realloc the v2 `bump` byte position contains either v1
+        // garbage or a zero, so AdminOnly's `bump = routing_config.bump`
+        // would fail PDA validation on every subsequent ix. Rewrite the
+        // structural fields (paused, bump, cranker_tip, threshold, splits,
+        // dest_tax) to known-good zeros / canonical values. Caller must
+        // follow with `update_routing` to populate dest_treasury/admin/ops/tax
+        // and sol_split_bps[4] before any sweep can run.
+        // v2 data layout (after 8-byte Anchor disc):
+        //   0..32  admin           (preserved from v1)
+        //   32..64 pending_admin   (preserved from v1)
+        //   64..96 dest_treasury   (= v1 w_buy bytes — overwrite via update_routing)
+        //   96..128 dest_admin     (= v1 treasury bytes — overwrite)
+        //   128..160 dest_ops      (= v1 personal bytes — overwrite)
+        //   160..192 dest_tax      (zero out here)
+        //   192..200 sol_split_bps [u16;4] (zero out)
+        //   200..208 sol_threshold (zero out)
+        //   208..210 cranker_tip   (zero out)
+        //   210..211 paused        (zero out)
+        //   211..212 bump          (canonical bump from ctx.bumps)
+        let canonical_bump = ctx.bumps.routing_config;
+        let mut data = info.try_borrow_mut_data()?;
+        // Zero structural fields + canonical bump.
+        for i in 8 + 160..8 + 211 {
+            data[i] = 0;
+        }
+        data[8 + 211] = canonical_bump;
+
+        msg!("RoutingConfig expanded to v2 ({} bytes), bump={}", new_size, canonical_bump);
+        Ok(())
+    }
+
     pub fn pause(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
         let cfg = &mut ctx.accounts.routing_config;
         cfg.paused = paused;
@@ -222,18 +303,10 @@ pub mod hopper {
         require!(!cfg.paused, HopperError::Paused);
 
         // Replay safety: validate destination accounts match current config.
-        require!(
-            ctx.accounts.w_buy.key() == cfg.w_buy,
-            HopperError::InvalidDestination
-        );
-        require!(
-            ctx.accounts.treasury.key() == cfg.treasury,
-            HopperError::InvalidDestination
-        );
-        require!(
-            ctx.accounts.personal.key() == cfg.personal,
-            HopperError::InvalidDestination
-        );
+        require!(ctx.accounts.dest_treasury.key() == cfg.dest_treasury, HopperError::InvalidDestination);
+        require!(ctx.accounts.dest_admin.key()    == cfg.dest_admin,    HopperError::InvalidDestination);
+        require!(ctx.accounts.dest_ops.key()      == cfg.dest_ops,      HopperError::InvalidDestination);
+        require!(ctx.accounts.dest_tax.key()      == cfg.dest_tax,      HopperError::InvalidDestination);
 
         let vault_info = ctx.accounts.hopper_vault.to_account_info();
         let vault_balance = vault_info.lamports();
@@ -253,45 +326,39 @@ pub mod hopper {
             .ok_or(HopperError::Overflow)? as u64;
         let net = sweepable.checked_sub(tip).ok_or(HopperError::Overflow)?;
 
-        let buy = (net as u128)
-            .checked_mul(cfg.sol_split_bps[0] as u128)
-            .ok_or(HopperError::Overflow)?
-            .checked_div(BPS_TOTAL as u128)
-            .ok_or(HopperError::Overflow)? as u64;
-        let treasury = (net as u128)
-            .checked_mul(cfg.sol_split_bps[1] as u128)
-            .ok_or(HopperError::Overflow)?
-            .checked_div(BPS_TOTAL as u128)
-            .ok_or(HopperError::Overflow)? as u64;
-        // personal absorbs rounding remainder so total == net
-        let personal = net
-            .checked_sub(buy)
-            .ok_or(HopperError::Overflow)?
-            .checked_sub(treasury)
-            .ok_or(HopperError::Overflow)?;
+        let split = |bps: u16| -> Result<u64> {
+            Ok((net as u128)
+                .checked_mul(bps as u128)
+                .ok_or(HopperError::Overflow)?
+                .checked_div(BPS_TOTAL as u128)
+                .ok_or(HopperError::Overflow)? as u64)
+        };
+        let to_treasury = split(cfg.sol_split_bps[0])?;
+        let to_admin    = split(cfg.sol_split_bps[1])?;
+        let to_ops      = split(cfg.sol_split_bps[2])?;
+        // tax absorbs rounding remainder so total == net
+        let to_tax = net
+            .checked_sub(to_treasury).ok_or(HopperError::Overflow)?
+            .checked_sub(to_admin).ok_or(HopperError::Overflow)?
+            .checked_sub(to_ops).ok_or(HopperError::Overflow)?;
 
         // Lamport debit/credit (HopperVault is program-owned).
         **vault_info.try_borrow_mut_lamports()? = vault_balance
             .checked_sub(sweepable)
             .ok_or(HopperError::Overflow)?;
-        **ctx.accounts.w_buy.try_borrow_mut_lamports()? = ctx
-            .accounts
-            .w_buy
-            .lamports()
-            .checked_add(buy)
-            .ok_or(HopperError::Overflow)?;
-        **ctx.accounts.treasury.try_borrow_mut_lamports()? = ctx
-            .accounts
-            .treasury
-            .lamports()
-            .checked_add(treasury)
-            .ok_or(HopperError::Overflow)?;
-        **ctx.accounts.personal.try_borrow_mut_lamports()? = ctx
-            .accounts
-            .personal
-            .lamports()
-            .checked_add(personal)
-            .ok_or(HopperError::Overflow)?;
+        for (acct, amount) in [
+            (&ctx.accounts.dest_treasury, to_treasury),
+            (&ctx.accounts.dest_admin, to_admin),
+            (&ctx.accounts.dest_ops, to_ops),
+            (&ctx.accounts.dest_tax, to_tax),
+        ] {
+            if amount > 0 {
+                **acct.try_borrow_mut_lamports()? = acct
+                    .lamports()
+                    .checked_add(amount)
+                    .ok_or(HopperError::Overflow)?;
+            }
+        }
         if tip > 0 {
             **ctx.accounts.cranker.try_borrow_mut_lamports()? = ctx
                 .accounts
@@ -303,9 +370,10 @@ pub mod hopper {
 
         emit!(SolSweptEvent {
             sweepable,
-            buy,
-            treasury,
-            personal,
+            to_treasury,
+            to_admin,
+            to_ops,
+            to_tax,
             tip,
             cranker: ctx.accounts.cranker.key(),
             ts: Clock::get()?.unix_timestamp,
@@ -313,42 +381,71 @@ pub mod hopper {
         Ok(())
     }
 
-    pub fn sweep_token(ctx: Context<SweepToken>) -> Result<()> {
+    pub fn sweep_token<'info>(ctx: Context<'_, '_, '_, 'info, SweepToken<'info>>) -> Result<()> {
         let cfg = &ctx.accounts.routing_config;
         require!(!cfg.paused, HopperError::Paused);
 
         let route = &ctx.accounts.token_route;
         require!(route.enabled, HopperError::TokenRouteDisabled);
-        require!(
-            ctx.accounts.destination.key() == route.destination,
-            HopperError::InvalidDestination
-        );
 
-        let amount = ctx.accounts.hopper_ata.amount;
-        require!(amount >= route.threshold && amount > 0, HopperError::BelowThreshold);
+        let total = ctx.accounts.hopper_ata.amount;
+        require!(total >= route.threshold && total > 0, HopperError::BelowThreshold);
+
+        // Replay safety: destination keys must match the live RoutingConfig.
+        // ATAs are constrained to those keys via Anchor's `associated_token::authority`.
+        require!(ctx.accounts.dest_treasury.key() == cfg.dest_treasury, HopperError::InvalidDestination);
+        require!(ctx.accounts.dest_admin.key()    == cfg.dest_admin,    HopperError::InvalidDestination);
+        require!(ctx.accounts.dest_ops.key()      == cfg.dest_ops,      HopperError::InvalidDestination);
+        require!(ctx.accounts.dest_tax.key()      == cfg.dest_tax,      HopperError::InvalidDestination);
+
+        let split = |bps: u16| -> Result<u64> {
+            Ok((total as u128)
+                .checked_mul(bps as u128)
+                .ok_or(HopperError::Overflow)?
+                .checked_div(BPS_TOTAL as u128)
+                .ok_or(HopperError::Overflow)? as u64)
+        };
+        let to_treasury = split(cfg.sol_split_bps[0])?;
+        let to_admin    = split(cfg.sol_split_bps[1])?;
+        let to_ops      = split(cfg.sol_split_bps[2])?;
+        let to_tax = total
+            .checked_sub(to_treasury).ok_or(HopperError::Overflow)?
+            .checked_sub(to_admin).ok_or(HopperError::Overflow)?
+            .checked_sub(to_ops).ok_or(HopperError::Overflow)?;
 
         let vault_seeds: &[&[u8]] = &[b"hopper_vault", &[ctx.accounts.hopper_vault.bump]];
         let signer = &[vault_seeds];
+        let mint_decimals = ctx.accounts.mint.decimals;
 
-        token_interface::transfer_checked(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.hopper_ata.to_account_info(),
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.dest_ata.to_account_info(),
-                    authority: ctx.accounts.hopper_vault.to_account_info(),
-                },
-                signer,
-            ),
-            amount,
-            ctx.accounts.mint.decimals,
-        )?;
+        let transfer_to = |dest_ata: &InterfaceAccount<'info, ITokenAccount>, amount: u64| -> Result<()> {
+            if amount == 0 { return Ok(()); }
+            token_interface::transfer_checked(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.hopper_ata.to_account_info(),
+                        mint: ctx.accounts.mint.to_account_info(),
+                        to: dest_ata.to_account_info(),
+                        authority: ctx.accounts.hopper_vault.to_account_info(),
+                    },
+                    signer,
+                ),
+                amount,
+                mint_decimals,
+            )
+        };
+        transfer_to(&ctx.accounts.dest_treasury_ata, to_treasury)?;
+        transfer_to(&ctx.accounts.dest_admin_ata, to_admin)?;
+        transfer_to(&ctx.accounts.dest_ops_ata, to_ops)?;
+        transfer_to(&ctx.accounts.dest_tax_ata, to_tax)?;
 
         emit!(TokenSweptEvent {
             mint: ctx.accounts.mint.key(),
-            amount,
-            destination: route.destination,
+            total,
+            to_treasury,
+            to_admin,
+            to_ops,
+            to_tax,
             cranker: ctx.accounts.cranker.key(),
             ts: Clock::get()?.unix_timestamp,
         });
@@ -362,10 +459,11 @@ pub mod hopper {
 pub struct RoutingConfig {
     pub admin: Pubkey,
     pub pending_admin: Pubkey,
-    pub w_buy: Pubkey,
-    pub treasury: Pubkey,
-    pub personal: Pubkey,
-    pub sol_split_bps: [u16; 3],
+    pub dest_treasury: Pubkey,
+    pub dest_admin: Pubkey,
+    pub dest_ops: Pubkey,
+    pub dest_tax: Pubkey,
+    pub sol_split_bps: [u16; 4],
     pub sol_threshold_lamports: u64,
     pub cranker_tip_bps: u16,
     pub paused: bool,
@@ -374,14 +472,17 @@ pub struct RoutingConfig {
 }
 
 impl RoutingConfig {
-    // 8 (disc) + 5*32 (pubkeys) + 6 (split) + 8 (threshold) + 2 (tip) + 1 (paused) + 1 (bump) + 64 (reserved)
-    pub const SIZE: usize = 8 + 32 * 5 + 6 + 8 + 2 + 1 + 1 + 64;
+    // 8 (disc) + 6*32 (pubkeys) + 8 (split [u16;4]) + 8 (threshold) + 2 (tip) + 1 (paused) + 1 (bump) + 64 (reserved)
+    pub const SIZE: usize = 8 + 32 * 6 + 8 + 8 + 2 + 1 + 1 + 64;
+    // v1 layout (3-way: w_buy/treasury/personal + sol_split_bps[3]). Used by
+    // `expand_routing_config_v2` to detect migrate-eligible accounts.
+    // Size = 8 disc + 32*5 pubkeys + 6 sol_split[3] + 8 threshold + 2 tip + 1 paused + 1 bump + 64 reserved
+    pub const SIZE_V1: usize = 8 + 32 * 5 + 6 + 8 + 2 + 1 + 1 + 64;
 }
 
 #[account]
 pub struct TokenRoute {
     pub mint: Pubkey,
-    pub destination: Pubkey,
     pub threshold: u64,
     pub enabled: bool,
     pub bump: u8,
@@ -389,7 +490,7 @@ pub struct TokenRoute {
 }
 
 impl TokenRoute {
-    pub const SIZE: usize = 8 + 32 + 32 + 8 + 1 + 1 + 32;
+    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 32;
 }
 
 #[account]
@@ -442,6 +543,19 @@ pub struct AdminOnly<'info> {
         bump = routing_config.bump,
     )]
     pub routing_config: Account<'info, RoutingConfig>,
+}
+
+#[derive(Accounts)]
+pub struct ExpandRoutingConfigV2<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    /// CHECK: PDA derivation enforces canonical RoutingConfig. Authority byte-check
+    /// happens in the handler since v2 layout can't deserialize a v1-sized account.
+    #[account(mut, seeds = [b"routing_config"], bump)]
+    pub routing_config: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -541,17 +655,21 @@ pub struct SweepSol<'info> {
     )]
     pub hopper_vault: Account<'info, HopperVault>,
 
-    /// CHECK: validated in handler against routing_config.w_buy
+    /// CHECK: validated in handler against routing_config.dest_treasury
     #[account(mut)]
-    pub w_buy: AccountInfo<'info>,
+    pub dest_treasury: AccountInfo<'info>,
 
-    /// CHECK: validated in handler against routing_config.treasury
+    /// CHECK: validated in handler against routing_config.dest_admin
     #[account(mut)]
-    pub treasury: AccountInfo<'info>,
+    pub dest_admin: AccountInfo<'info>,
 
-    /// CHECK: validated in handler against routing_config.personal
+    /// CHECK: validated in handler against routing_config.dest_ops
     #[account(mut)]
-    pub personal: AccountInfo<'info>,
+    pub dest_ops: AccountInfo<'info>,
+
+    /// CHECK: validated in handler against routing_config.dest_tax
+    #[account(mut)]
+    pub dest_tax: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
 }
@@ -565,22 +683,22 @@ pub struct SweepToken<'info> {
         seeds = [b"routing_config"],
         bump = routing_config.bump,
     )]
-    pub routing_config: Account<'info, RoutingConfig>,
+    pub routing_config: Box<Account<'info, RoutingConfig>>,
 
     #[account(
         seeds = [b"hopper_vault"],
         bump = hopper_vault.bump,
     )]
-    pub hopper_vault: Account<'info, HopperVault>,
+    pub hopper_vault: Box<Account<'info, HopperVault>>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         seeds = [b"token_route", mint.key().as_ref()],
         bump = token_route.bump,
         constraint = token_route.mint == mint.key() @ HopperError::InvalidDestination,
     )]
-    pub token_route: Account<'info, TokenRoute>,
+    pub token_route: Box<Account<'info, TokenRoute>>,
 
     #[account(
         mut,
@@ -588,19 +706,52 @@ pub struct SweepToken<'info> {
         associated_token::authority = hopper_vault,
         associated_token::token_program = token_program,
     )]
-    pub hopper_ata: InterfaceAccount<'info, ITokenAccount>,
+    pub hopper_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
 
-    /// CHECK: validated in handler against token_route.destination
-    pub destination: AccountInfo<'info>,
+    /// CHECK: validated in handler against routing_config.dest_treasury
+    pub dest_treasury: AccountInfo<'info>,
+    /// CHECK: validated in handler against routing_config.dest_admin
+    pub dest_admin: AccountInfo<'info>,
+    /// CHECK: validated in handler against routing_config.dest_ops
+    pub dest_ops: AccountInfo<'info>,
+    /// CHECK: validated in handler against routing_config.dest_tax
+    pub dest_tax: AccountInfo<'info>,
 
     #[account(
         init_if_needed,
         payer = cranker,
         associated_token::mint = mint,
-        associated_token::authority = destination,
+        associated_token::authority = dest_treasury,
         associated_token::token_program = token_program,
     )]
-    pub dest_ata: InterfaceAccount<'info, ITokenAccount>,
+    pub dest_treasury_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = cranker,
+        associated_token::mint = mint,
+        associated_token::authority = dest_admin,
+        associated_token::token_program = token_program,
+    )]
+    pub dest_admin_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = cranker,
+        associated_token::mint = mint,
+        associated_token::authority = dest_ops,
+        associated_token::token_program = token_program,
+    )]
+    pub dest_ops_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = cranker,
+        associated_token::mint = mint,
+        associated_token::authority = dest_tax,
+        associated_token::token_program = token_program,
+    )]
+    pub dest_tax_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
 
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -636,10 +787,11 @@ pub enum HopperError {
 #[event]
 pub struct InitializedEvent {
     pub admin: Pubkey,
-    pub w_buy: Pubkey,
-    pub treasury: Pubkey,
-    pub personal: Pubkey,
-    pub sol_split_bps: [u16; 3],
+    pub dest_treasury: Pubkey,
+    pub dest_admin: Pubkey,
+    pub dest_ops: Pubkey,
+    pub dest_tax: Pubkey,
+    pub sol_split_bps: [u16; 4],
     pub sol_threshold_lamports: u64,
     pub cranker_tip_bps: u16,
     pub ts: i64,
@@ -654,7 +806,6 @@ pub struct RoutingUpdatedEvent {
 #[event]
 pub struct TokenRouteRegisteredEvent {
     pub mint: Pubkey,
-    pub destination: Pubkey,
     pub threshold: u64,
     pub ts: i64,
 }
@@ -662,7 +813,6 @@ pub struct TokenRouteRegisteredEvent {
 #[event]
 pub struct TokenRouteUpdatedEvent {
     pub mint: Pubkey,
-    pub destination: Pubkey,
     pub threshold: u64,
     pub enabled: bool,
     pub ts: i64,
@@ -691,9 +841,10 @@ pub struct PauseToggledEvent {
 #[event]
 pub struct SolSweptEvent {
     pub sweepable: u64,
-    pub buy: u64,
-    pub treasury: u64,
-    pub personal: u64,
+    pub to_treasury: u64,
+    pub to_admin: u64,
+    pub to_ops: u64,
+    pub to_tax: u64,
     pub tip: u64,
     pub cranker: Pubkey,
     pub ts: i64,
@@ -702,8 +853,11 @@ pub struct SolSweptEvent {
 #[event]
 pub struct TokenSweptEvent {
     pub mint: Pubkey,
-    pub amount: u64,
-    pub destination: Pubkey,
+    pub total: u64,
+    pub to_treasury: u64,
+    pub to_admin: u64,
+    pub to_ops: u64,
+    pub to_tax: u64,
     pub cranker: Pubkey,
     pub ts: i64,
 }

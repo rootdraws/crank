@@ -17,8 +17,6 @@ import {
   fixEncoderSize,
   getAddressDecoder,
   getAddressEncoder,
-  getArrayDecoder,
-  getArrayEncoder,
   getBooleanDecoder,
   getBooleanEncoder,
   getBytesDecoder,
@@ -78,7 +76,11 @@ export type Config = {
   lastBotSweepSlot: bigint;
   gasLamports: bigint;
   feeDest: Address;
-  reserved: Array<number>;
+  payoutBps: number;
+  matchRatioBps: number;
+  payoutAdmin: Address;
+  taxBps: number;
+  taxReserve: Address;
 };
 
 export type ConfigArgs = {
@@ -103,7 +105,11 @@ export type ConfigArgs = {
   lastBotSweepSlot: number | bigint;
   gasLamports: number | bigint;
   feeDest: Address;
-  reserved: Array<number>;
+  payoutBps: number;
+  matchRatioBps: number;
+  payoutAdmin: Address;
+  taxBps: number;
+  taxReserve: Address;
 };
 
 export function getConfigEncoder(): FixedSizeEncoder<ConfigArgs> {
@@ -131,7 +137,11 @@ export function getConfigEncoder(): FixedSizeEncoder<ConfigArgs> {
       ['lastBotSweepSlot', getU64Encoder()],
       ['gasLamports', getU64Encoder()],
       ['feeDest', getAddressEncoder()],
-      ['reserved', getArrayEncoder(getU8Encoder(), { size: 56 })],
+      ['payoutBps', getU16Encoder()],
+      ['matchRatioBps', getU16Encoder()],
+      ['payoutAdmin', getAddressEncoder()],
+      ['taxBps', getU16Encoder()],
+      ['taxReserve', getAddressEncoder()],
     ]),
     (value) => ({ ...value, discriminator: CONFIG_DISCRIMINATOR })
   );
@@ -161,7 +171,11 @@ export function getConfigDecoder(): FixedSizeDecoder<Config> {
     ['lastBotSweepSlot', getU64Decoder()],
     ['gasLamports', getU64Decoder()],
     ['feeDest', getAddressDecoder()],
-    ['reserved', getArrayDecoder(getU8Decoder(), { size: 56 })],
+    ['payoutBps', getU16Decoder()],
+    ['matchRatioBps', getU16Decoder()],
+    ['payoutAdmin', getAddressDecoder()],
+    ['taxBps', getU16Decoder()],
+    ['taxReserve', getAddressDecoder()],
   ]);
 }
 

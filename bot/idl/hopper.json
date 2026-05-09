@@ -54,6 +54,73 @@
       "args": []
     },
     {
+      "name": "expand_routing_config_v2",
+      "docs": [
+        "One-shot migration of an existing v1 RoutingConfig (3-way) to the v2",
+        "(4-way) layout. Idempotent: skips if already at v2 size. Authority is",
+        "verified by reading the on-chain `admin` field manually since the v2",
+        "`Account<RoutingConfig>` deserializer would fail against a v1-sized",
+        "account before this handler runs.",
+        "",
+        "Post-expand the dest_* fields contain v1's (w_buy, treasury, personal)",
+        "bytes plus zeros for dest_tax. Caller MUST follow up with",
+        "`update_routing(new_dest_treasury, new_dest_admin, new_dest_ops,",
+        "new_dest_tax, new_sol_split_bps, ...)` to overwrite the carry-over."
+      ],
+      "discriminator": [
+        203,
+        105,
+        5,
+        214,
+        160,
+        173,
+        196,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "routing_config",
+          "docs": [
+            "happens in the handler since v2 layout can't deserialize a v1-sized account."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  116,
+                  105,
+                  110,
+                  103,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initialize",
       "discriminator": [
         175,
@@ -130,15 +197,19 @@
       ],
       "args": [
         {
-          "name": "w_buy",
+          "name": "dest_treasury",
           "type": "pubkey"
         },
         {
-          "name": "treasury",
+          "name": "dest_admin",
           "type": "pubkey"
         },
         {
-          "name": "personal",
+          "name": "dest_ops",
+          "type": "pubkey"
+        },
+        {
+          "name": "dest_tax",
           "type": "pubkey"
         },
         {
@@ -146,7 +217,7 @@
           "type": {
             "array": [
               "u16",
-              3
+              4
             ]
           }
         },
@@ -382,10 +453,6 @@
       ],
       "args": [
         {
-          "name": "destination",
-          "type": "pubkey"
-        },
-        {
           "name": "threshold",
           "type": "u64"
         }
@@ -464,15 +531,19 @@
           }
         },
         {
-          "name": "w_buy",
+          "name": "dest_treasury",
           "writable": true
         },
         {
-          "name": "treasury",
+          "name": "dest_admin",
           "writable": true
         },
         {
-          "name": "personal",
+          "name": "dest_ops",
+          "writable": true
+        },
+        {
+          "name": "dest_tax",
           "writable": true
         },
         {
@@ -638,16 +709,196 @@
           }
         },
         {
-          "name": "destination"
+          "name": "dest_treasury"
         },
         {
-          "name": "dest_ata",
+          "name": "dest_admin"
+        },
+        {
+          "name": "dest_ops"
+        },
+        {
+          "name": "dest_tax"
+        },
+        {
+          "name": "dest_treasury_ata",
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "account",
-                "path": "destination"
+                "path": "dest_treasury"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "dest_admin_ata",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "dest_admin"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "dest_ops_ata",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "dest_ops"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "dest_tax_ata",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "dest_tax"
               },
               {
                 "kind": "account",
@@ -810,19 +1061,25 @@
       ],
       "args": [
         {
-          "name": "new_w_buy",
+          "name": "new_dest_treasury",
           "type": {
             "option": "pubkey"
           }
         },
         {
-          "name": "new_treasury",
+          "name": "new_dest_admin",
           "type": {
             "option": "pubkey"
           }
         },
         {
-          "name": "new_personal",
+          "name": "new_dest_ops",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
+          "name": "new_dest_tax",
           "type": {
             "option": "pubkey"
           }
@@ -833,7 +1090,7 @@
             "option": {
               "array": [
                 "u16",
-                3
+                4
               ]
             }
           }
@@ -926,12 +1183,6 @@
         }
       ],
       "args": [
-        {
-          "name": "new_destination",
-          "type": {
-            "option": "pubkey"
-          }
-        },
         {
           "name": "new_threshold",
           "type": {
@@ -1217,15 +1468,19 @@
             "type": "pubkey"
           },
           {
-            "name": "w_buy",
+            "name": "dest_treasury",
             "type": "pubkey"
           },
           {
-            "name": "treasury",
+            "name": "dest_admin",
             "type": "pubkey"
           },
           {
-            "name": "personal",
+            "name": "dest_ops",
+            "type": "pubkey"
+          },
+          {
+            "name": "dest_tax",
             "type": "pubkey"
           },
           {
@@ -1233,7 +1488,7 @@
             "type": {
               "array": [
                 "u16",
-                3
+                4
               ]
             }
           },
@@ -1282,15 +1537,19 @@
             "type": "pubkey"
           },
           {
-            "name": "w_buy",
+            "name": "dest_treasury",
             "type": "pubkey"
           },
           {
-            "name": "treasury",
+            "name": "dest_admin",
             "type": "pubkey"
           },
           {
-            "name": "personal",
+            "name": "dest_ops",
+            "type": "pubkey"
+          },
+          {
+            "name": "dest_tax",
             "type": "pubkey"
           },
           {
@@ -1298,7 +1557,7 @@
             "type": {
               "array": [
                 "u16",
-                3
+                4
               ]
             }
           },
@@ -1356,15 +1615,19 @@
             "type": "u64"
           },
           {
-            "name": "buy",
+            "name": "to_treasury",
             "type": "u64"
           },
           {
-            "name": "treasury",
+            "name": "to_admin",
             "type": "u64"
           },
           {
-            "name": "personal",
+            "name": "to_ops",
+            "type": "u64"
+          },
+          {
+            "name": "to_tax",
             "type": "u64"
           },
           {
@@ -1389,10 +1652,6 @@
         "fields": [
           {
             "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "destination",
             "type": "pubkey"
           },
           {
@@ -1429,10 +1688,6 @@
             "type": "pubkey"
           },
           {
-            "name": "destination",
-            "type": "pubkey"
-          },
-          {
             "name": "threshold",
             "type": "u64"
           },
@@ -1450,10 +1705,6 @@
         "fields": [
           {
             "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "destination",
             "type": "pubkey"
           },
           {
@@ -1481,12 +1732,24 @@
             "type": "pubkey"
           },
           {
-            "name": "amount",
+            "name": "total",
             "type": "u64"
           },
           {
-            "name": "destination",
-            "type": "pubkey"
+            "name": "to_treasury",
+            "type": "u64"
+          },
+          {
+            "name": "to_admin",
+            "type": "u64"
+          },
+          {
+            "name": "to_ops",
+            "type": "u64"
+          },
+          {
+            "name": "to_tax",
+            "type": "u64"
           },
           {
             "name": "cranker",

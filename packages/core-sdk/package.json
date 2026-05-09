@@ -2,6 +2,7 @@
   "name": "@crankbot/core-sdk",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "main": "index.ts",
   "scripts": {
     "build": "tsc",
@@ -13,7 +14,8 @@
     "@coral-xyz/anchor": "^0.30.0",
     "@meteora-ag/dlmm": "^1.3.0",
     "bn.js": "^5.2.1",
-    "bs58": "^5.0.0"
+    "bs58": "^5.0.0",
+    "governance-idl-sdk": "file:../../reference/governance-sdk"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

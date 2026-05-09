@@ -74,7 +74,11 @@ pub mod bin_farm {
         config.last_bot_sweep_slot = 0;
         config.gas_lamports = 0;
         config.fee_dest = Pubkey::default(); // falls back to `bot` until set via set_fee_dest
-        config._reserved = [0u8; 56];
+        config.payout_bps = 0;
+        config.match_ratio_bps = 0;
+        config.payout_admin = Pubkey::default(); // uninitialized — call init_payout_config
+        config.tax_bps = 0;
+        config.tax_reserve = Pubkey::default(); // tax routing disabled until set_tax_config
 
         msg!("crank.money initialized | bot={} fee={}bps", bot, fee_bps);
         Ok(())
@@ -1478,6 +1482,350 @@ pub mod bin_farm {
         msg!("Gas lamports updated to {}", gas_lamports);
         Ok(())
     }
+
+    // ============ TREASURY-MATCH PAYOUT (cranksettle, folded) ============
+
+    /// One-shot initializer for payout config. Idempotency: requires the current
+    /// `payout_admin` to be `Pubkey::default()` (i.e. uninitialized). Authority-gated
+    /// (FFwq) — runs once during realm bootstrap. After this, `update_payout_config`
+    /// is the only path to change `payout_bps` / `match_ratio_bps`, and
+    /// `set_payout_admin` is the only path to migrate `payout_admin` (e.g. to
+    /// the Native Treasury PDA at realm bootstrap step).
+    pub fn init_payout_config(
+        ctx: Context<AdminOnly>,
+        payout_bps: u16,
+        match_ratio_bps: u16,
+        payout_admin: Pubkey,
+    ) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        require!(
+            config.payout_admin == Pubkey::default(),
+            CoreError::PayoutAdminAlreadyInitialized
+        );
+        require!(payout_bps <= 5000, CoreError::PayoutBpsTooHigh);
+        require!(match_ratio_bps <= 50000, CoreError::MatchRatioTooHigh);
+        require!(payout_admin != Pubkey::default(), CoreError::Unauthorized);
+
+        config.payout_bps = payout_bps;
+        config.match_ratio_bps = match_ratio_bps;
+        config.payout_admin = payout_admin;
+
+        emit!(AdminConfigEvent {
+            field: "init_payout_config".into(),
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        msg!("Payout config initialized: payout_bps={}, match_ratio_bps={}, payout_admin={}",
+             payout_bps, match_ratio_bps, payout_admin);
+        Ok(())
+    }
+
+    /// Update payout/match parameters. Must be signed by `payout_admin` (which
+    /// post-bootstrap is the Native Treasury PDA, meaning this can only run via
+    /// a passed governance proposal).
+    ///
+    /// `payout_bps` and `match_ratio_bps` are independently optional — pass
+    /// `0xFFFF` (u16 sentinel) to leave a field unchanged. (Anchor's IDL doesn't
+    /// support `Option<u16>` cleanly across all clients; sentinel is more robust.)
+    pub fn update_payout_config(
+        ctx: Context<UpdatePayoutConfig>,
+        payout_bps: u16,
+        match_ratio_bps: u16,
+    ) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        if payout_bps != u16::MAX {
+            require!(payout_bps <= 5000, CoreError::PayoutBpsTooHigh);
+            config.payout_bps = payout_bps;
+        }
+        if match_ratio_bps != u16::MAX {
+            require!(match_ratio_bps <= 50000, CoreError::MatchRatioTooHigh);
+            config.match_ratio_bps = match_ratio_bps;
+        }
+        emit!(AdminConfigEvent {
+            field: "update_payout_config".into(),
+            authority: ctx.accounts.payout_admin.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        msg!("Payout config updated: payout_bps={}, match_ratio_bps={}",
+             config.payout_bps, config.match_ratio_bps);
+        Ok(())
+    }
+
+    /// Direct admin set of `payout_admin`. Used at realm bootstrap to migrate
+    /// from FFwq → Native Treasury PDA. Authority-gated (FFwq) — single-step
+    /// (no two-step pending dance) since `payout_bps` is hard-capped at 50%
+    /// and the blast radius of a wrong pubkey is bounded.
+    pub fn set_payout_admin(ctx: Context<AdminOnly>, new: Pubkey) -> Result<()> {
+        require!(new != Pubkey::default(), CoreError::Unauthorized);
+        ctx.accounts.config.payout_admin = new;
+        emit!(AdminConfigEvent {
+            field: "payout_admin".into(),
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        msg!("payout_admin set to {}", new);
+        Ok(())
+    }
+
+    /// One-shot grow of the existing on-chain Config from the v1 layout
+    /// (with [u8;20] reserved tail) to the v2 layout (with tax_bps + tax_reserve
+    /// fields). Idempotent: if the account is already at v2 size, returns Ok.
+    /// Authority-gated.
+    pub fn expand_config_v2(ctx: Context<ExpandConfigV2>) -> Result<()> {
+        // Use AccountInfo directly: the v2-typed Account<Config> deserializer
+        // would fail against a v1-sized (313 B) account before this handler
+        // runs, defeating the migration. We auth-check the on-chain authority
+        // bytes manually, then realloc + zero-extend.
+        let info = &ctx.accounts.config.to_account_info();
+        if info.data_len() >= Config::SIZE {
+            msg!("Config already at v2 size ({} bytes) — skip", info.data_len());
+            return Ok(());
+        }
+        require!(
+            info.data_len() == Config::SIZE_V1,
+            CoreError::Unauthorized
+        );
+
+        // authority is at offset 8 (after 8-byte Anchor disc).
+        {
+            let data = info.try_borrow_data()?;
+            require!(data.len() >= 8 + 32, CoreError::Unauthorized);
+            let mut buf = [0u8; 32];
+            buf.copy_from_slice(&data[8..8 + 32]);
+            require!(
+                ctx.accounts.authority.key() == Pubkey::new_from_array(buf),
+                CoreError::Unauthorized
+            );
+        }
+
+        // Top up rent for the new size before realloc.
+        let new_size = Config::SIZE;
+        let needed = Rent::get()?.minimum_balance(new_size);
+        let have = info.lamports();
+        if needed > have {
+            let topup = needed - have;
+            anchor_lang::system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    anchor_lang::system_program::Transfer {
+                        from: ctx.accounts.authority.to_account_info(),
+                        to: info.clone(),
+                    },
+                ),
+                topup,
+            )?;
+        }
+        info.realloc(new_size, true)?;
+
+        emit!(AdminConfigEvent {
+            field: "expand_config_v2".into(),
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        msg!("Config expanded to v2 ({} bytes)", new_size);
+        Ok(())
+    }
+
+    /// Set the tax-reserve cut on settle_proposer payouts. Authority-gated
+    /// (operator HW post-rotation). `tax_bps` is hard-capped so the
+    /// proposer + tax slices combined cannot exceed 50% — the remaining
+    /// half always flows back to the treasury at user_close.
+    pub fn set_tax_config(
+        ctx: Context<AdminOnly>,
+        tax_bps: u16,
+        tax_reserve: Pubkey,
+    ) -> Result<()> {
+        require!(tax_bps <= 5000, CoreError::PayoutBpsTooHigh);
+        let config = &mut ctx.accounts.config;
+        // Combined cap: proposer + tax ≤ 50% of position output.
+        require!(
+            (config.payout_bps as u32) + (tax_bps as u32) <= 5000,
+            CoreError::PayoutBpsTooHigh
+        );
+        config.tax_bps = tax_bps;
+        config.tax_reserve = tax_reserve;
+        emit!(AdminConfigEvent {
+            field: "set_tax_config".into(),
+            authority: ctx.accounts.authority.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+        msg!("set_tax_config: tax_bps={}, tax_reserve={}", tax_bps, tax_reserve);
+        Ok(())
+    }
+
+    /// Records the proposer + output_mint + payout_bps snapshot for a treasury
+    /// position. Called as ix #2 of the OPEN proposal payload, immediately
+    /// after `open_position_v2` creates the position.
+    ///
+    /// Caller is dual-allowed: bot (for non-governance test paths) OR
+    /// vault.owner (governance-driven; `caller = native_treasury_pda` via
+    /// `invoke_signed` in proposal execution). The ix is keyed by the
+    /// meteora_position so every treasury position has at most one
+    /// PositionSettle, enforced by the PDA's `init` constraint.
+    pub fn record_settle_meta(
+        ctx: Context<RecordSettleMeta>,
+        proposer: Pubkey,
+    ) -> Result<()> {
+        require!(proposer != Pubkey::default(), CoreError::InvalidProposer);
+
+        // Governance-only: caller must be user_vault.owner. For treasury
+        // positions that's the Native Treasury PDA, signable only by SPL
+        // Governance via invoke_signed during proposal execution. The addin
+        // gates which proposals can tip → no off-governance bot path.
+        require!(
+            ctx.accounts.caller.key() == ctx.accounts.user_vault.owner,
+            CoreError::UnauthorizedCaller
+        );
+
+        // Output mint is determined by position.side:
+        //   Sell deposits tokenX, output is tokenY (typically SOL).
+        //   Buy deposits tokenY, output is tokenX (typically CRANK).
+        let output_mint = match ctx.accounts.position.side {
+            Side::Sell => ctx.accounts.token_y_mint.key(),
+            Side::Buy => ctx.accounts.token_x_mint.key(),
+        };
+
+        let settle = &mut ctx.accounts.position_settle;
+        settle.proposer = proposer;
+        settle.output_mint = output_mint;
+        settle.payout_bps = ctx.accounts.config.payout_bps;
+        settle.settled = false;
+        settle.bump = ctx.bumps.position_settle;
+
+        msg!("PositionSettle created: meteora_pos={}, proposer={}, output={}, payout_bps={}",
+             ctx.accounts.meteora_position.key(), proposer, output_mint, settle.payout_bps);
+        Ok(())
+    }
+
+    /// Pays the recorded proposer their `payout_bps` slice of the per-position
+    /// vault's OUTPUT mint balance. Called as ix #1 of the CLOSE proposal
+    /// payload — MUST run BEFORE `user_close`, because `user_close` transfers
+    /// all remaining position-vault tokens to the user_vault (= treasury vault)
+    /// and closes the position-vault PDA.
+    ///
+    /// Caller authorization mirrors `user_close` (dual-caller). Transfer is
+    /// signed by the position vault PDA's seeds (bin-farm-internal CPI).
+    pub fn settle_proposer(ctx: Context<SettleProposer>) -> Result<()> {
+        // Governance-only — see record_settle_meta caller-check rationale.
+        require!(
+            ctx.accounts.caller.key() == ctx.accounts.user_vault.owner,
+            CoreError::UnauthorizedCaller
+        );
+
+        require!(!ctx.accounts.position_settle.settled, CoreError::AlreadySettled);
+        require!(
+            ctx.accounts.position_settle.output_mint == ctx.accounts.output_mint.key(),
+            CoreError::OutputMintMismatch
+        );
+        require!(
+            ctx.accounts.proposer_output_ata.owner == ctx.accounts.position_settle.proposer,
+            CoreError::InvalidProposer
+        );
+
+        let output_balance = ctx.accounts.position_vault_output_ata.amount;
+        let payout_bps = ctx.accounts.position_settle.payout_bps as u128;
+        let payout = (output_balance as u128)
+            .checked_mul(payout_bps)
+            .ok_or(CoreError::Overflow)?
+            .checked_div(10_000)
+            .ok_or(CoreError::Overflow)? as u64;
+
+        // Tax slice: read live tax_bps + tax_reserve from Config (NOT snapshotted
+        // per-position — tax routing is a runtime policy, retargetable any time).
+        // If tax_reserve is unset, skip the tax leg entirely.
+        let cfg_tax_bps = ctx.accounts.config.tax_bps as u128;
+        let tax_payout: u64 = if ctx.accounts.config.tax_reserve != Pubkey::default()
+            && cfg_tax_bps > 0
+        {
+            (output_balance as u128)
+                .checked_mul(cfg_tax_bps)
+                .ok_or(CoreError::Overflow)?
+                .checked_div(10_000)
+                .ok_or(CoreError::Overflow)? as u64
+        } else {
+            0
+        };
+
+        let meteora_pos_key = ctx.accounts.meteora_position.key();
+        let vault_seeds: &[&[u8]] = &[
+            b"vault",
+            meteora_pos_key.as_ref(),
+            &[ctx.accounts.vault.bump],
+        ];
+        let signer = &[vault_seeds];
+        let decimals = read_mint_decimals(&ctx.accounts.output_mint.to_account_info())?;
+
+        if payout > 0 {
+            transfer_checked(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.position_vault_output_ata.to_account_info(),
+                        mint: ctx.accounts.output_mint.to_account_info(),
+                        to: ctx.accounts.proposer_output_ata.to_account_info(),
+                        authority: ctx.accounts.vault.to_account_info(),
+                    },
+                    signer,
+                ),
+                payout,
+                decimals,
+            )?;
+        }
+
+        if tax_payout > 0 {
+            // tax_reserve_output_ata is required when tax routing is active.
+            let tax_ata = ctx
+                .accounts
+                .tax_reserve_output_ata
+                .as_ref()
+                .ok_or(CoreError::InvalidTaxReserveAta)?;
+            // ATA must be owned by Config.tax_reserve — protects against a
+            // compromised bot subbing in their own ATA at proposal-author time.
+            require!(
+                tax_ata.owner == ctx.accounts.config.tax_reserve,
+                CoreError::InvalidTaxReserveAta
+            );
+            transfer_checked(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.position_vault_output_ata.to_account_info(),
+                        mint: ctx.accounts.output_mint.to_account_info(),
+                        to: tax_ata.to_account_info(),
+                        authority: ctx.accounts.vault.to_account_info(),
+                    },
+                    signer,
+                ),
+                tax_payout,
+                decimals,
+            )?;
+        }
+
+        ctx.accounts.position_settle.settled = true;
+
+        msg!(
+            "Proposer settled: payout={} (bps={}) tax={} (bps={}) of output_balance={}",
+            payout, ctx.accounts.position_settle.payout_bps,
+            tax_payout, ctx.accounts.config.tax_bps,
+            output_balance,
+        );
+        Ok(())
+    }
+
+    /// Closes the PositionSettle PDA, refunding rent to the treasury user_vault.
+    /// Called as the last ix of the CLOSE proposal payload (after user_close has
+    /// already run and `position_settle.settled == true` from settle_proposer).
+    pub fn close_settle(ctx: Context<CloseSettle>) -> Result<()> {
+        // Governance-only — see record_settle_meta caller-check rationale.
+        require!(
+            ctx.accounts.caller.key() == ctx.accounts.user_vault.owner,
+            CoreError::UnauthorizedCaller
+        );
+
+        require!(ctx.accounts.position_settle.settled, CoreError::NotSettled);
+        // Anchor's `close = user_vault` constraint handles the rent refund.
+        Ok(())
+    }
 }
 
 /// Deduct gas reimbursement from user vault → caller (bot).
@@ -1762,16 +2110,40 @@ pub struct Config {
     // Pubkey::default(), falls back to `bot` for legacy callers. Will be
     // retargeted to the Hopper program PDA once Hopper ships.
     pub fee_dest: Pubkey,
-    // Reserved space for future fields (was [u8; 88], 32 bytes carved → 56)
-    pub _reserved: [u8; 56],
+    // --- Treasury-match payout config (carved from reserved 2026-05-06) ---
+    // payout_bps: % of treasury position's OUTPUT asset paid to proposer at close
+    //   (default 2000 = 20%). Sells → SOL output to proposer; buys → CRANK.
+    // match_ratio_bps: treasury matches `user_amount * match_ratio_bps / 10000`
+    //   when capacity allows (default 10000 = 1.0x).
+    // payout_admin: separate from `authority` — governance-controlled post-bootstrap.
+    //   Initially = `authority` (FFwq), transferred to Native Treasury PDA later.
+    //   When Pubkey::default(), payout config is uninitialized (init via init_payout_config).
+    pub payout_bps: u16,
+    pub match_ratio_bps: u16,
+    pub payout_admin: Pubkey,
+    // Tax-reserve cut on settle_proposer payout (added 2026-05-08).
+    // tax_bps: % of treasury position's OUTPUT asset paid to tax_reserve at close.
+    //   Default 2500 (25%); paired with payout_bps=2500 leaves 50% in position
+    //   vault → flows back to treasury at user_close.
+    // tax_reserve: pubkey that receives the tax slice (ATA derived per output mint).
+    //   Pubkey::default() means tax routing is disabled (settle_proposer skips tax leg).
+    pub tax_bps: u16,
+    pub tax_reserve: Pubkey,
+    // Reserved space — dropped from 20 to 0 to fit tax fields. Realloc via
+    // `expand_config_v2` admin ix to grow existing on-chain Config accounts
+    // before this version of the program is deployed against them.
 }
 
 impl Config {
     // 8 (disc) + 32*3 (authority, pending_authority, bot) + 2+2+8 (fee_bps, pending, change_at)
     // + 8+8 (positions, volume) + 1+1+1 (paused, bot_paused, bump)
     // + 8+2+8+8 (harvest slot, keeper_tip, priority, harvested)
-    // + 32+8 (emergency close) + 8+8 (close/sweep slots) + 8 (gas_lamports) + 88 (reserved)
-    pub const SIZE: usize = 8 + 32 + 32 + 32 + 2 + 2 + 8 + 8 + 8 + 1 + 1 + 1 + 8 + 2 + 8 + 8 + 32 + 8 + 8 + 8 + 8 + 32 + 56;
+    // + 32+8 (emergency close) + 8+8 (close/sweep slots) + 8 (gas_lamports) + 32 (fee_dest)
+    // + 2+2+32 (payout_bps, match_ratio_bps, payout_admin)
+    // + 2+32 (tax_bps, tax_reserve)
+    pub const SIZE: usize = 8 + 32 + 32 + 32 + 2 + 2 + 8 + 8 + 8 + 1 + 1 + 1 + 8 + 2 + 8 + 8 + 32 + 8 + 8 + 8 + 8 + 32 + 2 + 2 + 32 + 2 + 32;
+    // Pre-tax-fields size for pre-existing Config accounts (used by `expand_config_v2`).
+    pub const SIZE_V1: usize = Self::SIZE - (2 + 32) + 20; // = SIZE - 14
 }
 
 #[account]
@@ -1825,6 +2197,26 @@ pub struct UserVault {
 
 impl UserVault {
     pub const SIZE: usize = 8 + 32 + 1;
+}
+
+/// Per-position metadata for treasury-matched proposer payouts (cranksettle, folded).
+/// Created by `record_settle_meta` as ix #2 of the OPEN proposal payload.
+/// Read by `settle_proposer` as ix #1 of the CLOSE proposal payload (BEFORE
+/// user_close drains the per-position vault). Closed by `close_settle` as the
+/// last close-payload ix; rent refunds to the treasury user_vault.
+///
+/// Seeds: [b"pos_settle", meteora_position.as_ref()]
+#[account]
+pub struct PositionSettle {
+    pub proposer: Pubkey,        // Recorded at open; receives payout_bps% of OUTPUT at close
+    pub output_mint: Pubkey,     // SOL=NATIVE_MINT for sells, CRANK for buys (= deposit_mint of opposite side)
+    pub payout_bps: u16,         // Snapshot of Config.payout_bps at open time (immutable per-position)
+    pub settled: bool,           // Prevents double-payout
+    pub bump: u8,
+}
+
+impl PositionSettle {
+    pub const SIZE: usize = 8 + 32 + 32 + 2 + 1 + 1;
 }
 
 
@@ -2531,6 +2923,164 @@ pub struct UnwrapWsolInVault<'info> {
 
 
 
+// ============ TREASURY-MATCH PAYOUT CONTEXTS ============
+
+#[derive(Accounts)]
+pub struct UpdatePayoutConfig<'info> {
+    /// payout_admin — initially Config.authority (FFwq), transferred to
+    /// Native Treasury PDA at realm bootstrap. Post-transfer, only
+    /// governance-driven invocations satisfy this signer constraint.
+    #[account(constraint = payout_admin.key() == config.payout_admin @ CoreError::UnauthorizedPayoutAdmin)]
+    pub payout_admin: Signer<'info>,
+
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+}
+
+#[derive(Accounts)]
+pub struct RecordSettleMeta<'info> {
+    /// Bot or vault.owner — same dual-caller pattern as user_close.
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    /// CHECK: Meteora position pubkey — must match position.meteora_position
+    #[account(constraint = meteora_position.key() == position.meteora_position @ CoreError::InvalidPosition)]
+    pub meteora_position: AccountInfo<'info>,
+
+    #[account(
+        seeds = [b"position", position.meteora_position.as_ref()],
+        bump = position.bump,
+        constraint = position.user_vault == user_vault.key() @ CoreError::Unauthorized,
+    )]
+    pub position: Box<Account<'info, Position>>,
+
+    #[account(
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
+    #[account(
+        init,
+        payer = caller,
+        space = PositionSettle::SIZE,
+        seeds = [b"pos_settle", meteora_position.key().as_ref()],
+        bump,
+    )]
+    pub position_settle: Box<Account<'info, PositionSettle>>,
+
+    /// CHECK: tokenX mint of the position's lb_pair. Bot supplies; keeper
+    /// validator off-chain ensures the values are correct. Worst case for a
+    /// dishonest bot: settle_proposer at close fails or returns 0 payout.
+    /// No drain risk because the SPL Token transfer enforces ATA ownership.
+    pub token_x_mint: UncheckedAccount<'info>,
+    /// CHECK: tokenY mint of the position's lb_pair. Same trust model as token_x_mint.
+    pub token_y_mint: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SettleProposer<'info> {
+    /// Bot or vault.owner — dual-caller, mirrors user_close.
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    /// Treasury user_vault — vault.owner check is implicit via PDA seeding,
+    /// authorization checked in handler against caller.
+    #[account(
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
+    #[account(
+        mut,
+        seeds = [b"pos_settle", meteora_position.key().as_ref()],
+        bump = position_settle.bump,
+    )]
+    pub position_settle: Box<Account<'info, PositionSettle>>,
+
+    /// Per-position vault PDA — signs the SPL Token transfer to proposer.
+    #[account(
+        seeds = [b"vault", meteora_position.key().as_ref()],
+        bump = vault.bump,
+    )]
+    pub vault: Box<Account<'info, Vault>>,
+
+    /// CHECK: Meteora position pubkey — used as PDA seed for both vault and position_settle
+    pub meteora_position: AccountInfo<'info>,
+
+    /// Position vault's ATA for the output mint (tokens transferred FROM here).
+    #[account(mut, constraint = position_vault_output_ata.owner == vault.key() @ CoreError::InvalidTokenOwner)]
+    pub position_vault_output_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// Proposer's ATA for the output mint (tokens transferred TO here).
+    /// Owner-equality check (== position_settle.proposer) is in the handler.
+    #[account(mut)]
+    pub proposer_output_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// Tax reserve's ATA for the output mint. Optional — only required when
+    /// `Config.tax_reserve != default && Config.tax_bps > 0`. Owner-equality
+    /// check (== Config.tax_reserve) runs in the handler.
+    #[account(mut)]
+    pub tax_reserve_output_ata: Option<Box<InterfaceAccount<'info, ITokenAccount>>>,
+
+    pub output_mint: Box<InterfaceAccount<'info, Mint>>,
+
+    /// CHECK: SPL Token / Token-2022 program for the output mint
+    #[account(constraint = *token_program.key == anchor_spl::token::ID || *token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ExpandConfigV2<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    /// CHECK: PDA derivation enforces this is the canonical Config account.
+    /// Authority byte-check happens in the handler since the v2 layout
+    /// can't deserialize a v1-sized account.
+    #[account(mut, seeds = [b"config"], bump)]
+    pub config: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CloseSettle<'info> {
+    /// Bot or vault.owner — dual-caller.
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
+    #[account(
+        mut,
+        close = user_vault,
+        seeds = [b"pos_settle", meteora_position.key().as_ref()],
+        bump = position_settle.bump,
+    )]
+    pub position_settle: Box<Account<'info, PositionSettle>>,
+
+    /// CHECK: Meteora position pubkey — PDA seed only
+    pub meteora_position: AccountInfo<'info>,
+}
+
 // ============ ADMIN CONTEXTS ============
 
 #[derive(Accounts)]
@@ -2716,4 +3266,22 @@ pub enum CoreError {
     InvalidBurnSolVault,
     #[msg("Fee destination account does not match Config.fee_dest (or Config.bot if unset)")]
     InvalidFeeDest,
+    #[msg("PositionSettle is already settled (settle_proposer was called)")]
+    AlreadySettled,
+    #[msg("PositionSettle has not been settled yet — call settle_proposer first")]
+    NotSettled,
+    #[msg("output_mint argument does not match PositionSettle.output_mint recorded at open")]
+    OutputMintMismatch,
+    #[msg("Proposer ATA owner does not match PositionSettle.proposer")]
+    InvalidProposer,
+    #[msg("Caller does not match Config.payout_admin")]
+    UnauthorizedPayoutAdmin,
+    #[msg("payout_bps exceeds maximum (5000 bps = 50%)")]
+    PayoutBpsTooHigh,
+    #[msg("match_ratio_bps exceeds maximum (50000 bps = 5x)")]
+    MatchRatioTooHigh,
+    #[msg("Payout config already initialized — use update_payout_config / set_payout_admin")]
+    PayoutAdminAlreadyInitialized,
+    #[msg("Tax reserve ATA missing or owner mismatch")]
+    InvalidTaxReserveAta,
 }

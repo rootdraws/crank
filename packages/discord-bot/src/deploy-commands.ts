@@ -100,6 +100,18 @@ const commands = [
         .setDescription('"me" for personal (DM), "all" for protocol-wide')
         .addChoices({ name: 'me', value: 'me' }, { name: 'all', value: 'all' })
         .setRequired(false)),
+
+  new SlashCommandBuilder()
+    .setName('treasury')
+    .setDescription('Inspect the protocol treasury (Path B)')
+    .addSubcommand(s => s.setName('status').setDescription('Treasury balances + match config'))
+    .addSubcommand(s => s.setName('positions').setDescription('Open treasury-matched positions')),
+
+  new SlashCommandBuilder()
+    .setName('proposals')
+    .setDescription('Inspect governance proposals')
+    .addSubcommand(s => s.setName('pending').setDescription('In-flight proposals'))
+    .addSubcommand(s => s.setName('failed').setDescription('Recent failed proposals')),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST().setToken(TOKEN);

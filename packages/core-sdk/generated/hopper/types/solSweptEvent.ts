@@ -24,9 +24,10 @@ import {
 
 export type SolSweptEvent = {
   sweepable: bigint;
-  buy: bigint;
-  treasury: bigint;
-  personal: bigint;
+  toTreasury: bigint;
+  toAdmin: bigint;
+  toOps: bigint;
+  toTax: bigint;
   tip: bigint;
   cranker: Address;
   ts: bigint;
@@ -34,9 +35,10 @@ export type SolSweptEvent = {
 
 export type SolSweptEventArgs = {
   sweepable: number | bigint;
-  buy: number | bigint;
-  treasury: number | bigint;
-  personal: number | bigint;
+  toTreasury: number | bigint;
+  toAdmin: number | bigint;
+  toOps: number | bigint;
+  toTax: number | bigint;
   tip: number | bigint;
   cranker: Address;
   ts: number | bigint;
@@ -45,9 +47,10 @@ export type SolSweptEventArgs = {
 export function getSolSweptEventEncoder(): FixedSizeEncoder<SolSweptEventArgs> {
   return getStructEncoder([
     ['sweepable', getU64Encoder()],
-    ['buy', getU64Encoder()],
-    ['treasury', getU64Encoder()],
-    ['personal', getU64Encoder()],
+    ['toTreasury', getU64Encoder()],
+    ['toAdmin', getU64Encoder()],
+    ['toOps', getU64Encoder()],
+    ['toTax', getU64Encoder()],
     ['tip', getU64Encoder()],
     ['cranker', getAddressEncoder()],
     ['ts', getI64Encoder()],
@@ -57,9 +60,10 @@ export function getSolSweptEventEncoder(): FixedSizeEncoder<SolSweptEventArgs> {
 export function getSolSweptEventDecoder(): FixedSizeDecoder<SolSweptEvent> {
   return getStructDecoder([
     ['sweepable', getU64Decoder()],
-    ['buy', getU64Decoder()],
-    ['treasury', getU64Decoder()],
-    ['personal', getU64Decoder()],
+    ['toTreasury', getU64Decoder()],
+    ['toAdmin', getU64Decoder()],
+    ['toOps', getU64Decoder()],
+    ['toTax', getU64Decoder()],
     ['tip', getU64Decoder()],
     ['cranker', getAddressDecoder()],
     ['ts', getI64Decoder()],

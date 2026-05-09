@@ -55,8 +55,14 @@ export type SweepTokenInstruction<
   TAccountMint extends string | AccountMeta<string> = string,
   TAccountTokenRoute extends string | AccountMeta<string> = string,
   TAccountHopperAta extends string | AccountMeta<string> = string,
-  TAccountDestination extends string | AccountMeta<string> = string,
-  TAccountDestAta extends string | AccountMeta<string> = string,
+  TAccountDestTreasury extends string | AccountMeta<string> = string,
+  TAccountDestAdmin extends string | AccountMeta<string> = string,
+  TAccountDestOps extends string | AccountMeta<string> = string,
+  TAccountDestTax extends string | AccountMeta<string> = string,
+  TAccountDestTreasuryAta extends string | AccountMeta<string> = string,
+  TAccountDestAdminAta extends string | AccountMeta<string> = string,
+  TAccountDestOpsAta extends string | AccountMeta<string> = string,
+  TAccountDestTaxAta extends string | AccountMeta<string> = string,
   TAccountTokenProgram extends string | AccountMeta<string> = string,
   TAccountAssociatedTokenProgram extends string | AccountMeta<string> =
     'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
@@ -86,12 +92,30 @@ export type SweepTokenInstruction<
       TAccountHopperAta extends string
         ? WritableAccount<TAccountHopperAta>
         : TAccountHopperAta,
-      TAccountDestination extends string
-        ? ReadonlyAccount<TAccountDestination>
-        : TAccountDestination,
-      TAccountDestAta extends string
-        ? WritableAccount<TAccountDestAta>
-        : TAccountDestAta,
+      TAccountDestTreasury extends string
+        ? ReadonlyAccount<TAccountDestTreasury>
+        : TAccountDestTreasury,
+      TAccountDestAdmin extends string
+        ? ReadonlyAccount<TAccountDestAdmin>
+        : TAccountDestAdmin,
+      TAccountDestOps extends string
+        ? ReadonlyAccount<TAccountDestOps>
+        : TAccountDestOps,
+      TAccountDestTax extends string
+        ? ReadonlyAccount<TAccountDestTax>
+        : TAccountDestTax,
+      TAccountDestTreasuryAta extends string
+        ? WritableAccount<TAccountDestTreasuryAta>
+        : TAccountDestTreasuryAta,
+      TAccountDestAdminAta extends string
+        ? WritableAccount<TAccountDestAdminAta>
+        : TAccountDestAdminAta,
+      TAccountDestOpsAta extends string
+        ? WritableAccount<TAccountDestOpsAta>
+        : TAccountDestOpsAta,
+      TAccountDestTaxAta extends string
+        ? WritableAccount<TAccountDestTaxAta>
+        : TAccountDestTaxAta,
       TAccountTokenProgram extends string
         ? ReadonlyAccount<TAccountTokenProgram>
         : TAccountTokenProgram,
@@ -139,8 +163,14 @@ export type SweepTokenAsyncInput<
   TAccountMint extends string = string,
   TAccountTokenRoute extends string = string,
   TAccountHopperAta extends string = string,
-  TAccountDestination extends string = string,
-  TAccountDestAta extends string = string,
+  TAccountDestTreasury extends string = string,
+  TAccountDestAdmin extends string = string,
+  TAccountDestOps extends string = string,
+  TAccountDestTax extends string = string,
+  TAccountDestTreasuryAta extends string = string,
+  TAccountDestAdminAta extends string = string,
+  TAccountDestOpsAta extends string = string,
+  TAccountDestTaxAta extends string = string,
   TAccountTokenProgram extends string = string,
   TAccountAssociatedTokenProgram extends string = string,
   TAccountSystemProgram extends string = string,
@@ -151,8 +181,14 @@ export type SweepTokenAsyncInput<
   mint: Address<TAccountMint>;
   tokenRoute?: Address<TAccountTokenRoute>;
   hopperAta?: Address<TAccountHopperAta>;
-  destination: Address<TAccountDestination>;
-  destAta?: Address<TAccountDestAta>;
+  destTreasury: Address<TAccountDestTreasury>;
+  destAdmin: Address<TAccountDestAdmin>;
+  destOps: Address<TAccountDestOps>;
+  destTax: Address<TAccountDestTax>;
+  destTreasuryAta?: Address<TAccountDestTreasuryAta>;
+  destAdminAta?: Address<TAccountDestAdminAta>;
+  destOpsAta?: Address<TAccountDestOpsAta>;
+  destTaxAta?: Address<TAccountDestTaxAta>;
   tokenProgram: Address<TAccountTokenProgram>;
   associatedTokenProgram?: Address<TAccountAssociatedTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
@@ -165,8 +201,14 @@ export async function getSweepTokenInstructionAsync<
   TAccountMint extends string,
   TAccountTokenRoute extends string,
   TAccountHopperAta extends string,
-  TAccountDestination extends string,
-  TAccountDestAta extends string,
+  TAccountDestTreasury extends string,
+  TAccountDestAdmin extends string,
+  TAccountDestOps extends string,
+  TAccountDestTax extends string,
+  TAccountDestTreasuryAta extends string,
+  TAccountDestAdminAta extends string,
+  TAccountDestOpsAta extends string,
+  TAccountDestTaxAta extends string,
   TAccountTokenProgram extends string,
   TAccountAssociatedTokenProgram extends string,
   TAccountSystemProgram extends string,
@@ -179,8 +221,14 @@ export async function getSweepTokenInstructionAsync<
     TAccountMint,
     TAccountTokenRoute,
     TAccountHopperAta,
-    TAccountDestination,
-    TAccountDestAta,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
+    TAccountDestTreasuryAta,
+    TAccountDestAdminAta,
+    TAccountDestOpsAta,
+    TAccountDestTaxAta,
     TAccountTokenProgram,
     TAccountAssociatedTokenProgram,
     TAccountSystemProgram
@@ -195,8 +243,14 @@ export async function getSweepTokenInstructionAsync<
     TAccountMint,
     TAccountTokenRoute,
     TAccountHopperAta,
-    TAccountDestination,
-    TAccountDestAta,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
+    TAccountDestTreasuryAta,
+    TAccountDestAdminAta,
+    TAccountDestOpsAta,
+    TAccountDestTaxAta,
     TAccountTokenProgram,
     TAccountAssociatedTokenProgram,
     TAccountSystemProgram
@@ -213,8 +267,14 @@ export async function getSweepTokenInstructionAsync<
     mint: { value: input.mint ?? null, isWritable: false },
     tokenRoute: { value: input.tokenRoute ?? null, isWritable: false },
     hopperAta: { value: input.hopperAta ?? null, isWritable: true },
-    destination: { value: input.destination ?? null, isWritable: false },
-    destAta: { value: input.destAta ?? null, isWritable: true },
+    destTreasury: { value: input.destTreasury ?? null, isWritable: false },
+    destAdmin: { value: input.destAdmin ?? null, isWritable: false },
+    destOps: { value: input.destOps ?? null, isWritable: false },
+    destTax: { value: input.destTax ?? null, isWritable: false },
+    destTreasuryAta: { value: input.destTreasuryAta ?? null, isWritable: true },
+    destAdminAta: { value: input.destAdminAta ?? null, isWritable: true },
+    destOpsAta: { value: input.destOpsAta ?? null, isWritable: true },
+    destTaxAta: { value: input.destTaxAta ?? null, isWritable: true },
     tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
     associatedTokenProgram: {
       value: input.associatedTokenProgram ?? null,
@@ -274,12 +334,45 @@ export async function getSweepTokenInstructionAsync<
       ],
     });
   }
-  if (!accounts.destAta.value) {
-    accounts.destAta.value = await getProgramDerivedAddress({
+  if (!accounts.destTreasuryAta.value) {
+    accounts.destTreasuryAta.value = await getProgramDerivedAddress({
       programAddress:
         'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' as Address<'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'>,
       seeds: [
-        getAddressEncoder().encode(expectAddress(accounts.destination.value)),
+        getAddressEncoder().encode(expectAddress(accounts.destTreasury.value)),
+        getAddressEncoder().encode(expectAddress(accounts.tokenProgram.value)),
+        getAddressEncoder().encode(expectAddress(accounts.mint.value)),
+      ],
+    });
+  }
+  if (!accounts.destAdminAta.value) {
+    accounts.destAdminAta.value = await getProgramDerivedAddress({
+      programAddress:
+        'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' as Address<'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'>,
+      seeds: [
+        getAddressEncoder().encode(expectAddress(accounts.destAdmin.value)),
+        getAddressEncoder().encode(expectAddress(accounts.tokenProgram.value)),
+        getAddressEncoder().encode(expectAddress(accounts.mint.value)),
+      ],
+    });
+  }
+  if (!accounts.destOpsAta.value) {
+    accounts.destOpsAta.value = await getProgramDerivedAddress({
+      programAddress:
+        'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' as Address<'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'>,
+      seeds: [
+        getAddressEncoder().encode(expectAddress(accounts.destOps.value)),
+        getAddressEncoder().encode(expectAddress(accounts.tokenProgram.value)),
+        getAddressEncoder().encode(expectAddress(accounts.mint.value)),
+      ],
+    });
+  }
+  if (!accounts.destTaxAta.value) {
+    accounts.destTaxAta.value = await getProgramDerivedAddress({
+      programAddress:
+        'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' as Address<'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'>,
+      seeds: [
+        getAddressEncoder().encode(expectAddress(accounts.destTax.value)),
         getAddressEncoder().encode(expectAddress(accounts.tokenProgram.value)),
         getAddressEncoder().encode(expectAddress(accounts.mint.value)),
       ],
@@ -303,8 +396,14 @@ export async function getSweepTokenInstructionAsync<
       getAccountMeta(accounts.mint),
       getAccountMeta(accounts.tokenRoute),
       getAccountMeta(accounts.hopperAta),
-      getAccountMeta(accounts.destination),
-      getAccountMeta(accounts.destAta),
+      getAccountMeta(accounts.destTreasury),
+      getAccountMeta(accounts.destAdmin),
+      getAccountMeta(accounts.destOps),
+      getAccountMeta(accounts.destTax),
+      getAccountMeta(accounts.destTreasuryAta),
+      getAccountMeta(accounts.destAdminAta),
+      getAccountMeta(accounts.destOpsAta),
+      getAccountMeta(accounts.destTaxAta),
       getAccountMeta(accounts.tokenProgram),
       getAccountMeta(accounts.associatedTokenProgram),
       getAccountMeta(accounts.systemProgram),
@@ -319,8 +418,14 @@ export async function getSweepTokenInstructionAsync<
     TAccountMint,
     TAccountTokenRoute,
     TAccountHopperAta,
-    TAccountDestination,
-    TAccountDestAta,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
+    TAccountDestTreasuryAta,
+    TAccountDestAdminAta,
+    TAccountDestOpsAta,
+    TAccountDestTaxAta,
     TAccountTokenProgram,
     TAccountAssociatedTokenProgram,
     TAccountSystemProgram
@@ -334,8 +439,14 @@ export type SweepTokenInput<
   TAccountMint extends string = string,
   TAccountTokenRoute extends string = string,
   TAccountHopperAta extends string = string,
-  TAccountDestination extends string = string,
-  TAccountDestAta extends string = string,
+  TAccountDestTreasury extends string = string,
+  TAccountDestAdmin extends string = string,
+  TAccountDestOps extends string = string,
+  TAccountDestTax extends string = string,
+  TAccountDestTreasuryAta extends string = string,
+  TAccountDestAdminAta extends string = string,
+  TAccountDestOpsAta extends string = string,
+  TAccountDestTaxAta extends string = string,
   TAccountTokenProgram extends string = string,
   TAccountAssociatedTokenProgram extends string = string,
   TAccountSystemProgram extends string = string,
@@ -346,8 +457,14 @@ export type SweepTokenInput<
   mint: Address<TAccountMint>;
   tokenRoute: Address<TAccountTokenRoute>;
   hopperAta: Address<TAccountHopperAta>;
-  destination: Address<TAccountDestination>;
-  destAta: Address<TAccountDestAta>;
+  destTreasury: Address<TAccountDestTreasury>;
+  destAdmin: Address<TAccountDestAdmin>;
+  destOps: Address<TAccountDestOps>;
+  destTax: Address<TAccountDestTax>;
+  destTreasuryAta: Address<TAccountDestTreasuryAta>;
+  destAdminAta: Address<TAccountDestAdminAta>;
+  destOpsAta: Address<TAccountDestOpsAta>;
+  destTaxAta: Address<TAccountDestTaxAta>;
   tokenProgram: Address<TAccountTokenProgram>;
   associatedTokenProgram?: Address<TAccountAssociatedTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
@@ -360,8 +477,14 @@ export function getSweepTokenInstruction<
   TAccountMint extends string,
   TAccountTokenRoute extends string,
   TAccountHopperAta extends string,
-  TAccountDestination extends string,
-  TAccountDestAta extends string,
+  TAccountDestTreasury extends string,
+  TAccountDestAdmin extends string,
+  TAccountDestOps extends string,
+  TAccountDestTax extends string,
+  TAccountDestTreasuryAta extends string,
+  TAccountDestAdminAta extends string,
+  TAccountDestOpsAta extends string,
+  TAccountDestTaxAta extends string,
   TAccountTokenProgram extends string,
   TAccountAssociatedTokenProgram extends string,
   TAccountSystemProgram extends string,
@@ -374,8 +497,14 @@ export function getSweepTokenInstruction<
     TAccountMint,
     TAccountTokenRoute,
     TAccountHopperAta,
-    TAccountDestination,
-    TAccountDestAta,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
+    TAccountDestTreasuryAta,
+    TAccountDestAdminAta,
+    TAccountDestOpsAta,
+    TAccountDestTaxAta,
     TAccountTokenProgram,
     TAccountAssociatedTokenProgram,
     TAccountSystemProgram
@@ -389,8 +518,14 @@ export function getSweepTokenInstruction<
   TAccountMint,
   TAccountTokenRoute,
   TAccountHopperAta,
-  TAccountDestination,
-  TAccountDestAta,
+  TAccountDestTreasury,
+  TAccountDestAdmin,
+  TAccountDestOps,
+  TAccountDestTax,
+  TAccountDestTreasuryAta,
+  TAccountDestAdminAta,
+  TAccountDestOpsAta,
+  TAccountDestTaxAta,
   TAccountTokenProgram,
   TAccountAssociatedTokenProgram,
   TAccountSystemProgram
@@ -406,8 +541,14 @@ export function getSweepTokenInstruction<
     mint: { value: input.mint ?? null, isWritable: false },
     tokenRoute: { value: input.tokenRoute ?? null, isWritable: false },
     hopperAta: { value: input.hopperAta ?? null, isWritable: true },
-    destination: { value: input.destination ?? null, isWritable: false },
-    destAta: { value: input.destAta ?? null, isWritable: true },
+    destTreasury: { value: input.destTreasury ?? null, isWritable: false },
+    destAdmin: { value: input.destAdmin ?? null, isWritable: false },
+    destOps: { value: input.destOps ?? null, isWritable: false },
+    destTax: { value: input.destTax ?? null, isWritable: false },
+    destTreasuryAta: { value: input.destTreasuryAta ?? null, isWritable: true },
+    destAdminAta: { value: input.destAdminAta ?? null, isWritable: true },
+    destOpsAta: { value: input.destOpsAta ?? null, isWritable: true },
+    destTaxAta: { value: input.destTaxAta ?? null, isWritable: true },
     tokenProgram: { value: input.tokenProgram ?? null, isWritable: false },
     associatedTokenProgram: {
       value: input.associatedTokenProgram ?? null,
@@ -439,8 +580,14 @@ export function getSweepTokenInstruction<
       getAccountMeta(accounts.mint),
       getAccountMeta(accounts.tokenRoute),
       getAccountMeta(accounts.hopperAta),
-      getAccountMeta(accounts.destination),
-      getAccountMeta(accounts.destAta),
+      getAccountMeta(accounts.destTreasury),
+      getAccountMeta(accounts.destAdmin),
+      getAccountMeta(accounts.destOps),
+      getAccountMeta(accounts.destTax),
+      getAccountMeta(accounts.destTreasuryAta),
+      getAccountMeta(accounts.destAdminAta),
+      getAccountMeta(accounts.destOpsAta),
+      getAccountMeta(accounts.destTaxAta),
       getAccountMeta(accounts.tokenProgram),
       getAccountMeta(accounts.associatedTokenProgram),
       getAccountMeta(accounts.systemProgram),
@@ -455,8 +602,14 @@ export function getSweepTokenInstruction<
     TAccountMint,
     TAccountTokenRoute,
     TAccountHopperAta,
-    TAccountDestination,
-    TAccountDestAta,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
+    TAccountDestTreasuryAta,
+    TAccountDestAdminAta,
+    TAccountDestOpsAta,
+    TAccountDestTaxAta,
     TAccountTokenProgram,
     TAccountAssociatedTokenProgram,
     TAccountSystemProgram
@@ -475,11 +628,17 @@ export type ParsedSweepTokenInstruction<
     mint: TAccountMetas[3];
     tokenRoute: TAccountMetas[4];
     hopperAta: TAccountMetas[5];
-    destination: TAccountMetas[6];
-    destAta: TAccountMetas[7];
-    tokenProgram: TAccountMetas[8];
-    associatedTokenProgram: TAccountMetas[9];
-    systemProgram: TAccountMetas[10];
+    destTreasury: TAccountMetas[6];
+    destAdmin: TAccountMetas[7];
+    destOps: TAccountMetas[8];
+    destTax: TAccountMetas[9];
+    destTreasuryAta: TAccountMetas[10];
+    destAdminAta: TAccountMetas[11];
+    destOpsAta: TAccountMetas[12];
+    destTaxAta: TAccountMetas[13];
+    tokenProgram: TAccountMetas[14];
+    associatedTokenProgram: TAccountMetas[15];
+    systemProgram: TAccountMetas[16];
   };
   data: SweepTokenInstructionData;
 };
@@ -492,7 +651,7 @@ export function parseSweepTokenInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedSweepTokenInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 11) {
+  if (instruction.accounts.length < 17) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -511,8 +670,14 @@ export function parseSweepTokenInstruction<
       mint: getNextAccount(),
       tokenRoute: getNextAccount(),
       hopperAta: getNextAccount(),
-      destination: getNextAccount(),
-      destAta: getNextAccount(),
+      destTreasury: getNextAccount(),
+      destAdmin: getNextAccount(),
+      destOps: getNextAccount(),
+      destTax: getNextAccount(),
+      destTreasuryAta: getNextAccount(),
+      destAdminAta: getNextAccount(),
+      destOpsAta: getNextAccount(),
+      destTaxAta: getNextAccount(),
       tokenProgram: getNextAccount(),
       associatedTokenProgram: getNextAccount(),
       systemProgram: getNextAccount(),

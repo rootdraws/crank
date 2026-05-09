@@ -106,8 +106,27 @@ export const BIN_FARM_ERROR__INVALID_CRANK_MINT = 0x179b; // 6043
 export const BIN_FARM_ERROR__INVALID_BURN_SOL_VAULT = 0x179c; // 6044
 /** InvalidFeeDest: Fee destination account does not match Config.fee_dest (or Config.bot if unset) */
 export const BIN_FARM_ERROR__INVALID_FEE_DEST = 0x179d; // 6045
+/** AlreadySettled: PositionSettle is already settled (settle_proposer was called) */
+export const BIN_FARM_ERROR__ALREADY_SETTLED = 0x179e; // 6046
+/** NotSettled: PositionSettle has not been settled yet — call settle_proposer first */
+export const BIN_FARM_ERROR__NOT_SETTLED = 0x179f; // 6047
+/** OutputMintMismatch: output_mint argument does not match PositionSettle.output_mint recorded at open */
+export const BIN_FARM_ERROR__OUTPUT_MINT_MISMATCH = 0x17a0; // 6048
+/** InvalidProposer: Proposer ATA owner does not match PositionSettle.proposer */
+export const BIN_FARM_ERROR__INVALID_PROPOSER = 0x17a1; // 6049
+/** UnauthorizedPayoutAdmin: Caller does not match Config.payout_admin */
+export const BIN_FARM_ERROR__UNAUTHORIZED_PAYOUT_ADMIN = 0x17a2; // 6050
+/** PayoutBpsTooHigh: payout_bps exceeds maximum (5000 bps = 50%) */
+export const BIN_FARM_ERROR__PAYOUT_BPS_TOO_HIGH = 0x17a3; // 6051
+/** MatchRatioTooHigh: match_ratio_bps exceeds maximum (50000 bps = 5x) */
+export const BIN_FARM_ERROR__MATCH_RATIO_TOO_HIGH = 0x17a4; // 6052
+/** PayoutAdminAlreadyInitialized: Payout config already initialized — use update_payout_config / set_payout_admin */
+export const BIN_FARM_ERROR__PAYOUT_ADMIN_ALREADY_INITIALIZED = 0x17a5; // 6053
+/** InvalidTaxReserveAta: Tax reserve ATA missing or owner mismatch */
+export const BIN_FARM_ERROR__INVALID_TAX_RESERVE_ATA = 0x17a6; // 6054
 
 export type BinFarmError =
+  | typeof BIN_FARM_ERROR__ALREADY_SETTLED
   | typeof BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE
   | typeof BIN_FARM_ERROR__BOT_NOT_STALE
   | typeof BIN_FARM_ERROR__BOT_PAUSED
@@ -129,10 +148,13 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__INVALID_POOL
   | typeof BIN_FARM_ERROR__INVALID_POSITION
   | typeof BIN_FARM_ERROR__INVALID_PROGRAM
+  | typeof BIN_FARM_ERROR__INVALID_PROPOSER
   | typeof BIN_FARM_ERROR__INVALID_SLIPPAGE
+  | typeof BIN_FARM_ERROR__INVALID_TAX_RESERVE_ATA
   | typeof BIN_FARM_ERROR__INVALID_TOKEN_OWNER
   | typeof BIN_FARM_ERROR__INVALID_TRADER_DEST
   | typeof BIN_FARM_ERROR__INVALID_VAULT_OWNER
+  | typeof BIN_FARM_ERROR__MATCH_RATIO_TOO_HIGH
   | typeof BIN_FARM_ERROR__MISSING_KEEPER_ATA
   | typeof BIN_FARM_ERROR__NO_BINS_PROVIDED
   | typeof BIN_FARM_ERROR__NON_CONTIGUOUS_BINS
@@ -140,8 +162,12 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__NO_PENDING_EMERGENCY_CLOSE
   | typeof BIN_FARM_ERROR__NO_PENDING_FEE_CHANGE
   | typeof BIN_FARM_ERROR__NOTHING_TO_SWEEP
+  | typeof BIN_FARM_ERROR__NOT_SETTLED
+  | typeof BIN_FARM_ERROR__OUTPUT_MINT_MISMATCH
   | typeof BIN_FARM_ERROR__OVERFLOW
   | typeof BIN_FARM_ERROR__PAUSED
+  | typeof BIN_FARM_ERROR__PAYOUT_ADMIN_ALREADY_INITIALIZED
+  | typeof BIN_FARM_ERROR__PAYOUT_BPS_TOO_HIGH
   | typeof BIN_FARM_ERROR__POSITION_TOO_SMALL
   | typeof BIN_FARM_ERROR__POSITION_TOO_WIDE
   | typeof BIN_FARM_ERROR__PRIORITY_SLOTS_EXCEED_MAX
@@ -153,11 +179,13 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__TRADER_DEST_NOT_SET
   | typeof BIN_FARM_ERROR__UNAUTHORIZED
   | typeof BIN_FARM_ERROR__UNAUTHORIZED_CALLER
+  | typeof BIN_FARM_ERROR__UNAUTHORIZED_PAYOUT_ADMIN
   | typeof BIN_FARM_ERROR__ZERO_AMOUNT;
 
 let binFarmErrorMessages: Record<BinFarmError, string> | undefined;
 if (process.env.NODE_ENV !== 'production') {
   binFarmErrorMessages = {
+    [BIN_FARM_ERROR__ALREADY_SETTLED]: `PositionSettle is already settled (settle_proposer was called)`,
     [BIN_FARM_ERROR__BIN_OUT_OF_POSITION_RANGE]: `Bin ID outside position range`,
     [BIN_FARM_ERROR__BOT_NOT_STALE]: `Bot is still active — permissionless harvest not yet available`,
     [BIN_FARM_ERROR__BOT_PAUSED]: `Bot close operations are paused`,
@@ -179,10 +207,13 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__INVALID_POOL]: `Invalid pool`,
     [BIN_FARM_ERROR__INVALID_POSITION]: `Invalid Meteora position`,
     [BIN_FARM_ERROR__INVALID_PROGRAM]: `Invalid Meteora program ID`,
+    [BIN_FARM_ERROR__INVALID_PROPOSER]: `Proposer ATA owner does not match PositionSettle.proposer`,
     [BIN_FARM_ERROR__INVALID_SLIPPAGE]: `Invalid slippage (must be 0-20)`,
+    [BIN_FARM_ERROR__INVALID_TAX_RESERVE_ATA]: `Tax reserve ATA missing or owner mismatch`,
     [BIN_FARM_ERROR__INVALID_TOKEN_OWNER]: `Token account owner mismatch`,
     [BIN_FARM_ERROR__INVALID_TRADER_DEST]: `Invalid trader destination`,
     [BIN_FARM_ERROR__INVALID_VAULT_OWNER]: `Invalid vault owner — does not match PDA seed`,
+    [BIN_FARM_ERROR__MATCH_RATIO_TOO_HIGH]: `match_ratio_bps exceeds maximum (50000 bps = 5x)`,
     [BIN_FARM_ERROR__MISSING_KEEPER_ATA]: `Permissionless harvester must provide keeper ATA in remaining_accounts`,
     [BIN_FARM_ERROR__NO_BINS_PROVIDED]: `No bin IDs provided`,
     [BIN_FARM_ERROR__NON_CONTIGUOUS_BINS]: `Bin IDs must be contiguous (no gaps)`,
@@ -190,8 +221,12 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__NO_PENDING_EMERGENCY_CLOSE]: `No pending emergency close`,
     [BIN_FARM_ERROR__NO_PENDING_FEE_CHANGE]: `No pending fee change`,
     [BIN_FARM_ERROR__NOTHING_TO_SWEEP]: `Nothing to sweep (rover authority has no excess SOL)`,
+    [BIN_FARM_ERROR__NOT_SETTLED]: `PositionSettle has not been settled yet — call settle_proposer first`,
+    [BIN_FARM_ERROR__OUTPUT_MINT_MISMATCH]: `output_mint argument does not match PositionSettle.output_mint recorded at open`,
     [BIN_FARM_ERROR__OVERFLOW]: `Arithmetic overflow`,
     [BIN_FARM_ERROR__PAUSED]: `Protocol is paused`,
+    [BIN_FARM_ERROR__PAYOUT_ADMIN_ALREADY_INITIALIZED]: `Payout config already initialized — use update_payout_config / set_payout_admin`,
+    [BIN_FARM_ERROR__PAYOUT_BPS_TOO_HIGH]: `payout_bps exceeds maximum (5000 bps = 50%)`,
     [BIN_FARM_ERROR__POSITION_TOO_SMALL]: `Position amount below minimum (anti-griefing)`,
     [BIN_FARM_ERROR__POSITION_TOO_WIDE]: `Position width exceeds maximum (70 bins)`,
     [BIN_FARM_ERROR__PRIORITY_SLOTS_EXCEED_MAX]: `Priority slots exceed maximum (9000 slots / ~1 hour)`,
@@ -203,6 +238,7 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__TRADER_DEST_NOT_SET]: `Trader destination not set — call set_trader_dest first`,
     [BIN_FARM_ERROR__UNAUTHORIZED]: `Not authorized`,
     [BIN_FARM_ERROR__UNAUTHORIZED_CALLER]: `Caller must be authorized bot or vault owner`,
+    [BIN_FARM_ERROR__UNAUTHORIZED_PAYOUT_ADMIN]: `Caller does not match Config.payout_admin`,
     [BIN_FARM_ERROR__ZERO_AMOUNT]: `Amount must be greater than zero`,
   };
 }

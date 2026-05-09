@@ -24,16 +24,22 @@ import {
 
 export type TokenSweptEvent = {
   mint: Address;
-  amount: bigint;
-  destination: Address;
+  total: bigint;
+  toTreasury: bigint;
+  toAdmin: bigint;
+  toOps: bigint;
+  toTax: bigint;
   cranker: Address;
   ts: bigint;
 };
 
 export type TokenSweptEventArgs = {
   mint: Address;
-  amount: number | bigint;
-  destination: Address;
+  total: number | bigint;
+  toTreasury: number | bigint;
+  toAdmin: number | bigint;
+  toOps: number | bigint;
+  toTax: number | bigint;
   cranker: Address;
   ts: number | bigint;
 };
@@ -41,8 +47,11 @@ export type TokenSweptEventArgs = {
 export function getTokenSweptEventEncoder(): FixedSizeEncoder<TokenSweptEventArgs> {
   return getStructEncoder([
     ['mint', getAddressEncoder()],
-    ['amount', getU64Encoder()],
-    ['destination', getAddressEncoder()],
+    ['total', getU64Encoder()],
+    ['toTreasury', getU64Encoder()],
+    ['toAdmin', getU64Encoder()],
+    ['toOps', getU64Encoder()],
+    ['toTax', getU64Encoder()],
     ['cranker', getAddressEncoder()],
     ['ts', getI64Encoder()],
   ]);
@@ -51,8 +60,11 @@ export function getTokenSweptEventEncoder(): FixedSizeEncoder<TokenSweptEventArg
 export function getTokenSweptEventDecoder(): FixedSizeDecoder<TokenSweptEvent> {
   return getStructDecoder([
     ['mint', getAddressDecoder()],
-    ['amount', getU64Decoder()],
-    ['destination', getAddressDecoder()],
+    ['total', getU64Decoder()],
+    ['toTreasury', getU64Decoder()],
+    ['toAdmin', getU64Decoder()],
+    ['toOps', getU64Decoder()],
+    ['toTax', getU64Decoder()],
     ['cranker', getAddressDecoder()],
     ['ts', getI64Decoder()],
   ]);

@@ -28,9 +28,10 @@ import {
 
 export type InitializedEvent = {
   admin: Address;
-  wBuy: Address;
-  treasury: Address;
-  personal: Address;
+  destTreasury: Address;
+  destAdmin: Address;
+  destOps: Address;
+  destTax: Address;
   solSplitBps: Array<number>;
   solThresholdLamports: bigint;
   crankerTipBps: number;
@@ -39,9 +40,10 @@ export type InitializedEvent = {
 
 export type InitializedEventArgs = {
   admin: Address;
-  wBuy: Address;
-  treasury: Address;
-  personal: Address;
+  destTreasury: Address;
+  destAdmin: Address;
+  destOps: Address;
+  destTax: Address;
   solSplitBps: Array<number>;
   solThresholdLamports: number | bigint;
   crankerTipBps: number;
@@ -51,10 +53,11 @@ export type InitializedEventArgs = {
 export function getInitializedEventEncoder(): FixedSizeEncoder<InitializedEventArgs> {
   return getStructEncoder([
     ['admin', getAddressEncoder()],
-    ['wBuy', getAddressEncoder()],
-    ['treasury', getAddressEncoder()],
-    ['personal', getAddressEncoder()],
-    ['solSplitBps', getArrayEncoder(getU16Encoder(), { size: 3 })],
+    ['destTreasury', getAddressEncoder()],
+    ['destAdmin', getAddressEncoder()],
+    ['destOps', getAddressEncoder()],
+    ['destTax', getAddressEncoder()],
+    ['solSplitBps', getArrayEncoder(getU16Encoder(), { size: 4 })],
     ['solThresholdLamports', getU64Encoder()],
     ['crankerTipBps', getU16Encoder()],
     ['ts', getI64Encoder()],
@@ -64,10 +67,11 @@ export function getInitializedEventEncoder(): FixedSizeEncoder<InitializedEventA
 export function getInitializedEventDecoder(): FixedSizeDecoder<InitializedEvent> {
   return getStructDecoder([
     ['admin', getAddressDecoder()],
-    ['wBuy', getAddressDecoder()],
-    ['treasury', getAddressDecoder()],
-    ['personal', getAddressDecoder()],
-    ['solSplitBps', getArrayDecoder(getU16Decoder(), { size: 3 })],
+    ['destTreasury', getAddressDecoder()],
+    ['destAdmin', getAddressDecoder()],
+    ['destOps', getAddressDecoder()],
+    ['destTax', getAddressDecoder()],
+    ['solSplitBps', getArrayDecoder(getU16Decoder(), { size: 4 })],
     ['solThresholdLamports', getU64Decoder()],
     ['crankerTipBps', getU16Decoder()],
     ['ts', getI64Decoder()],

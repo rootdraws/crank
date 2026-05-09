@@ -7,6 +7,7 @@
  */
 
 export * from './acceptAdmin';
+export * from './expandRoutingConfigV2';
 export * from './initialize';
 export * from './pause';
 export * from './registerTokenRoute';

@@ -47,9 +47,10 @@ export type SweepSolInstruction<
   TAccountCranker extends string | AccountMeta<string> = string,
   TAccountRoutingConfig extends string | AccountMeta<string> = string,
   TAccountHopperVault extends string | AccountMeta<string> = string,
-  TAccountWBuy extends string | AccountMeta<string> = string,
-  TAccountTreasury extends string | AccountMeta<string> = string,
-  TAccountPersonal extends string | AccountMeta<string> = string,
+  TAccountDestTreasury extends string | AccountMeta<string> = string,
+  TAccountDestAdmin extends string | AccountMeta<string> = string,
+  TAccountDestOps extends string | AccountMeta<string> = string,
+  TAccountDestTax extends string | AccountMeta<string> = string,
   TAccountSystemProgram extends string | AccountMeta<string> =
     '11111111111111111111111111111111',
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -67,15 +68,18 @@ export type SweepSolInstruction<
       TAccountHopperVault extends string
         ? WritableAccount<TAccountHopperVault>
         : TAccountHopperVault,
-      TAccountWBuy extends string
-        ? WritableAccount<TAccountWBuy>
-        : TAccountWBuy,
-      TAccountTreasury extends string
-        ? WritableAccount<TAccountTreasury>
-        : TAccountTreasury,
-      TAccountPersonal extends string
-        ? WritableAccount<TAccountPersonal>
-        : TAccountPersonal,
+      TAccountDestTreasury extends string
+        ? WritableAccount<TAccountDestTreasury>
+        : TAccountDestTreasury,
+      TAccountDestAdmin extends string
+        ? WritableAccount<TAccountDestAdmin>
+        : TAccountDestAdmin,
+      TAccountDestOps extends string
+        ? WritableAccount<TAccountDestOps>
+        : TAccountDestOps,
+      TAccountDestTax extends string
+        ? WritableAccount<TAccountDestTax>
+        : TAccountDestTax,
       TAccountSystemProgram extends string
         ? ReadonlyAccount<TAccountSystemProgram>
         : TAccountSystemProgram,
@@ -114,18 +118,20 @@ export type SweepSolAsyncInput<
   TAccountCranker extends string = string,
   TAccountRoutingConfig extends string = string,
   TAccountHopperVault extends string = string,
-  TAccountWBuy extends string = string,
-  TAccountTreasury extends string = string,
-  TAccountPersonal extends string = string,
+  TAccountDestTreasury extends string = string,
+  TAccountDestAdmin extends string = string,
+  TAccountDestOps extends string = string,
+  TAccountDestTax extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
   /** Anyone can crank. */
   cranker: TransactionSigner<TAccountCranker>;
   routingConfig?: Address<TAccountRoutingConfig>;
   hopperVault?: Address<TAccountHopperVault>;
-  wBuy: Address<TAccountWBuy>;
-  treasury: Address<TAccountTreasury>;
-  personal: Address<TAccountPersonal>;
+  destTreasury: Address<TAccountDestTreasury>;
+  destAdmin: Address<TAccountDestAdmin>;
+  destOps: Address<TAccountDestOps>;
+  destTax: Address<TAccountDestTax>;
   systemProgram?: Address<TAccountSystemProgram>;
 };
 
@@ -133,9 +139,10 @@ export async function getSweepSolInstructionAsync<
   TAccountCranker extends string,
   TAccountRoutingConfig extends string,
   TAccountHopperVault extends string,
-  TAccountWBuy extends string,
-  TAccountTreasury extends string,
-  TAccountPersonal extends string,
+  TAccountDestTreasury extends string,
+  TAccountDestAdmin extends string,
+  TAccountDestOps extends string,
+  TAccountDestTax extends string,
   TAccountSystemProgram extends string,
   TProgramAddress extends Address = typeof HOPPER_PROGRAM_ADDRESS,
 >(
@@ -143,9 +150,10 @@ export async function getSweepSolInstructionAsync<
     TAccountCranker,
     TAccountRoutingConfig,
     TAccountHopperVault,
-    TAccountWBuy,
-    TAccountTreasury,
-    TAccountPersonal,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
     TAccountSystemProgram
   >,
   config?: { programAddress?: TProgramAddress }
@@ -155,9 +163,10 @@ export async function getSweepSolInstructionAsync<
     TAccountCranker,
     TAccountRoutingConfig,
     TAccountHopperVault,
-    TAccountWBuy,
-    TAccountTreasury,
-    TAccountPersonal,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
     TAccountSystemProgram
   >
 > {
@@ -169,9 +178,10 @@ export async function getSweepSolInstructionAsync<
     cranker: { value: input.cranker ?? null, isWritable: true },
     routingConfig: { value: input.routingConfig ?? null, isWritable: false },
     hopperVault: { value: input.hopperVault ?? null, isWritable: true },
-    wBuy: { value: input.wBuy ?? null, isWritable: true },
-    treasury: { value: input.treasury ?? null, isWritable: true },
-    personal: { value: input.personal ?? null, isWritable: true },
+    destTreasury: { value: input.destTreasury ?? null, isWritable: true },
+    destAdmin: { value: input.destAdmin ?? null, isWritable: true },
+    destOps: { value: input.destOps ?? null, isWritable: true },
+    destTax: { value: input.destTax ?? null, isWritable: true },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
@@ -215,9 +225,10 @@ export async function getSweepSolInstructionAsync<
       getAccountMeta(accounts.cranker),
       getAccountMeta(accounts.routingConfig),
       getAccountMeta(accounts.hopperVault),
-      getAccountMeta(accounts.wBuy),
-      getAccountMeta(accounts.treasury),
-      getAccountMeta(accounts.personal),
+      getAccountMeta(accounts.destTreasury),
+      getAccountMeta(accounts.destAdmin),
+      getAccountMeta(accounts.destOps),
+      getAccountMeta(accounts.destTax),
       getAccountMeta(accounts.systemProgram),
     ],
     data: getSweepSolInstructionDataEncoder().encode({}),
@@ -227,9 +238,10 @@ export async function getSweepSolInstructionAsync<
     TAccountCranker,
     TAccountRoutingConfig,
     TAccountHopperVault,
-    TAccountWBuy,
-    TAccountTreasury,
-    TAccountPersonal,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
     TAccountSystemProgram
   >);
 }
@@ -238,18 +250,20 @@ export type SweepSolInput<
   TAccountCranker extends string = string,
   TAccountRoutingConfig extends string = string,
   TAccountHopperVault extends string = string,
-  TAccountWBuy extends string = string,
-  TAccountTreasury extends string = string,
-  TAccountPersonal extends string = string,
+  TAccountDestTreasury extends string = string,
+  TAccountDestAdmin extends string = string,
+  TAccountDestOps extends string = string,
+  TAccountDestTax extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
   /** Anyone can crank. */
   cranker: TransactionSigner<TAccountCranker>;
   routingConfig: Address<TAccountRoutingConfig>;
   hopperVault: Address<TAccountHopperVault>;
-  wBuy: Address<TAccountWBuy>;
-  treasury: Address<TAccountTreasury>;
-  personal: Address<TAccountPersonal>;
+  destTreasury: Address<TAccountDestTreasury>;
+  destAdmin: Address<TAccountDestAdmin>;
+  destOps: Address<TAccountDestOps>;
+  destTax: Address<TAccountDestTax>;
   systemProgram?: Address<TAccountSystemProgram>;
 };
 
@@ -257,9 +271,10 @@ export function getSweepSolInstruction<
   TAccountCranker extends string,
   TAccountRoutingConfig extends string,
   TAccountHopperVault extends string,
-  TAccountWBuy extends string,
-  TAccountTreasury extends string,
-  TAccountPersonal extends string,
+  TAccountDestTreasury extends string,
+  TAccountDestAdmin extends string,
+  TAccountDestOps extends string,
+  TAccountDestTax extends string,
   TAccountSystemProgram extends string,
   TProgramAddress extends Address = typeof HOPPER_PROGRAM_ADDRESS,
 >(
@@ -267,9 +282,10 @@ export function getSweepSolInstruction<
     TAccountCranker,
     TAccountRoutingConfig,
     TAccountHopperVault,
-    TAccountWBuy,
-    TAccountTreasury,
-    TAccountPersonal,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
     TAccountSystemProgram
   >,
   config?: { programAddress?: TProgramAddress }
@@ -278,9 +294,10 @@ export function getSweepSolInstruction<
   TAccountCranker,
   TAccountRoutingConfig,
   TAccountHopperVault,
-  TAccountWBuy,
-  TAccountTreasury,
-  TAccountPersonal,
+  TAccountDestTreasury,
+  TAccountDestAdmin,
+  TAccountDestOps,
+  TAccountDestTax,
   TAccountSystemProgram
 > {
   // Program address.
@@ -291,9 +308,10 @@ export function getSweepSolInstruction<
     cranker: { value: input.cranker ?? null, isWritable: true },
     routingConfig: { value: input.routingConfig ?? null, isWritable: false },
     hopperVault: { value: input.hopperVault ?? null, isWritable: true },
-    wBuy: { value: input.wBuy ?? null, isWritable: true },
-    treasury: { value: input.treasury ?? null, isWritable: true },
-    personal: { value: input.personal ?? null, isWritable: true },
+    destTreasury: { value: input.destTreasury ?? null, isWritable: true },
+    destAdmin: { value: input.destAdmin ?? null, isWritable: true },
+    destOps: { value: input.destOps ?? null, isWritable: true },
+    destTax: { value: input.destTax ?? null, isWritable: true },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
@@ -313,9 +331,10 @@ export function getSweepSolInstruction<
       getAccountMeta(accounts.cranker),
       getAccountMeta(accounts.routingConfig),
       getAccountMeta(accounts.hopperVault),
-      getAccountMeta(accounts.wBuy),
-      getAccountMeta(accounts.treasury),
-      getAccountMeta(accounts.personal),
+      getAccountMeta(accounts.destTreasury),
+      getAccountMeta(accounts.destAdmin),
+      getAccountMeta(accounts.destOps),
+      getAccountMeta(accounts.destTax),
       getAccountMeta(accounts.systemProgram),
     ],
     data: getSweepSolInstructionDataEncoder().encode({}),
@@ -325,9 +344,10 @@ export function getSweepSolInstruction<
     TAccountCranker,
     TAccountRoutingConfig,
     TAccountHopperVault,
-    TAccountWBuy,
-    TAccountTreasury,
-    TAccountPersonal,
+    TAccountDestTreasury,
+    TAccountDestAdmin,
+    TAccountDestOps,
+    TAccountDestTax,
     TAccountSystemProgram
   >);
 }
@@ -342,10 +362,11 @@ export type ParsedSweepSolInstruction<
     cranker: TAccountMetas[0];
     routingConfig: TAccountMetas[1];
     hopperVault: TAccountMetas[2];
-    wBuy: TAccountMetas[3];
-    treasury: TAccountMetas[4];
-    personal: TAccountMetas[5];
-    systemProgram: TAccountMetas[6];
+    destTreasury: TAccountMetas[3];
+    destAdmin: TAccountMetas[4];
+    destOps: TAccountMetas[5];
+    destTax: TAccountMetas[6];
+    systemProgram: TAccountMetas[7];
   };
   data: SweepSolInstructionData;
 };
@@ -358,7 +379,7 @@ export function parseSweepSolInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedSweepSolInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 7) {
+  if (instruction.accounts.length < 8) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -374,9 +395,10 @@ export function parseSweepSolInstruction<
       cranker: getNextAccount(),
       routingConfig: getNextAccount(),
       hopperVault: getNextAccount(),
-      wBuy: getNextAccount(),
-      treasury: getNextAccount(),
-      personal: getNextAccount(),
+      destTreasury: getNextAccount(),
+      destAdmin: getNextAccount(),
+      destOps: getNextAccount(),
+      destTax: getNextAccount(),
       systemProgram: getNextAccount(),
     },
     data: getSweepSolInstructionDataDecoder().decode(instruction.data),

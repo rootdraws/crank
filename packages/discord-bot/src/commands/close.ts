@@ -370,5 +370,149 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
   }
 
   ctx.walletService.closePosition(position.position_pda);
+
+  // Path B: if this user position has a matched treasury position, enqueue
+  // a separate treasury close proposal that pays the proposer's 20% cut and
+  // closes the treasury's matched position. Runs async — does not block the
+  // user's close response. The user's close (above) is final regardless.
+  if (ctx.treasury) {
+    const treasuryMatch = ctx.walletService.getTreasuryPositionByUserPosition(position.position_pda);
+    if (treasuryMatch && treasuryMatch.status === 'open') {
+      void enqueueTreasuryClose(ctx, treasuryMatch).catch((e: unknown) =>
+        console.error('[close] treasury-match close failed:', e instanceof Error ? e.message : e),
+      );
+    }
+  }
+
   return sig;
+}
+
+async function enqueueTreasuryClose(
+  ctx: BotContext,
+  match: import('@crankbot/core-sdk').TreasuryPositionRecord,
+): Promise<void> {
+  const treasury = ctx.treasury;
+  if (!treasury) return;
+
+  const bot = ctx.botKeypair;
+  const treasuryMeteoraPosition = new PublicKey(match.meteora_position);
+  const lbPair = new PublicKey(match.lb_pair);
+  const treasuryVault = new PublicKey(match.treasury_vault);
+  const proposerWallet = new PublicKey(match.proposer_wallet);
+  const outputMint = new PublicKey(match.output_mint);
+
+  const cpi = await resolveMeteoraCPIAccounts(
+    ctx.connection, lbPair, match.min_bin_id, match.max_bin_id,
+  );
+
+  const [configPDA] = getConfigPDA();
+  const [treasuryPositionPDA] = getPositionPDA(treasuryMeteoraPosition);
+  const [treasuryPosVaultPDA] = getVaultPDA(treasuryMeteoraPosition);
+  const feeDest = bot.publicKey;
+
+  // Treasury per-position vault ATAs
+  const tVaultTokenX = deriveATA(cpi.tokenXMint, treasuryPosVaultPDA, cpi.tokenXProgramId, true);
+  const tVaultTokenY = deriveATA(cpi.tokenYMint, treasuryPosVaultPDA, cpi.tokenYProgramId, true);
+  // Treasury vault destination ATAs (where 80% flows)
+  const tUserTokenX = deriveATA(cpi.tokenXMint, treasuryVault, cpi.tokenXProgramId, true);
+  const tUserTokenY = deriveATA(cpi.tokenYMint, treasuryVault, cpi.tokenYProgramId, true);
+  const feeDestTokenX = deriveATA(cpi.tokenXMint, feeDest, cpi.tokenXProgramId, true);
+  const feeDestTokenY = deriveATA(cpi.tokenYMint, feeDest, cpi.tokenYProgramId, true);
+
+  // Pre-create treasury-side ATAs if missing
+  const setupTx = await buildSetupTx(
+    ctx.connection, bot.publicKey,
+    [
+      { ata: tUserTokenX, owner: treasuryVault, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+      { ata: tUserTokenY, owner: treasuryVault, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+      { ata: feeDestTokenX, owner: feeDest, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
+      { ata: feeDestTokenY, owner: feeDest, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+    ],
+  );
+  if (setupTx) await signAndSendLegacy(setupTx, bot, ctx.connection);
+
+  // Proposer's destination ATA for the output mint
+  const outputTokenProgram = outputMint.equals(cpi.tokenXMint) ? cpi.tokenXProgramId : cpi.tokenYProgramId;
+  const proposerOutputAta = getAssociatedTokenAddressSync(
+    outputMint, proposerWallet, false, outputTokenProgram,
+  );
+  const proposerAtaInfo = await ctx.connection.getAccountInfo(proposerOutputAta);
+  if (!proposerAtaInfo) {
+    const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
+    const createIx = createAssociatedTokenAccountIdempotentInstruction(
+      bot.publicKey, proposerOutputAta, proposerWallet, outputMint, outputTokenProgram,
+    );
+    const tx = new Transaction().add(createIx);
+    tx.feePayer = bot.publicKey;
+    tx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+    tx.sign(bot);
+    await ctx.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+  }
+
+  // Per-position vault's ATA for the output mint (source of payout transfer)
+  const positionVaultOutputAta = outputMint.equals(cpi.tokenXMint) ? tVaultTokenX : tVaultTokenY;
+
+  // Build treasury's user_close ix — caller=bot (Signer in outer tx),
+  // user_vault=treasury_user_vault. Mirrors the user close above with treasury
+  // accounts swapped in.
+  const treasuryUserCloseIx = await ctx.coreProgram.methods
+    .userClose()
+    .accounts({
+      caller: bot.publicKey,
+      config: configPDA,
+      userVault: treasuryVault,
+      position: treasuryPositionPDA,
+      vault: treasuryPosVaultPDA,
+      meteoraPosition: treasuryMeteoraPosition,
+      lbPair: cpi.lbPair,
+      binArrayBitmapExt: cpi.binArrayBitmapExt,
+      binArrayLower: cpi.binArrayLower,
+      binArrayUpper: cpi.binArrayUpper,
+      reserveX: cpi.reserveX,
+      reserveY: cpi.reserveY,
+      tokenXMint: cpi.tokenXMint,
+      tokenYMint: cpi.tokenYMint,
+      eventAuthority: cpi.eventAuthority,
+      dlmmProgram: cpi.dlmmProgram,
+      vaultTokenX: tVaultTokenX,
+      vaultTokenY: tVaultTokenY,
+      userTokenX: tUserTokenX,
+      userTokenY: tUserTokenY,
+      feeDest,
+      feeDestTokenX,
+      feeDestTokenY,
+      tokenXProgram: cpi.tokenXProgramId,
+      tokenYProgram: cpi.tokenYProgramId,
+      memoProgram: SPL_MEMO_PROGRAM_ID,
+      systemProgram: new PublicKey('11111111111111111111111111111111'),
+    })
+    .instruction();
+
+  // Bitmap-ext writability flip — same as user-side close.
+  if (!cpi.binArrayBitmapExt.equals(METEORA_DLMM_PROGRAM_ID)) {
+    for (const k of treasuryUserCloseIx.keys) {
+      if (k.pubkey.equals(cpi.binArrayBitmapExt)) k.isWritable = true;
+    }
+  }
+
+  void import('../../../../bot/treasury-match').then(m =>
+    m.enqueueCloseMatch({
+      ctx: {
+        connection: ctx.connection,
+        coreProgram: ctx.coreProgram as unknown as { methods: Record<string, (...args: unknown[]) => unknown> },
+        configPDA: ctx.configPDA,
+        botKeypair: bot,
+        treasury: ctx.treasury,
+      },
+      treasuryPositionPda: new PublicKey(match.treasury_position_pda),
+      treasuryMeteoraPosition,
+      treasuryUserCloseIx,
+      positionVaultOutputAta,
+      proposerOutputAta,
+      outputMint,
+      tokenProgram: outputTokenProgram,
+      proposerUserId: match.proposer_user_id,
+      userPositionPda: match.user_position_pda,
+    }),
+  );
 }

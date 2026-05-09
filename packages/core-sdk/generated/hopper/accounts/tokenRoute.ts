@@ -54,7 +54,6 @@ export function getTokenRouteDiscriminatorBytes() {
 export type TokenRoute = {
   discriminator: ReadonlyUint8Array;
   mint: Address;
-  destination: Address;
   threshold: bigint;
   enabled: boolean;
   bump: number;
@@ -63,7 +62,6 @@ export type TokenRoute = {
 
 export type TokenRouteArgs = {
   mint: Address;
-  destination: Address;
   threshold: number | bigint;
   enabled: boolean;
   bump: number;
@@ -75,7 +73,6 @@ export function getTokenRouteEncoder(): FixedSizeEncoder<TokenRouteArgs> {
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
       ['mint', getAddressEncoder()],
-      ['destination', getAddressEncoder()],
       ['threshold', getU64Encoder()],
       ['enabled', getBooleanEncoder()],
       ['bump', getU8Encoder()],
@@ -89,7 +86,6 @@ export function getTokenRouteDecoder(): FixedSizeDecoder<TokenRoute> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
     ['mint', getAddressDecoder()],
-    ['destination', getAddressDecoder()],
     ['threshold', getU64Decoder()],
     ['enabled', getBooleanDecoder()],
     ['bump', getU8Decoder()],

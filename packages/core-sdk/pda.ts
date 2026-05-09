@@ -36,6 +36,21 @@ export function getVaultPDA(meteoraPosition: PublicKey): [PublicKey, number] {
 }
 
 /**
+ * Treasury-match per-position settle metadata. Seeds:
+ *   [b"pos_settle", meteora_position]
+ *
+ * Created by `record_settle_meta` (open ix #2). Read by `settle_proposer`
+ * (close ix #1). Closed by `close_settle` (close ix #3) — rent refunds to
+ * the treasury user_vault.
+ */
+export function getPositionSettlePDA(meteoraPosition: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('pos_settle'), meteoraPosition.toBuffer()],
+    BIN_FARM_PROGRAM_ID
+  );
+}
+
+/**
  * Seeds use the UserVault PDA key (not the user's real wallet).
  * Pass the result of getUserVaultPDA(owner)[0] as userVault.
  */

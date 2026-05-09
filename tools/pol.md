@@ -1,149 +1,135 @@
-# pol.md — Protocol-Owned Liquidity Tools
+# pol.md — Protocol LP Tools
 
-Tools for managing and analyzing protocol-owned DLMM liquidity on the CRANK/SOL pool. No on-chain programs — talks directly to Meteora's DLMM program via SDK.
+Per-wallet DLMM harvester/deployer for managing single-sided positions on a wallet's behalf. Originally designed for W-Buy / W-Sell-CRANK / W-{TRIBE} operator wallets; that topology has been superseded by the 4-way Hopper layout (`dest_treasury / dest_admin / dest_ops / dest_tax`). The harvester logic itself is wallet-agnostic — useful anywhere a DLMM position needs unattended harvest/redeploy.
+
+No on-chain programs of its own — uses Meteora's DLMM SDK directly.
 
 ## Tools
 
 ### `npm run depth <TICKER>` — Order Book Depth Chart
 
-ASCII visualization of buy/sell pressure by market cap band. Reads real bin liquidity from Meteora, aggregates into bands, renders centered on current price.
+ASCII visualization of buy/sell pressure by market cap band on a Meteora pool.
 
 ```bash
-npm run depth CRANK                    # Default: 10 bands, auto $5k bands
-npm run depth CRANK -- --bands 15      # More bands
-npm run depth CRANK -- --band-size 10k # Override band width
-npm run depth SOL -- --pool sol-usdc-1 # Price-mode pool
-npm run depth CRANK -- --bins 300      # Override bin fetch count
+npm run depth CRANK                    # 10 bands, auto $5k bands
+npm run depth CRANK -- --bands 15
+npm run depth CRANK -- --band-size 10k
+npm run depth SOL  -- --pool sol-usdc-1
 ```
 
-**Output:** Sell pressure stacks above current price (bars grow right), buy support below. `↓` = cumulative sell from that band to current price, `↑` = cumulative buy from that band to current price. The thickest bar is where the most resistance (or support) sits.
+Sell pressure stacks above current price; buy support below. The thickest bar = where the most resistance/support sits. Useful before placing discretionary ranges.
 
-**File:** `tools/depth.ts` (~300 lines, single file)
+**File:** `tools/depth.ts`
 
-### `npm run protocol-lp` — Protocol LP Automation Bot
+### `npm run protocol-lp` — Per-wallet harvester/deployer
 
-Headless bot that manages Root's large (~400 bin) sell-side DLMM position. Cycle: harvest SOL from converted sell bins → accumulate → deploy as BidAsk buy positions 70 bins below active price.
+Headless bot that runs on a single keypair. Discovers DLMM positions owned by that wallet, harvests converted liquidity from safe bins, and (optionally) re-deploys it as a new BidAsk position. Configured via `MODE` to one of:
+
+- **`MODE=sell`** (e.g. W-Sell-CRANK): harvest converted bins (CRANK → SOL once price ripped through), `do not auto-redeploy`. Harvested SOL stays in the wallet — sweep to the Hopper happens externally.
+- **`MODE=buy`** (e.g. W-Buy): when SOL arrives from the Hopper, deploy fresh BidAsk buy positions below active. Harvest converted CRANK (SOL → CRANK once price dipped through). `Do not auto-redeploy as sells` — operator manually rotates accumulated CRANK to W-Sell-CRANK when ready.
 
 ```bash
-DRY_RUN=true npm run protocol-lp      # Logs what it would do
-DRY_RUN=false npm run protocol-lp     # Live mode
+DRY_RUN=true MODE=sell npm run protocol-lp     # logs what it would do
+DRY_RUN=false MODE=buy npm run protocol-lp     # live mode
 ```
 
 **Files:** `tools/protocol-lp/`
 
-## Protocol LP Architecture
+## How it fits
 
-### The cycle
+```
+Hopper sweep_sol  ─┐                    Operator (manual rotation)
+                   │
+                   ▼                          ┌──────────────┐
+                W-Buy droplet ──┐             │ W-Buy holds  │
+                  • deploy buy   │             │ CRANK after  │
+                    positions    │             │ bin fills    │
+                  • harvest CRANK│             └──────┬───────┘
+                  • no redeploy  │                    │ manual transfer
+                   │             │                    ▼
+                   │             │             W-Sell-CRANK droplet
+                   │             │              • operator opens new
+                   │             │                sell positions
+                   │             │              • harvest SOL when bins fill
+                   │             │              • no redeploy
+                   ▼             │                    │
+              CRANK accumulates  │                    │ SOL accumulates
+                                 │                    │
+                                 │                    ▼
+                                 │              sweep to Hopper
+                                 │              (external cron / keeper)
+                                 │                    │
+                                 └────────────────────┘
+                                                       cycle continues
+```
 
-1. Root has a wide sell-side position on CRANK/SOL (protocol-owned liquidity)
-2. As CRANK price rises, bins convert CRANK → SOL
-3. Bot detects safe bins (`binId < activeId` = fully converted) and harvests the SOL
-4. SOL accumulates in the wallet until it reaches the minimum threshold (2 SOL default)
-5. Bot opens a NEW 70-bin BidAsk buy position below current active price
-6. Discord announces the redeployment
+Per-tribe wallets follow the same pattern: one droplet per `W-{TRIBE}`, configured against the tribe's pool, harvested SOL flows to the Hopper.
 
-The big sell position is never modified — only harvested. Each re-entry is a fresh Meteora position.
+## Config
 
-### Why BidAsk (not Spot)
+Per-instance `.env`. Each wallet gets its own droplet, its own keypair, its own state file.
 
-BidAsk concentrates more liquidity at the far end of the range. For buy positions below current price, this means heavier SOL at the lowest bins. As price dumps, it hits increasingly thick buy walls. Creates a real floor — the deeper someone sells, the more resistance they face.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RPC_URL` | required | Mainnet RPC |
+| `KEYPAIR_PATH` | `/root/.keys/lp-keypair.json` | Wallet keypair |
+| `POOL_ADDRESS` | required | Meteora LbPair (e.g. CRANK/SOL = `9R9gc...`) |
+| `MODE` | `sell` | `sell` (harvest only) / `buy` (deploy + harvest, no auto-redeploy) |
+| `REENTRY_BIN_COUNT` | `70` | Bins below active for buy re-entry (max 70). Used in `MODE=buy`. |
+| `REENTRY_STRATEGY` | `BidAsk` | `BidAsk` / `Spot` / `Curve`. BidAsk concentrates at the far end — heavier walls at the lowest bins. |
+| `MIN_HARVEST_LAMPORTS` | `10000000` | Min converted bin liquidity to trigger harvest |
+| `MIN_REENTRY_LAMPORTS` | `2000000000` | Min accumulated SOL to deploy a new buy position (`MODE=buy`) |
+| `SOL_RESERVE_LAMPORTS` | `50000000` | Gas reserve, never deployed |
+| `POLL_INTERVAL_MS` | `30000` | Idle poll interval |
+| `POLL_FAST_MS` | `5000` | Post-harvest poll interval |
+| `FAST_MODE_DURATION_MS` | `120000` | How long fast mode lasts |
+| `HEALTH_PORT` | `8081` | Health endpoint |
+| `DRY_RUN` | `true` | Log only, no transactions |
+| `DISCORD_WEBHOOK_URL` | optional | Announce deployments |
 
-Spot distributes evenly. Curve is a middle ground. BidAsk is the strongest floor shape.
-
-### Why 2 SOL minimum
-
-Depth chart shows each $5k MC band holds 1.6-10 SOL. A 0.1 SOL position is invisible noise. At 2 SOL, a re-entry shows up as a visible band on the depth chart. Keeps positions meaningful, reduces rent overhead from many tiny positions (~0.06 SOL rent each).
-
-### On-chain optics
-
-Every harvest + redeployment is visible on-chain. Observers see SOL leaving converted sell bins and immediately going back in as buy support lower on the book. The Discord webhook announces each deployment with a Solscan link. The message: "Your SOL contributed toward a deeper floor."
+> **MODE wiring is a TODO.** Today the tool runs the full closed-loop (harvest + auto-redeploy in same wallet). The `MODE` env var doesn't exist in code yet — it's the contract we want before instantiating per-wallet. Until that lands, run instances in DRY_RUN and drive harvest/deploy manually, or accept the closed-loop behavior as long as the wallet is funded externally for buy-side and has CRANK loaded for sell-side.
 
 ## File map
 
 ```
 tools/
-  depth.ts                       — Depth chart (standalone script)
-  pol.md                         — This file
+  depth.ts                       Standalone CLI: ASCII depth chart
+  pol.md                         This file
   protocol-lp/
-    index.ts                     — ProtocolLP class, poll loop, orchestrator
-    config.ts                    — Env loading, validation, CONFIG export
-    harvester.ts                 — Position discovery, safe bin detection, removeLiquidity
-    deployer.ts                  — BidAsk buy position creation + Discord webhook
-    state.ts                     — Persistent state (data/protocol-lp-state.json)
-    health.ts                    — HTTP health endpoint (:8081/health)
-    types.ts                     — Shared interfaces
-    ecosystem.config.cjs         — PM2 config for droplet deployment
-    .env.example                 — Environment template
+    index.ts                     ProtocolLP class, poll loop, orchestrator
+    config.ts                    Env loading + validation
+    harvester.ts                 Position discovery, safe bin detection, removeLiquidity
+    deployer.ts                  BidAsk position creation + Discord webhook
+    state.ts                     Persistent state (data/protocol-lp-state.json)
+    health.ts                    HTTP health on :HEALTH_PORT
+    types.ts                     Shared interfaces
+    ecosystem.config.cjs         PM2 config
+    .env.example                 Env template
 ```
-
-## Config reference
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RPC_URL` | required | Helius mainnet RPC |
-| `KEYPAIR_PATH` | `/root/.keys/lp-keypair.json` | LP wallet keypair |
-| `POOL_ADDRESS` | `9R9gc...` (CRANK/SOL) | Meteora LbPair address |
-| `REENTRY_BIN_COUNT` | `70` | Bins below active for buy re-entry (max 70) |
-| `REENTRY_STRATEGY` | `BidAsk` | `BidAsk` / `Spot` / `Curve` |
-| `MIN_HARVEST_LAMPORTS` | `10000000` (0.01 SOL) | Min SOL in safe bins to trigger harvest |
-| `MIN_REENTRY_LAMPORTS` | `2000000000` (2 SOL) | Min accumulated SOL to deploy buy position |
-| `SOL_RESERVE_LAMPORTS` | `50000000` (0.05 SOL) | Gas reserve, never deployed |
-| `POLL_INTERVAL_MS` | `30000` | Idle poll interval |
-| `POLL_FAST_MS` | `5000` | Post-harvest poll interval |
-| `FAST_MODE_DURATION_MS` | `120000` | How long fast mode lasts |
-| `HEALTH_PORT` | `8081` | Health endpoint port |
-| `DRY_RUN` | `true` | Log only, no transactions |
-| `DISCORD_WEBHOOK_URL` | optional | Discord webhook for deployment announcements |
 
 ## Key logic
 
-### Safe bin detection (harvester.ts)
+**Safe bin detection (`harvester.ts`):**
+- Sell-side positions: harvest Y (SOL) from bins where `binId < activeId` (price ripped above → CRANK fully converted).
+- Buy-side positions: harvest X (CRANK) from bins where `binId > activeId` (price dipped below → SOL fully converted).
 
-```
-SELL positions: harvest Y (SOL) from bins where binId < activeId
-  → Price ripped above these bins, CRANK fully converted to SOL
+**Buy position deployment (`deployer.ts`):**
+- `minBinId = activeId - REENTRY_BIN_COUNT`, `maxBinId = activeId - 1`
+- `strategy = BidAsk` (heavier at bottom — strongest floor shape)
+- `totalXAmount = 0`, `totalYAmount = accumulated SOL`
+- Uses `dlmm.initializePositionAndAddLiquidityByStrategy()` (creates position + adds liquidity in one tx).
 
-BUY positions: harvest X (CRANK) from bins where binId > activeId
-  → Price dipped below these bins, SOL fully converted to CRANK
-  → Phase 2 (logged only in Phase 1)
-```
+**State (`state.ts`):**
+- File: `data/protocol-lp-state.json` (gitignored).
+- Tracks positions, harvests, deployments, running totals. Atomic writes (temp + rename), simple mutex, capped at 500 records each.
 
-### Buy position deployment (deployer.ts)
-
-```
-minBinId = activeId - 70
-maxBinId = activeId - 1
-strategy = BidAsk (heavier at bottom)
-totalXAmount = 0 (no CRANK — buy side is SOL only)
-totalYAmount = accumulated SOL
-```
-
-Uses `dlmm.initializePositionAndAddLiquidityByStrategy()` — creates position + adds liquidity in one transaction. The `positionKeypair` is generated fresh and must be included in signers.
-
-### State persistence (state.ts)
-
-File: `data/protocol-lp-state.json` (in .gitignore via `data/`).
-
-Tracks:
-- Positions: pubkey, side, bin range, status, deployed amount
-- Harvests: timestamp, position, amount, tx sig, bins harvested
-- Deployments: timestamp, position, amount, bin range, activeId at deploy, tx sig
-- Running totals: SOL harvested, SOL deployed, cycle count
-
-Atomic writes (temp file + rename). Simple mutex prevents concurrent writes. Capped at 500 records each.
-
-### Adaptive polling
-
-- Idle: 30s poll interval
-- After harvest: switches to 5s for 2 minutes, then reverts
-- Graceful shutdown: SIGTERM/SIGINT wait up to 30s for in-flight operations
+**Adaptive polling:** 30s idle → 5s for 2 min after harvest → revert. Graceful SIGTERM/SIGINT (waits up to 30s for in-flight ops).
 
 ## Deployment
 
-Separate DigitalOcean droplet from crank-harvester. Same spec (s-2vcpu-4gb, NYC1).
+Separate droplet per wallet. Same spec as crank-harvester (s-2vcpu-4gb, NYC1).
 
 ```bash
-# On the droplet
 pm2 start tools/protocol-lp/ecosystem.config.cjs
 pm2 logs protocol-lp --lines 50
 curl localhost:8081/health
@@ -151,11 +137,11 @@ curl localhost:8081/health
 
 Keypair at `/root/.keys/lp-keypair.json` (chmod 600). `.env` at `tools/protocol-lp/.env`.
 
-**Data safety:** `data/protocol-lp-state.json` is state only (positions, harvests, deployments). Unlike the main bot's wallet DB, losing this file is not catastrophic — positions exist on-chain and will be rediscovered. But it means harvest/deployment history is lost.
+**Data safety:** `data/protocol-lp-state.json` is reconstructable — positions exist on-chain. Losing the file forfeits harvest/deployment history but no funds.
 
-## Import pattern
+## Import pattern (tsx + Node 24 quirk)
 
-tsx + Node 24 treats workspace packages as CJS. All external imports use `createRequire`:
+External imports use `createRequire`:
 
 ```typescript
 import { createRequire } from 'module';
@@ -165,16 +151,8 @@ const sdk = _require('@crankbot/core-sdk');
 const { Connection, PublicKey, Keypair } = _require('@solana/web3.js');
 ```
 
-This is required because tsx resolves `@meteora-ag/dlmm`'s `"source"` field and tries to compile raw TS that uses incompatible Anchor imports. The CJS dist works fine via `createRequire`.
+Required because tsx resolves `@meteora-ag/dlmm`'s `"source"` field and tries to compile raw TS that uses incompatible Anchor imports. CJS dist works fine via `createRequire`.
 
 ## Ancestry
 
-The protocol-lp bot descends from `/Users/root1/dlmm-harvester/` — the proto-version of crank-money. That bot's harvest logic (position discovery, safe bin detection, removeLiquidity, adaptive polling, retry, graceful shutdown) was ported into `harvester.ts`. The re-entry logic (`deployer.ts`) is new — dlmm-harvester only harvested, never re-entered.
-
-## Phase 2 (future)
-
-- Harvest CRANK from exhausted buy positions (price dipped through them → SOL converted to CRANK)
-- Close exhausted positions to reclaim ~0.06 SOL rent each
-- Full cycle: sell → harvest SOL → buy → harvest CRANK → sell again
-- Aggregated re-entry: batch multiple small harvests into one larger position
-- gRPC subscription instead of polling for sub-second detection
+Descended from `/Users/root1/dlmm-harvester/` — the proto-version of crank-money. That bot's harvester logic (position discovery, safe-bin detection, removeLiquidity, adaptive polling, retry, graceful shutdown) was ported into `harvester.ts`. The deployer + state persistence are new.

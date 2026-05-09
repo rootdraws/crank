@@ -26,7 +26,6 @@ import {
 
 export type TokenRouteUpdatedEvent = {
   mint: Address;
-  destination: Address;
   threshold: bigint;
   enabled: boolean;
   ts: bigint;
@@ -34,7 +33,6 @@ export type TokenRouteUpdatedEvent = {
 
 export type TokenRouteUpdatedEventArgs = {
   mint: Address;
-  destination: Address;
   threshold: number | bigint;
   enabled: boolean;
   ts: number | bigint;
@@ -43,7 +41,6 @@ export type TokenRouteUpdatedEventArgs = {
 export function getTokenRouteUpdatedEventEncoder(): FixedSizeEncoder<TokenRouteUpdatedEventArgs> {
   return getStructEncoder([
     ['mint', getAddressEncoder()],
-    ['destination', getAddressEncoder()],
     ['threshold', getU64Encoder()],
     ['enabled', getBooleanEncoder()],
     ['ts', getI64Encoder()],
@@ -53,7 +50,6 @@ export function getTokenRouteUpdatedEventEncoder(): FixedSizeEncoder<TokenRouteU
 export function getTokenRouteUpdatedEventDecoder(): FixedSizeDecoder<TokenRouteUpdatedEvent> {
   return getStructDecoder([
     ['mint', getAddressDecoder()],
-    ['destination', getAddressDecoder()],
     ['threshold', getU64Decoder()],
     ['enabled', getBooleanDecoder()],
     ['ts', getI64Decoder()],

@@ -10,7 +10,6 @@ import {
   combineCodec,
   fixDecoderSize,
   fixEncoderSize,
-  getAddressDecoder,
   getAddressEncoder,
   getBytesDecoder,
   getBytesEncoder,
@@ -104,12 +103,10 @@ export type RegisterTokenRouteInstruction<
 
 export type RegisterTokenRouteInstructionData = {
   discriminator: ReadonlyUint8Array;
-  destination: Address;
   threshold: bigint;
 };
 
 export type RegisterTokenRouteInstructionDataArgs = {
-  destination: Address;
   threshold: number | bigint;
 };
 
@@ -117,7 +114,6 @@ export function getRegisterTokenRouteInstructionDataEncoder(): FixedSizeEncoder<
   return transformEncoder(
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
-      ['destination', getAddressEncoder()],
       ['threshold', getU64Encoder()],
     ]),
     (value) => ({ ...value, discriminator: REGISTER_TOKEN_ROUTE_DISCRIMINATOR })
@@ -127,7 +123,6 @@ export function getRegisterTokenRouteInstructionDataEncoder(): FixedSizeEncoder<
 export function getRegisterTokenRouteInstructionDataDecoder(): FixedSizeDecoder<RegisterTokenRouteInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
-    ['destination', getAddressDecoder()],
     ['threshold', getU64Decoder()],
   ]);
 }
@@ -162,7 +157,6 @@ export type RegisterTokenRouteAsyncInput<
   tokenProgram: Address<TAccountTokenProgram>;
   associatedTokenProgram?: Address<TAccountAssociatedTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
-  destination: RegisterTokenRouteInstructionDataArgs['destination'];
   threshold: RegisterTokenRouteInstructionDataArgs['threshold'];
 };
 
@@ -337,7 +331,6 @@ export type RegisterTokenRouteInput<
   tokenProgram: Address<TAccountTokenProgram>;
   associatedTokenProgram?: Address<TAccountAssociatedTokenProgram>;
   systemProgram?: Address<TAccountSystemProgram>;
-  destination: RegisterTokenRouteInstructionDataArgs['destination'];
   threshold: RegisterTokenRouteInstructionDataArgs['threshold'];
 };
 

@@ -32,6 +32,55 @@ interface UserRecord {
   created_at: number;
 }
 
+/**
+ * Treasury-matched position: created when bot wraps a user's open in a Path B
+ * governance proposal. Linked to the user's Path A position by user_position_pda.
+ */
+export interface TreasuryPositionRecord {
+  treasury_position_pda: string;
+  user_position_pda: string;
+  proposer_user_id: string;
+  proposer_wallet: string;             // Real wallet pubkey — for ATA derivation at close
+  meteora_position: string;
+  treasury_vault: string;              // bin-farm UserVault owned by Native Treasury PDA
+  lb_pair: string;
+  side: 'Buy' | 'Sell';
+  min_bin_id: number;
+  max_bin_id: number;
+  matched_amount: string;              // raw u64 as string
+  output_mint: string;                 // SOL=NATIVE_MINT for sells, CRANK for buys
+  payout_bps: number;                  // snapshot from Config at open
+  status: 'open' | 'closed';
+  opened_at: number;
+  closed_at?: number;
+  proposer_payout_amount?: string;     // raw amount paid at close (settled)
+  open_proposal_pda?: string;
+  close_proposal_pda?: string;
+}
+
+/**
+ * Lifecycle state for an in-flight treasury proposal. Keyed by proposal_pda
+ * once known, by deterministic payload hash before that.
+ */
+export type ProposalKind = 'open' | 'close' | 'bootstrap';
+export type ProposalStatus = 'pending' | 'inserted' | 'voted' | 'executed' | 'failed' | 'cancelled';
+
+export interface OpenProposalRecord {
+  proposal_pda: string;
+  kind: ProposalKind;
+  status: ProposalStatus;
+  user_position_pda?: string;
+  treasury_position_pda?: string;
+  insert_tx_sig?: string;
+  execute_tx_sig?: string;
+  retry_count: number;
+  last_error?: string;
+  created_at: number;
+  updated_at: number;
+  /** sha256 of inner ix payload — replay/idempotency detection */
+  payload_hash: string;
+}
+
 interface StoreData {
   users: Record<string, UserRecord>;
   /** Reverse lookup: vault_pda → user_id (for harvest routing) */
@@ -51,6 +100,8 @@ interface StoreData {
     baseline_decimals?: number;
     /** USD value of the deposit at open time (frozen, for aggregate volume metrics). */
     initial_usd?: number | null;
+    /** Set when a Path B treasury match has been opened against this position. */
+    treasury_position_pda?: string;
   }>;
   votes: Record<string, { vault_pda: string; pool_address: string; allocation_pct: number; updated_at: number }>;
   harvests: Array<{
@@ -62,10 +113,26 @@ interface StoreData {
     /** 'harvest' (partial) or 'close' (terminal). Default 'harvest' for legacy rows. */
     kind?: 'harvest' | 'close';
   }>;
+  /** Treasury-matched positions (Path B). Keyed by treasury_position_pda. */
+  treasury_positions?: Record<string, TreasuryPositionRecord>;
+  /** Reverse lookup: user_position_pda → treasury_position_pda (1:1 link). */
+  treasury_by_user_position?: Record<string, string>;
+  /** In-flight + completed governance proposals. Keyed by proposal_pda once known. */
+  open_proposals?: Record<string, OpenProposalRecord>;
 }
 
 function emptyStore(): StoreData {
-  return { users: {}, vaultIndex: {}, ownerIndex: {}, positions: {}, votes: {}, harvests: [] };
+  return {
+    users: {},
+    vaultIndex: {},
+    ownerIndex: {},
+    positions: {},
+    votes: {},
+    harvests: [],
+    treasury_positions: {},
+    treasury_by_user_position: {},
+    open_proposals: {},
+  };
 }
 
 // ─── WalletService ─────────────────────────────────────────────────────────
@@ -92,6 +159,10 @@ export class WalletService {
       if (!this.data.vaultIndex) this.data.vaultIndex = {};
       if (!this.data.ownerIndex) this.data.ownerIndex = {};
       if (!this.data.harvests) this.data.harvests = [];
+      // Treasury-match additions (2026-05): backfill if missing
+      if (!this.data.treasury_positions) this.data.treasury_positions = {};
+      if (!this.data.treasury_by_user_position) this.data.treasury_by_user_position = {};
+      if (!this.data.open_proposals) this.data.open_proposals = {};
       // Backfill indexes from users (migration from old format)
       if (!this.data.users) this.data.users = {};
       for (const u of Object.values(this.data.users)) {
@@ -509,6 +580,101 @@ export class WalletService {
   close(): void {
     this.flush();
     if (this.saveTimer) clearInterval(this.saveTimer);
+  }
+
+  // ─── Treasury-match Tracking (Path B) ──────────────────────────────────
+
+  saveTreasuryPosition(rec: TreasuryPositionRecord): void {
+    this.data.treasury_positions ??= {};
+    this.data.treasury_by_user_position ??= {};
+    this.data.treasury_positions[rec.treasury_position_pda] = rec;
+    this.data.treasury_by_user_position[rec.user_position_pda] = rec.treasury_position_pda;
+    // Cross-link the user position too, so /close can detect treasury match
+    const userPos = this.data.positions[rec.user_position_pda];
+    if (userPos) userPos.treasury_position_pda = rec.treasury_position_pda;
+    this.markDirty();
+  }
+
+  getTreasuryPositionByUserPosition(userPositionPda: string): TreasuryPositionRecord | undefined {
+    const tp = this.data.treasury_by_user_position?.[userPositionPda];
+    if (!tp) return undefined;
+    return this.data.treasury_positions?.[tp];
+  }
+
+  getTreasuryPosition(treasuryPositionPda: string): TreasuryPositionRecord | undefined {
+    return this.data.treasury_positions?.[treasuryPositionPda];
+  }
+
+  listOpenTreasuryPositions(): TreasuryPositionRecord[] {
+    return Object.values(this.data.treasury_positions ?? {})
+      .filter(r => r.status === 'open')
+      .sort((a, b) => b.opened_at - a.opened_at);
+  }
+
+  closeTreasuryPosition(
+    treasuryPositionPda: string,
+    closeProposalPda: string,
+    proposerPayoutAmount: bigint,
+  ): void {
+    const rec = this.data.treasury_positions?.[treasuryPositionPda];
+    if (!rec) return;
+    rec.status = 'closed';
+    rec.closed_at = Date.now();
+    rec.close_proposal_pda = closeProposalPda;
+    rec.proposer_payout_amount = proposerPayoutAmount.toString();
+    this.markDirty();
+  }
+
+  // ─── Treasury Proposal Lifecycle ────────────────────────────────────────
+
+  /**
+   * Record or update a proposal's lifecycle state. The orchestrator calls this
+   * at every state transition (pending → inserted → voted → executed / failed
+   * / cancelled). Idempotent on payload_hash if proposal_pda is unknown yet.
+   */
+  recordProposalLifecycle(rec: Partial<OpenProposalRecord> & {
+    proposal_pda: string;
+    payload_hash: string;
+    kind: ProposalKind;
+    status: ProposalStatus;
+  }): void {
+    this.data.open_proposals ??= {};
+    const now = Date.now();
+    const existing = this.data.open_proposals[rec.proposal_pda];
+    if (existing) {
+      Object.assign(existing, rec, { updated_at: now });
+    } else {
+      this.data.open_proposals[rec.proposal_pda] = {
+        proposal_pda: rec.proposal_pda,
+        kind: rec.kind,
+        status: rec.status,
+        user_position_pda: rec.user_position_pda,
+        treasury_position_pda: rec.treasury_position_pda,
+        insert_tx_sig: rec.insert_tx_sig,
+        execute_tx_sig: rec.execute_tx_sig,
+        retry_count: rec.retry_count ?? 0,
+        last_error: rec.last_error,
+        created_at: rec.created_at ?? now,
+        updated_at: now,
+        payload_hash: rec.payload_hash,
+      };
+    }
+    this.markDirty();
+  }
+
+  getProposal(proposalPda: string): OpenProposalRecord | undefined {
+    return this.data.open_proposals?.[proposalPda];
+  }
+
+  /** Find any unfinished proposal matching a payload hash — replay-detection. */
+  findProposalByPayloadHash(payloadHash: string): OpenProposalRecord | undefined {
+    return Object.values(this.data.open_proposals ?? {}).find(p => p.payload_hash === payloadHash);
+  }
+
+  listProposalsByStatus(...statuses: ProposalStatus[]): OpenProposalRecord[] {
+    return Object.values(this.data.open_proposals ?? {})
+      .filter(p => statuses.includes(p.status))
+      .sort((a, b) => a.created_at - b.created_at);
   }
 }
 

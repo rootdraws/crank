@@ -12,7 +12,8 @@
     "bot:dev": "tsx --watch bot/anchor-harvest-bot.ts",
     "test": "vitest run",
     "depth": "tsx tools/depth.ts",
-    "protocol-lp": "tsx tools/protocol-lp/index.ts"
+    "protocol-lp": "tsx tools/protocol-lp/index.ts",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@codama/nodes-from-anchor": "1.3.9",
@@ -26,6 +27,7 @@
     "@triton-one/yellowstone-grpc": "5.0.8",
     "bn.js": "5.2.3",
     "dotenv": "17.3.1",
+    "governance-idl-sdk": "file:reference/governance-sdk",
     "pino": "10.3.0",
     "tsx": "4.21.0",
     "ws": "7.5.10"
@@ -34,6 +36,7 @@
     "@types/node": "25.2.2",
     "@types/pino": "7.0.4",
     "@types/ws": "7.4.7",
+    "patch-package": "^8.0.1",
     "typescript": "5.9.3",
     "vitest": "4.0.18"
   },

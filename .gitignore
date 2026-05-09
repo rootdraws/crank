@@ -34,3 +34,10 @@ build/
 .vercel/
 .env*.local
 
+
+# Local Keystone signer dApp (contains hardcoded RPC key — local-only)
+scripts/sign-with-keystone/
+
+# Vendored reference deps (governance SDK + adversarial spec) — fetch separately
+reference/governance-sdk/
+reference/adversarial-spec/

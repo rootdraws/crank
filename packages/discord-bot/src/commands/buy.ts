@@ -263,15 +263,22 @@ export async function handleOpenPosition(
     // Pre-flight token balance for /sell (selling tokenX, the non-quote side)
     if (side === 'Sell') {
       const sellMint = new PublicKey(selectedPool.mintX);
-      const sellMintInfo = await ctx.connection.getAccountInfo(sellMint);
-      const sellTokenProgram = sellMintInfo && sellMintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
-        ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-      const sellAta = getAssociatedTokenAddressSync(sellMint, vaultPda!, true, sellTokenProgram);
       let sellBalanceRaw = 0n;
-      try {
-        const bal = await ctx.connection.getTokenAccountBalance(sellAta);
-        sellBalanceRaw = BigInt(bal.value.amount);
-      } catch { /* ATA missing → 0 */ }
+      if (sellMint.equals(NATIVE_MINT)) {
+        // Vault holds native SOL; wrap_sol_in_vault runs at the open_position
+        // boundary (see line ~355). Pre-flight measures spendable native SOL
+        // after reserving the rent/gas already enforced above.
+        sellBalanceRaw = BigInt(Math.max(0, vaultSolNow - vaultSolNeeded));
+      } else {
+        const sellMintInfo = await ctx.connection.getAccountInfo(sellMint);
+        const sellTokenProgram = sellMintInfo && sellMintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
+          ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+        const sellAta = getAssociatedTokenAddressSync(sellMint, vaultPda!, true, sellTokenProgram);
+        try {
+          const bal = await ctx.connection.getTokenAccountBalance(sellAta);
+          sellBalanceRaw = BigInt(bal.value.amount);
+        } catch { /* ATA missing → 0 */ }
+      }
       const neededRaw = BigInt(Math.round(amount * Math.pow(10, selectedPool.decimalsX)));
       if (sellBalanceRaw < neededRaw) {
         const have = Number(sellBalanceRaw) / Math.pow(10, selectedPool.decimalsX);
@@ -518,6 +525,49 @@ export async function handleOpenPosition(
           initialAmount: positionAmount,
           initialUsd,
         });
+
+        // Path B (treasury match) — fire-and-forget. No-op when ctx.treasury is undefined.
+        // Failures here never affect Path A (the user's own position is already deployed).
+        if (ctx.treasury) {
+          const proposerWallet = ctx.walletService.getOwnerWallet(userId);
+          if (proposerWallet) {
+            void import('../../../../bot/treasury-match').then(m =>
+              m.enqueueOpenMatchIfPossible({
+                ctx: {
+                  connection: ctx.connection,
+                  coreProgram: ctx.coreProgram as unknown as { methods: Record<string, (...args: unknown[]) => unknown> },
+                  configPDA: ctx.configPDA,
+                  botKeypair: bot,
+                  treasury: ctx.treasury,
+                },
+                userId,
+                proposerWallet,
+                userPositionPda: positionPDA,
+                side,
+                lbPair: cpi.lbPair,
+                minBinId: pos.minBinId,
+                maxBinId: pos.maxBinId,
+                userAmount: positionAmount,
+                slippage,
+                cpi: {
+                  lbPair: cpi.lbPair,
+                  binArrayBitmapExt: cpi.binArrayBitmapExt,
+                  reserveX: cpi.reserveX,
+                  reserveY: cpi.reserveY,
+                  binArrayLower: cpi.binArrayLower,
+                  binArrayUpper: cpi.binArrayUpper,
+                  eventAuthority: cpi.eventAuthority,
+                  dlmmProgram: cpi.dlmmProgram,
+                  tokenXMint: cpi.tokenXMint,
+                  tokenYMint: cpi.tokenYMint,
+                  tokenXProgramId: cpi.tokenXProgramId,
+                  tokenYProgramId: cpi.tokenYProgramId,
+                },
+                depositDecimals,
+              }).catch((e: unknown) => console.error('[buy] treasury-match failed:', e instanceof Error ? e.message : e)),
+            );
+          }
+        }
 
         // JUP market-quote baseline — "what would a market trade get right now?"
         // Frozen per-position so we can flex the delta vs DLMM-routed yield

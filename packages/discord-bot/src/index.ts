@@ -32,6 +32,8 @@ import { handleHelp } from './commands/help';
 import { handleLeaderboard } from './commands/leaderboard';
 import { handleStats } from './commands/stats';
 import { handleEnableToken } from './commands/enable-token';
+import { handleTreasury } from './commands/treasury';
+import { handleProposals } from './commands/proposals';
 
 dotenv.config({ path: path.join(__dirname, '..', '..', '..', '.env') });
 
@@ -47,6 +49,13 @@ export interface BotContext {
   feedChannelId?: string;
   cashoutChannelId?: string;
   client: Client;
+  /**
+   * Treasury-match (Path B) runtime. Populated by `DiscordBot.initTreasury()`
+   * when GOVERNANCE_REALM_NAME env is set + on-chain bootstrap is complete.
+   * Undefined when Path B is disabled — commands gracefully skip the
+   * treasury enqueue step in that case.
+   */
+  treasury?: import('../../../bot/treasury-runtime').TreasuryRuntime;
 }
 
 // Commands allowed in the cash-out-only channel. Everything else is rejected
@@ -150,6 +159,8 @@ export class DiscordBot {
           case 'help':        return await handleHelp(interaction, ctx);
           case 'leaderboard': return await handleLeaderboard(interaction, ctx);
           case 'stats':       return await handleStats(interaction, ctx);
+          case 'treasury':    return await handleTreasury(interaction, ctx);
+          case 'proposals':   return await handleProposals(interaction, ctx);
           default:
             await interaction.reply({ content: 'Unknown command.', ephemeral: true });
         }
@@ -173,7 +184,40 @@ export class DiscordBot {
 
   async stop(): Promise<void> {
     this.client.destroy();
+    this.ctx.treasury?.orchestrator.stopWorker();
     this.walletService.close();
+  }
+
+  /**
+   * Initialize the treasury-match (Path B) subsystem if env-configured.
+   * Safe no-op when GOVERNANCE_REALM_NAME is unset. Caller should invoke
+   * AFTER constructing the bot but BEFORE `start()` (or in parallel — the
+   * bot can serve Path A commands while Path B initializes).
+   *
+   * Failures are logged + non-fatal: Path A continues to work, Path B
+   * commands skip the treasury enqueue step until env / bootstrap is fixed.
+   */
+  async initTreasury(): Promise<void> {
+    if (!process.env.GOVERNANCE_REALM_NAME) return;
+    try {
+      const { initTreasuryRuntime } = await import('../../../bot/treasury-runtime');
+      const runtime = await initTreasuryRuntime(
+        this.ctx.connection,
+        this.ctx.botKeypair,
+        this.walletService,
+      );
+      if (runtime) {
+        this.ctx.treasury = runtime;
+        // Populate the validator's pool whitelist from curator.json
+        const setKnownPools = (
+          runtime.orchestrator as unknown as { setKnownPools?: (pools: Iterable<string>) => void }
+        ).setKnownPools;
+        if (setKnownPools) setKnownPools(this.ctx.approvedPools);
+      }
+    } catch (e: unknown) {
+      console.error('[discord-bot] Treasury init FAILED:', e instanceof Error ? e.message : e);
+      console.error('[discord-bot] Path A continues; Path B disabled until init succeeds.');
+    }
   }
 }
 
@@ -189,14 +233,16 @@ if (require.main === module) {
 
     let coreProgram: any = null;
     let coreProgramId: any = null;
+    let botKeypair: any = null;
+    let configPDA: any = null;
 
     if (connection && process.env.CORE_PROGRAM_ID) {
       try {
         const { AnchorProvider, Program, Wallet } = require('@coral-xyz/anchor');
         const { Keypair } = require('@solana/web3.js');
         const bs58 = require('bs58');
+        const { getConfigPDA } = require('@crankbot/core-sdk');
 
-        let botKeypair: any;
         if (process.env.BOT_KEYPAIR_PATH && fs.existsSync(process.env.BOT_KEYPAIR_PATH)) {
           const data = JSON.parse(fs.readFileSync(process.env.BOT_KEYPAIR_PATH, 'utf-8'));
           botKeypair = Keypair.fromSecretKey(Uint8Array.from(data));
@@ -213,6 +259,7 @@ if (require.main === module) {
             const idl = JSON.parse(fs.readFileSync(idlPath, 'utf-8'));
             coreProgramId = new PublicKey(process.env.CORE_PROGRAM_ID);
             coreProgram = new Program(idl, provider);
+            [configPDA] = getConfigPDA();
             console.log('[discord-bot] Solana connection + program loaded');
           }
         }
@@ -229,10 +276,16 @@ if (require.main === module) {
       connection: connection as any,
       coreProgram: coreProgram as any,
       coreProgramId: coreProgramId as any,
+      botKeypair: botKeypair as any,
+      configPDA: configPDA as any,
     });
 
     process.on('SIGTERM', () => bot.stop());
     process.on('SIGINT', () => bot.stop());
+
+    // Initialize Path B (treasury-match) subsystem if governance env is set.
+    // No-op + logged warning if env missing or bootstrap incomplete.
+    await bot.initTreasury();
 
     await bot.start();
   })().catch(e => {

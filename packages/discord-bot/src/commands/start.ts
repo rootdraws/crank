@@ -115,7 +115,6 @@ export async function handleStart(interaction: ChatInputCommandInteraction, ctx:
   await interaction.deferReply({ ephemeral: true });
 
   // Create vault on-chain FIRST, then register locally
-  const { deriveUserVaultPDA } = await import('@crankbot/core-sdk');
   const [vaultPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('user_vault'), ownerWallet.toBuffer()],
     ctx.coreProgramId,

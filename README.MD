@@ -1,37 +1,14 @@
 # crank.money
 
-**Execution layer for cross-venue delta-neutral funding-rate arbitrage.**
-
-Selective Meteora DLMM is the smart-execution layer for the spot leg of a funding-rate-arb trade — laddered fills, auto-withdraw on completion, no market orders. Pre-set perp limit closes (Hyperliquid, planned) handle squeeze risk on the short side.
-
-## Spot leg (live)
-
-Set a range as a single-sided LP. Price moves through it → bins convert → the harvester pulls the yield into the user's PDA vault.
-
-- **Sell the Rips:** deposit token above price. As price rips, bins convert to SOL.
-- **Buy the Dips:** deposit SOL below price. As price dips, bins convert to token.
-
-**Fee:** 0.5% on converted output only. Zero fee on deposit. LP fees claimable at zero cost anytime.
-
-**Custody:** user funds live in on-chain `UserVault` PDAs seeded by `[b"user_vault", owner_wallet]`. The bot is a stateless operator — server compromise cannot steal funds. Withdrawals are PDA-enforced to the vault's original owner.
-
-**Real-time:** Helius LaserStream gRPC drives sub-second bin-change → harvest. (Alchemy gRPC migration in flight — see `conversion.md`.)
-
-## Perp leg (in flight)
-
-Hyperliquid integration for the short side of the delta-neutral pair. Pre-set limit closes for squeeze risk. Targeting tokens with elevated funding rates (zerebro, lighter, anthropic, griffain, pump, fartcoin, SOL, CRANK).
-
-## Token
-
-CRANK is exposure to the operator's strategy yield, expressed mechanically through a SOL-side DLMM bid ladder. Customers (traders) and investors (CRANK holders) are decoupled — the product is open to anyone paying fees, the token is pure economic exposure to the desk.
-
-No claim function. No buyback schedule. No burn schedule. No yield. The buy ladder is a standing exit. See `pivot.md` for the full thesis and operating model.
+Execution layer for cross-venue delta-neutral funding-rate arbitrage. Selective Meteora DLMM as the spot leg's smart-execution surface; protocol revenue routes on-chain via the Hopper program; treasury matching is gated by SPL Governance + a custom voter-weight addin so a compromised bot cannot drain protocol funds.
 
 ## Programs
 
 | Program | Address |
 |---------|---------|
 | bin-farm (core) | `8FJyoK7UKhYB8qd8187oVWFngQ5ZoVPbNWXSUeZSdgia` |
+| hopper (routing) | `2HqbBkZvEKQkLZ3hjFDCb4voogrMhdDMTAHZbKx8mtDF` |
+| proposal-whitelist-addin | `9Tpa3wZwm21yPFvZtDQYnJic5UGKPNQKqQqCiC6tkUnv` (devnet only — mainnet pending) |
 
 ## Tokens
 
@@ -39,16 +16,16 @@ No claim function. No buyback schedule. No burn schedule. No yield. The buy ladd
 |-------|------|----------|
 | $CRANK | `Fr4cqYmSK1n8H1ePkcpZthKTiXWqN14ZTn9zj1Gnpump` | 6 |
 
-## Status
+## Fee model
 
-- **Shipped:** PDA-vault custody, gas/rent passthrough, bin-farm core, harvester, Discord bot (~13 commands), relay (Bearer-gated REST + WS), per-minute wallet-DB backups.
-- **In flight:** Alchemy gRPC migration, hopper wallet topology (W-Buy / W-Sell / Treasury / Personal + weekly sweep), Hyperliquid perp leg, per-tribe pool funnels.
+- **bin-farm exec fee** — 1% on harvested LP yield, routed to HopperVault. Hopper sweeps 4-way: 25% treasury / 25% admin / 25% ops / 25% tax reserve.
+- **bin-farm settle** — on treasury-matched closes: 25% proposer / 25% tax reserve / 50% treasury (NTP).
 
 ## Build
 
 ```bash
 npm install
-anchor build -p bin_farm
+PATH="$HOME/.cargo/bin:$HOME/.rustup/shims:$PATH" anchor build
 node scripts/generate-clients.mjs
 ```
 
@@ -56,15 +33,14 @@ node scripts/generate-clients.mjs
 
 ```bash
 cp bot/anchor-harvest-bot.env.example bot/.env
-# Edit bot/.env — RPC_URL, GRPC_ENDPOINT, BOT_KEYPAIR_PATH, DISCORD_TOKEN, RELAY_AUTH_TOKEN
+# Edit: RPC_URL, GRPC_ENDPOINT, BOT_KEYPAIR_PATH, DISCORD_TOKEN, RELAY_AUTH_TOKEN
 npm run bot
 ```
 
-## Deeper reading
+## Docs
 
-- `claude.md` — full architecture, file map, PDA seeds, runtime invariants
-- `pivot.md` — operating thesis + 4-wallet hopper topology
-- `conversion.md` — Helius → Alchemy gRPC migration prep
+- `claude.md` — architecture, PDA seeds, runtime invariants, fee model
+- `HANDOFF.md` (repo root) — current deploy state + next-session work
 - `runbooks/` — droplet recovery, keypair separation
 
 ## License

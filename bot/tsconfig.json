@@ -5,7 +5,7 @@
       "esModuleInterop": true,
       "resolveJsonModule": true,
       "outDir": "./dist",
-      "rootDir": ".",
+      "rootDir": "..",
       "strict": false,
       "skipLibCheck": true,
       "moduleResolution": "node"

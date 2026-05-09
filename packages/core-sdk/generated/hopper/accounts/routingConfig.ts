@@ -59,9 +59,10 @@ export type RoutingConfig = {
   discriminator: ReadonlyUint8Array;
   admin: Address;
   pendingAdmin: Address;
-  wBuy: Address;
-  treasury: Address;
-  personal: Address;
+  destTreasury: Address;
+  destAdmin: Address;
+  destOps: Address;
+  destTax: Address;
   solSplitBps: Array<number>;
   solThresholdLamports: bigint;
   crankerTipBps: number;
@@ -73,9 +74,10 @@ export type RoutingConfig = {
 export type RoutingConfigArgs = {
   admin: Address;
   pendingAdmin: Address;
-  wBuy: Address;
-  treasury: Address;
-  personal: Address;
+  destTreasury: Address;
+  destAdmin: Address;
+  destOps: Address;
+  destTax: Address;
   solSplitBps: Array<number>;
   solThresholdLamports: number | bigint;
   crankerTipBps: number;
@@ -90,10 +92,11 @@ export function getRoutingConfigEncoder(): FixedSizeEncoder<RoutingConfigArgs> {
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
       ['admin', getAddressEncoder()],
       ['pendingAdmin', getAddressEncoder()],
-      ['wBuy', getAddressEncoder()],
-      ['treasury', getAddressEncoder()],
-      ['personal', getAddressEncoder()],
-      ['solSplitBps', getArrayEncoder(getU16Encoder(), { size: 3 })],
+      ['destTreasury', getAddressEncoder()],
+      ['destAdmin', getAddressEncoder()],
+      ['destOps', getAddressEncoder()],
+      ['destTax', getAddressEncoder()],
+      ['solSplitBps', getArrayEncoder(getU16Encoder(), { size: 4 })],
       ['solThresholdLamports', getU64Encoder()],
       ['crankerTipBps', getU16Encoder()],
       ['paused', getBooleanEncoder()],
@@ -109,10 +112,11 @@ export function getRoutingConfigDecoder(): FixedSizeDecoder<RoutingConfig> {
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
     ['admin', getAddressDecoder()],
     ['pendingAdmin', getAddressDecoder()],
-    ['wBuy', getAddressDecoder()],
-    ['treasury', getAddressDecoder()],
-    ['personal', getAddressDecoder()],
-    ['solSplitBps', getArrayDecoder(getU16Decoder(), { size: 3 })],
+    ['destTreasury', getAddressDecoder()],
+    ['destAdmin', getAddressDecoder()],
+    ['destOps', getAddressDecoder()],
+    ['destTax', getAddressDecoder()],
+    ['solSplitBps', getArrayDecoder(getU16Decoder(), { size: 4 })],
     ['solThresholdLamports', getU64Decoder()],
     ['crankerTipBps', getU16Decoder()],
     ['paused', getBooleanDecoder()],

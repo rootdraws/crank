@@ -20,20 +20,28 @@ import {
   type ParsedBotUnpauseInstruction,
   type ParsedClaimFeesInstruction,
   type ParsedClosePositionInstruction,
+  type ParsedCloseSettleInstruction,
   type ParsedCreateVaultInstruction,
+  type ParsedExpandConfigV2Instruction,
   type ParsedHarvestBinsInstruction,
   type ParsedInitializeInstruction,
+  type ParsedInitPayoutConfigInstruction,
   type ParsedOpenPositionV2Instruction,
   type ParsedPauseInstruction,
   type ParsedProposeEmergencyCloseInstruction,
+  type ParsedRecordSettleMetaInstruction,
   type ParsedSetFeeBpsInstruction,
   type ParsedSetFeeDestInstruction,
+  type ParsedSetPayoutAdminInstruction,
+  type ParsedSetTaxConfigInstruction,
+  type ParsedSettleProposerInstruction,
   type ParsedTransferAuthorityInstruction,
   type ParsedUnpauseInstruction,
   type ParsedUnwrapWsolInVaultInstruction,
   type ParsedUpdateBotInstruction,
   type ParsedUpdateGasLamportsInstruction,
   type ParsedUpdateKeeperTipBpsInstruction,
+  type ParsedUpdatePayoutConfigInstruction,
   type ParsedUpdatePrioritySlotsInstruction,
   type ParsedUserCloseInstruction,
   type ParsedWithdrawSolInstruction,
@@ -48,6 +56,7 @@ export enum BinFarmAccount {
   Config,
   Position,
   PositionCounter,
+  PositionSettle,
   UserVault,
   Vault,
 }
@@ -93,6 +102,17 @@ export function identifyBinFarmAccount(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([228, 242, 131, 91, 59, 104, 134, 118])
+      ),
+      0
+    )
+  ) {
+    return BinFarmAccount.PositionSettle;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([23, 76, 96, 159, 210, 10, 5, 22])
       ),
       0
@@ -123,20 +143,28 @@ export enum BinFarmInstruction {
   BotUnpause,
   ClaimFees,
   ClosePosition,
+  CloseSettle,
   CreateVault,
+  ExpandConfigV2,
   HarvestBins,
+  InitPayoutConfig,
   Initialize,
   OpenPositionV2,
   Pause,
   ProposeEmergencyClose,
+  RecordSettleMeta,
   SetFeeBps,
   SetFeeDest,
+  SetPayoutAdmin,
+  SetTaxConfig,
+  SettleProposer,
   TransferAuthority,
   Unpause,
   UnwrapWsolInVault,
   UpdateBot,
   UpdateGasLamports,
   UpdateKeeperTipBps,
+  UpdatePayoutConfig,
   UpdatePrioritySlots,
   UserClose,
   WithdrawSol,
@@ -218,6 +246,17 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([103, 225, 116, 192, 252, 122, 244, 82])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.CloseSettle;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([29, 237, 247, 208, 193, 82, 54, 135])
       ),
       0
@@ -229,12 +268,34 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([124, 5, 179, 28, 192, 203, 139, 203])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.ExpandConfigV2;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([94, 39, 110, 216, 191, 68, 13, 196])
       ),
       0
     )
   ) {
     return BinFarmInstruction.HarvestBins;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([73, 17, 51, 86, 143, 36, 82, 34])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.InitPayoutConfig;
   }
   if (
     containsBytes(
@@ -284,6 +345,17 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([175, 155, 196, 107, 102, 138, 77, 242])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.RecordSettleMeta;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([2, 161, 245, 141, 111, 32, 39, 198])
       ),
       0
@@ -301,6 +373,39 @@ export function identifyBinFarmInstruction(
     )
   ) {
     return BinFarmInstruction.SetFeeDest;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([99, 238, 3, 189, 179, 207, 119, 97])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.SetPayoutAdmin;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([233, 167, 201, 217, 26, 135, 197, 130])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.SetTaxConfig;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([7, 106, 17, 75, 224, 170, 157, 11])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.SettleProposer;
   }
   if (
     containsBytes(
@@ -367,6 +472,17 @@ export function identifyBinFarmInstruction(
     )
   ) {
     return BinFarmInstruction.UpdateKeeperTipBps;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([138, 7, 27, 84, 247, 253, 152, 38])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.UpdatePayoutConfig;
   }
   if (
     containsBytes(
@@ -450,11 +566,20 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.ClosePosition;
     } & ParsedClosePositionInstruction<TProgram>)
   | ({
+      instructionType: BinFarmInstruction.CloseSettle;
+    } & ParsedCloseSettleInstruction<TProgram>)
+  | ({
       instructionType: BinFarmInstruction.CreateVault;
     } & ParsedCreateVaultInstruction<TProgram>)
   | ({
+      instructionType: BinFarmInstruction.ExpandConfigV2;
+    } & ParsedExpandConfigV2Instruction<TProgram>)
+  | ({
       instructionType: BinFarmInstruction.HarvestBins;
     } & ParsedHarvestBinsInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.InitPayoutConfig;
+    } & ParsedInitPayoutConfigInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.Initialize;
     } & ParsedInitializeInstruction<TProgram>)
@@ -468,11 +593,23 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.ProposeEmergencyClose;
     } & ParsedProposeEmergencyCloseInstruction<TProgram>)
   | ({
+      instructionType: BinFarmInstruction.RecordSettleMeta;
+    } & ParsedRecordSettleMetaInstruction<TProgram>)
+  | ({
       instructionType: BinFarmInstruction.SetFeeBps;
     } & ParsedSetFeeBpsInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.SetFeeDest;
     } & ParsedSetFeeDestInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.SetPayoutAdmin;
+    } & ParsedSetPayoutAdminInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.SetTaxConfig;
+    } & ParsedSetTaxConfigInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.SettleProposer;
+    } & ParsedSettleProposerInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.TransferAuthority;
     } & ParsedTransferAuthorityInstruction<TProgram>)
@@ -491,6 +628,9 @@ export type ParsedBinFarmInstruction<
   | ({
       instructionType: BinFarmInstruction.UpdateKeeperTipBps;
     } & ParsedUpdateKeeperTipBpsInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.UpdatePayoutConfig;
+    } & ParsedUpdatePayoutConfigInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.UpdatePrioritySlots;
     } & ParsedUpdatePrioritySlotsInstruction<TProgram>)

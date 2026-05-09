@@ -24,14 +24,12 @@ import {
 
 export type TokenRouteRegisteredEvent = {
   mint: Address;
-  destination: Address;
   threshold: bigint;
   ts: bigint;
 };
 
 export type TokenRouteRegisteredEventArgs = {
   mint: Address;
-  destination: Address;
   threshold: number | bigint;
   ts: number | bigint;
 };
@@ -39,7 +37,6 @@ export type TokenRouteRegisteredEventArgs = {
 export function getTokenRouteRegisteredEventEncoder(): FixedSizeEncoder<TokenRouteRegisteredEventArgs> {
   return getStructEncoder([
     ['mint', getAddressEncoder()],
-    ['destination', getAddressEncoder()],
     ['threshold', getU64Encoder()],
     ['ts', getI64Encoder()],
   ]);
@@ -48,7 +45,6 @@ export function getTokenRouteRegisteredEventEncoder(): FixedSizeEncoder<TokenRou
 export function getTokenRouteRegisteredEventDecoder(): FixedSizeDecoder<TokenRouteRegisteredEvent> {
   return getStructDecoder([
     ['mint', getAddressDecoder()],
-    ['destination', getAddressDecoder()],
     ['threshold', getU64Decoder()],
     ['ts', getI64Decoder()],
   ]);

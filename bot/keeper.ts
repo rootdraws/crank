@@ -278,7 +278,7 @@ export class MonkeKeeper {
   private async crankRefreshSupplies(): Promise<void> {
     try {
       const { loadPoolRegistry, setPoolSupply } = await import('../packages/core-sdk/pool-config');
-      const { getMint } = await import('@solana/spl-token');
+      const { getMint, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await import('@solana/spl-token');
 
       const pools = loadPoolRegistry();
       const seen = new Set<string>();
@@ -291,7 +291,13 @@ export class MonkeKeeper {
         seen.add(mintAddr);
 
         try {
-          const mint = await getMint(this.connection, new PublicKey(mintAddr));
+          // Detect token program (legacy SPL vs Token-2022) — CRANK is the latter.
+          // getMint defaults to legacy and fails with "InvalidAccountData" on Token-2022 mints.
+          const mintPubkey = new PublicKey(mintAddr);
+          const acct = await this.connection.getAccountInfo(mintPubkey);
+          if (!acct) throw new Error(`mint ${mintAddr} not found`);
+          const programId = acct.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+          const mint = await getMint(this.connection, mintPubkey, undefined, programId);
           const humanSupply = Number(mint.supply) / 10 ** mint.decimals;
           const touched = setPoolSupply(mintAddr, humanSupply);
           logger.info(`  [keeper] refresh supply ${p.tokenX} = ${humanSupply.toFixed(0)} (${touched} pool(s))`);

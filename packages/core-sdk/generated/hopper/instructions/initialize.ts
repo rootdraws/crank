@@ -81,18 +81,20 @@ export type InitializeInstruction<
 
 export type InitializeInstructionData = {
   discriminator: ReadonlyUint8Array;
-  wBuy: Address;
-  treasury: Address;
-  personal: Address;
+  destTreasury: Address;
+  destAdmin: Address;
+  destOps: Address;
+  destTax: Address;
   solSplitBps: Array<number>;
   solThresholdLamports: bigint;
   crankerTipBps: number;
 };
 
 export type InitializeInstructionDataArgs = {
-  wBuy: Address;
-  treasury: Address;
-  personal: Address;
+  destTreasury: Address;
+  destAdmin: Address;
+  destOps: Address;
+  destTax: Address;
   solSplitBps: Array<number>;
   solThresholdLamports: number | bigint;
   crankerTipBps: number;
@@ -102,10 +104,11 @@ export function getInitializeInstructionDataEncoder(): FixedSizeEncoder<Initiali
   return transformEncoder(
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
-      ['wBuy', getAddressEncoder()],
-      ['treasury', getAddressEncoder()],
-      ['personal', getAddressEncoder()],
-      ['solSplitBps', getArrayEncoder(getU16Encoder(), { size: 3 })],
+      ['destTreasury', getAddressEncoder()],
+      ['destAdmin', getAddressEncoder()],
+      ['destOps', getAddressEncoder()],
+      ['destTax', getAddressEncoder()],
+      ['solSplitBps', getArrayEncoder(getU16Encoder(), { size: 4 })],
       ['solThresholdLamports', getU64Encoder()],
       ['crankerTipBps', getU16Encoder()],
     ]),
@@ -116,10 +119,11 @@ export function getInitializeInstructionDataEncoder(): FixedSizeEncoder<Initiali
 export function getInitializeInstructionDataDecoder(): FixedSizeDecoder<InitializeInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
-    ['wBuy', getAddressDecoder()],
-    ['treasury', getAddressDecoder()],
-    ['personal', getAddressDecoder()],
-    ['solSplitBps', getArrayDecoder(getU16Decoder(), { size: 3 })],
+    ['destTreasury', getAddressDecoder()],
+    ['destAdmin', getAddressDecoder()],
+    ['destOps', getAddressDecoder()],
+    ['destTax', getAddressDecoder()],
+    ['solSplitBps', getArrayDecoder(getU16Decoder(), { size: 4 })],
     ['solThresholdLamports', getU64Decoder()],
     ['crankerTipBps', getU16Decoder()],
   ]);
@@ -145,9 +149,10 @@ export type InitializeAsyncInput<
   routingConfig?: Address<TAccountRoutingConfig>;
   hopperVault?: Address<TAccountHopperVault>;
   systemProgram?: Address<TAccountSystemProgram>;
-  wBuy: InitializeInstructionDataArgs['wBuy'];
-  treasury: InitializeInstructionDataArgs['treasury'];
-  personal: InitializeInstructionDataArgs['personal'];
+  destTreasury: InitializeInstructionDataArgs['destTreasury'];
+  destAdmin: InitializeInstructionDataArgs['destAdmin'];
+  destOps: InitializeInstructionDataArgs['destOps'];
+  destTax: InitializeInstructionDataArgs['destTax'];
   solSplitBps: InitializeInstructionDataArgs['solSplitBps'];
   solThresholdLamports: InitializeInstructionDataArgs['solThresholdLamports'];
   crankerTipBps: InitializeInstructionDataArgs['crankerTipBps'];
@@ -255,9 +260,10 @@ export type InitializeInput<
   routingConfig: Address<TAccountRoutingConfig>;
   hopperVault: Address<TAccountHopperVault>;
   systemProgram?: Address<TAccountSystemProgram>;
-  wBuy: InitializeInstructionDataArgs['wBuy'];
-  treasury: InitializeInstructionDataArgs['treasury'];
-  personal: InitializeInstructionDataArgs['personal'];
+  destTreasury: InitializeInstructionDataArgs['destTreasury'];
+  destAdmin: InitializeInstructionDataArgs['destAdmin'];
+  destOps: InitializeInstructionDataArgs['destOps'];
+  destTax: InitializeInstructionDataArgs['destTax'];
   solSplitBps: InitializeInstructionDataArgs['solSplitBps'];
   solThresholdLamports: InitializeInstructionDataArgs['solThresholdLamports'];
   crankerTipBps: InitializeInstructionDataArgs['crankerTipBps'];

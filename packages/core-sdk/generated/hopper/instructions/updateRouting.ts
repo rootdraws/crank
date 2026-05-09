@@ -77,18 +77,20 @@ export type UpdateRoutingInstruction<
 
 export type UpdateRoutingInstructionData = {
   discriminator: ReadonlyUint8Array;
-  newWBuy: Option<Address>;
-  newTreasury: Option<Address>;
-  newPersonal: Option<Address>;
+  newDestTreasury: Option<Address>;
+  newDestAdmin: Option<Address>;
+  newDestOps: Option<Address>;
+  newDestTax: Option<Address>;
   newSolSplitBps: Option<Array<number>>;
   newSolThresholdLamports: Option<bigint>;
   newCrankerTipBps: Option<number>;
 };
 
 export type UpdateRoutingInstructionDataArgs = {
-  newWBuy: OptionOrNullable<Address>;
-  newTreasury: OptionOrNullable<Address>;
-  newPersonal: OptionOrNullable<Address>;
+  newDestTreasury: OptionOrNullable<Address>;
+  newDestAdmin: OptionOrNullable<Address>;
+  newDestOps: OptionOrNullable<Address>;
+  newDestTax: OptionOrNullable<Address>;
   newSolSplitBps: OptionOrNullable<Array<number>>;
   newSolThresholdLamports: OptionOrNullable<number | bigint>;
   newCrankerTipBps: OptionOrNullable<number>;
@@ -98,12 +100,13 @@ export function getUpdateRoutingInstructionDataEncoder(): Encoder<UpdateRoutingI
   return transformEncoder(
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
-      ['newWBuy', getOptionEncoder(getAddressEncoder())],
-      ['newTreasury', getOptionEncoder(getAddressEncoder())],
-      ['newPersonal', getOptionEncoder(getAddressEncoder())],
+      ['newDestTreasury', getOptionEncoder(getAddressEncoder())],
+      ['newDestAdmin', getOptionEncoder(getAddressEncoder())],
+      ['newDestOps', getOptionEncoder(getAddressEncoder())],
+      ['newDestTax', getOptionEncoder(getAddressEncoder())],
       [
         'newSolSplitBps',
-        getOptionEncoder(getArrayEncoder(getU16Encoder(), { size: 3 })),
+        getOptionEncoder(getArrayEncoder(getU16Encoder(), { size: 4 })),
       ],
       ['newSolThresholdLamports', getOptionEncoder(getU64Encoder())],
       ['newCrankerTipBps', getOptionEncoder(getU16Encoder())],
@@ -115,12 +118,13 @@ export function getUpdateRoutingInstructionDataEncoder(): Encoder<UpdateRoutingI
 export function getUpdateRoutingInstructionDataDecoder(): Decoder<UpdateRoutingInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
-    ['newWBuy', getOptionDecoder(getAddressDecoder())],
-    ['newTreasury', getOptionDecoder(getAddressDecoder())],
-    ['newPersonal', getOptionDecoder(getAddressDecoder())],
+    ['newDestTreasury', getOptionDecoder(getAddressDecoder())],
+    ['newDestAdmin', getOptionDecoder(getAddressDecoder())],
+    ['newDestOps', getOptionDecoder(getAddressDecoder())],
+    ['newDestTax', getOptionDecoder(getAddressDecoder())],
     [
       'newSolSplitBps',
-      getOptionDecoder(getArrayDecoder(getU16Decoder(), { size: 3 })),
+      getOptionDecoder(getArrayDecoder(getU16Decoder(), { size: 4 })),
     ],
     ['newSolThresholdLamports', getOptionDecoder(getU64Decoder())],
     ['newCrankerTipBps', getOptionDecoder(getU16Decoder())],
@@ -143,9 +147,10 @@ export type UpdateRoutingAsyncInput<
 > = {
   admin: TransactionSigner<TAccountAdmin>;
   routingConfig?: Address<TAccountRoutingConfig>;
-  newWBuy: UpdateRoutingInstructionDataArgs['newWBuy'];
-  newTreasury: UpdateRoutingInstructionDataArgs['newTreasury'];
-  newPersonal: UpdateRoutingInstructionDataArgs['newPersonal'];
+  newDestTreasury: UpdateRoutingInstructionDataArgs['newDestTreasury'];
+  newDestAdmin: UpdateRoutingInstructionDataArgs['newDestAdmin'];
+  newDestOps: UpdateRoutingInstructionDataArgs['newDestOps'];
+  newDestTax: UpdateRoutingInstructionDataArgs['newDestTax'];
   newSolSplitBps: UpdateRoutingInstructionDataArgs['newSolSplitBps'];
   newSolThresholdLamports: UpdateRoutingInstructionDataArgs['newSolThresholdLamports'];
   newCrankerTipBps: UpdateRoutingInstructionDataArgs['newCrankerTipBps'];
@@ -218,9 +223,10 @@ export type UpdateRoutingInput<
 > = {
   admin: TransactionSigner<TAccountAdmin>;
   routingConfig: Address<TAccountRoutingConfig>;
-  newWBuy: UpdateRoutingInstructionDataArgs['newWBuy'];
-  newTreasury: UpdateRoutingInstructionDataArgs['newTreasury'];
-  newPersonal: UpdateRoutingInstructionDataArgs['newPersonal'];
+  newDestTreasury: UpdateRoutingInstructionDataArgs['newDestTreasury'];
+  newDestAdmin: UpdateRoutingInstructionDataArgs['newDestAdmin'];
+  newDestOps: UpdateRoutingInstructionDataArgs['newDestOps'];
+  newDestTax: UpdateRoutingInstructionDataArgs['newDestTax'];
   newSolSplitBps: UpdateRoutingInstructionDataArgs['newSolSplitBps'];
   newSolThresholdLamports: UpdateRoutingInstructionDataArgs['newSolThresholdLamports'];
   newCrankerTipBps: UpdateRoutingInstructionDataArgs['newCrankerTipBps'];

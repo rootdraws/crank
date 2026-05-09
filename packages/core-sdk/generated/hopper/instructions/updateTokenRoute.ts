@@ -10,8 +10,6 @@ import {
   combineCodec,
   fixDecoderSize,
   fixEncoderSize,
-  getAddressDecoder,
-  getAddressEncoder,
   getBooleanDecoder,
   getBooleanEncoder,
   getBytesDecoder,
@@ -80,13 +78,11 @@ export type UpdateTokenRouteInstruction<
 
 export type UpdateTokenRouteInstructionData = {
   discriminator: ReadonlyUint8Array;
-  newDestination: Option<Address>;
   newThreshold: Option<bigint>;
   newEnabled: Option<boolean>;
 };
 
 export type UpdateTokenRouteInstructionDataArgs = {
-  newDestination: OptionOrNullable<Address>;
   newThreshold: OptionOrNullable<number | bigint>;
   newEnabled: OptionOrNullable<boolean>;
 };
@@ -95,7 +91,6 @@ export function getUpdateTokenRouteInstructionDataEncoder(): Encoder<UpdateToken
   return transformEncoder(
     getStructEncoder([
       ['discriminator', fixEncoderSize(getBytesEncoder(), 8)],
-      ['newDestination', getOptionEncoder(getAddressEncoder())],
       ['newThreshold', getOptionEncoder(getU64Encoder())],
       ['newEnabled', getOptionEncoder(getBooleanEncoder())],
     ]),
@@ -106,7 +101,6 @@ export function getUpdateTokenRouteInstructionDataEncoder(): Encoder<UpdateToken
 export function getUpdateTokenRouteInstructionDataDecoder(): Decoder<UpdateTokenRouteInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
-    ['newDestination', getOptionDecoder(getAddressDecoder())],
     ['newThreshold', getOptionDecoder(getU64Decoder())],
     ['newEnabled', getOptionDecoder(getBooleanDecoder())],
   ]);
@@ -130,7 +124,6 @@ export type UpdateTokenRouteAsyncInput<
   admin: TransactionSigner<TAccountAdmin>;
   routingConfig?: Address<TAccountRoutingConfig>;
   tokenRoute: Address<TAccountTokenRoute>;
-  newDestination: UpdateTokenRouteInstructionDataArgs['newDestination'];
   newThreshold: UpdateTokenRouteInstructionDataArgs['newThreshold'];
   newEnabled: UpdateTokenRouteInstructionDataArgs['newEnabled'];
 };
@@ -213,7 +206,6 @@ export type UpdateTokenRouteInput<
   admin: TransactionSigner<TAccountAdmin>;
   routingConfig: Address<TAccountRoutingConfig>;
   tokenRoute: Address<TAccountTokenRoute>;
-  newDestination: UpdateTokenRouteInstructionDataArgs['newDestination'];
   newThreshold: UpdateTokenRouteInstructionDataArgs['newThreshold'];
   newEnabled: UpdateTokenRouteInstructionDataArgs['newEnabled'];
 };
