@@ -178,6 +178,251 @@
       "args": []
     },
     {
+      "name": "authorize_treasury_close",
+      "docs": [
+        "Marker ix of the CLOSE proposal payload. Creates a TradeAuth (action=Close)",
+        "the bot will consume via `treasury_close_combined`. The position to close",
+        "is identified by lb_pair + (off-chain) the proposer-recorded",
+        "PositionSettle reference; the on-chain authority binding is via",
+        "auth.user_vault and auth.lb_pair."
+      ],
+      "discriminator": [
+        89,
+        219,
+        178,
+        7,
+        42,
+        244,
+        65,
+        113
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault.owner",
+                "account": "UserVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lb_pair"
+        },
+        {
+          "name": "trade_auth",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  100,
+                  101,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "proposer",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "authorize_treasury_open",
+      "docs": [
+        "Marker ix #1 of the OPEN proposal payload. Creates a TradeAuth PDA the",
+        "bot will consume via `treasury_open_combined` after proposal execute."
+      ],
+      "discriminator": [
+        204,
+        3,
+        120,
+        244,
+        185,
+        133,
+        44,
+        231
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Must equal `user_vault.owner`. For the treasury vault that's NTP,",
+            "signable only via SPL Governance executeTransaction."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault.owner",
+                "account": "UserVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "lb_pair"
+        },
+        {
+          "name": "trade_auth",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  100,
+                  101,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "side",
+          "type": "u8"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "min_bin_id",
+          "type": "i32"
+        },
+        {
+          "name": "max_bin_id",
+          "type": "i32"
+        },
+        {
+          "name": "slippage",
+          "type": "i32"
+        },
+        {
+          "name": "proposer",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "bot_pause",
       "discriminator": [
         213,
@@ -248,6 +493,61 @@
                   105,
                   103
                 ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_expired_trade_auth",
+      "docs": [
+        "Bot-signed recovery: close an expired TradeAuth that wasn't consumed.",
+        "Refunds rent to bot. Required because `init` on the marker ix blocks any",
+        "new TradeAuth while a stale one exists for the same user_vault, and there",
+        "is no other path to close a TradeAuth outside of consume."
+      ],
+      "discriminator": [
+        59,
+        238,
+        91,
+        136,
+        23,
+        130,
+        80,
+        48
+      ],
+      "accounts": [
+        {
+          "name": "bot",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "trade_auth",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  100,
+                  101,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "trade_auth.user_vault",
+                "account": "TradeAuth"
               }
             ]
           }
@@ -635,6 +935,45 @@
           "name": "memo_program"
         },
         {
+          "name": "position_settle",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  95,
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.meteora_position",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "proposer_output_ata",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "tax_reserve_output_ata",
+          "writable": true,
+          "optional": true
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }
@@ -804,6 +1143,174 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit_treasury_token",
+      "docs": [
+        "Move SPL/Token-2022 tokens from `vault.owner`'s ATA → vault's ATA.",
+        "Governance-only: caller must equal `user_vault.owner` (i.e. NTP, signed by",
+        "SPL Governance via `invoke_signed` during proposal execution).",
+        "",
+        "Used in Path B OPEN payloads to flow working capital from the protocol's",
+        "visible NTP-ATA reserves into the treasury vault for one trade. Pair with",
+        "`withdraw_treasury_token` in the CLOSE payload to return the residue."
+      ],
+      "discriminator": [
+        63,
+        196,
+        128,
+        255,
+        53,
+        51,
+        103,
+        82
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Must equal `user_vault.owner`. For the treasury vault that's the",
+            "Native Treasury PDA, signable only via SPL Governance executeTransaction."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault.owner",
+                "account": "UserVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_mint"
+        },
+        {
+          "name": "owner_token_account",
+          "docs": [
+            "Source: caller-owned ATA (for treasury vault, this is NTP's direct ATA —",
+            "the one Realms displays)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "vault_token_account",
+          "docs": [
+            "Destination: vault PDA's ATA."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "drain_treasury_native_to_ntp",
+      "docs": [
+        "Drain native lamports from the treasury user_vault back to the NTP",
+        "(= user_vault.owner). Governance-signed only (caller must equal",
+        "user_vault.owner; for the treasury vault that's the NTP, signable only",
+        "via SPL Governance executeTransaction). One-shot cleanup for operational",
+        "SOL pre-existing before Path B stopped using user_vault as a gas/rent",
+        "float. Leaves rent-exempt minimum behind so the PDA stays alive."
+      ],
+      "discriminator": [
+        144,
+        47,
+        152,
+        42,
+        52,
+        57,
+        25,
+        38
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Must equal `user_vault.owner` (NTP for the treasury vault). Signable",
+            "only via SPL Governance executeTransaction; the proposal-whitelist-addin",
+            "must list this ix on the registrar whitelist for the proposal to pass."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "user_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault.owner",
+                "account": "UserVault"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -2116,6 +2623,623 @@
       ]
     },
     {
+      "name": "treasury_close_combined",
+      "docs": [
+        "Bot-signed direct tx — consumes a TradeAuth (action=Close) and inlines",
+        "settle_proposer + user_close + close_settle. The TradeAuth is closed",
+        "(rent → bot) on success."
+      ],
+      "discriminator": [
+        133,
+        69,
+        4,
+        90,
+        130,
+        239,
+        9,
+        111
+      ],
+      "accounts": [
+        {
+          "name": "bot",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault.owner",
+                "account": "UserVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "docs": [
+            "Closed manually in handler (lamports → bot, discriminator zeroed) to",
+            "avoid Anchor close = X stack pressure in try_accounts (4KB BPF ceiling)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.meteora_position",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "docs": [
+            "Closed manually in handler (see `position`)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.meteora_position",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "meteora_position",
+          "writable": true
+        },
+        {
+          "name": "lb_pair",
+          "writable": true
+        },
+        {
+          "name": "bin_array_bitmap_ext"
+        },
+        {
+          "name": "bin_array_lower",
+          "writable": true
+        },
+        {
+          "name": "bin_array_upper",
+          "writable": true
+        },
+        {
+          "name": "reserve_x",
+          "writable": true
+        },
+        {
+          "name": "reserve_y",
+          "writable": true
+        },
+        {
+          "name": "token_x_mint"
+        },
+        {
+          "name": "token_y_mint"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "dlmm_program"
+        },
+        {
+          "name": "vault_token_x",
+          "writable": true
+        },
+        {
+          "name": "vault_token_y",
+          "writable": true
+        },
+        {
+          "name": "ntp_token_x_ata",
+          "docs": [
+            "NTP's direct token-X ATA (CRANK for CRANK/SOL pool). Residue X transfers",
+            "here on close — Realms-visible. Owner+mint constrained on-chain."
+          ],
+          "writable": true
+        },
+        {
+          "name": "ntp_sol_account",
+          "docs": [
+            "WSOL ATA close — auto-unwraps WSOL balance into NTP's native SOL."
+          ],
+          "writable": true
+        },
+        {
+          "name": "fee_dest"
+        },
+        {
+          "name": "fee_dest_token_x",
+          "writable": true
+        },
+        {
+          "name": "fee_dest_token_y",
+          "writable": true
+        },
+        {
+          "name": "token_x_program"
+        },
+        {
+          "name": "token_y_program"
+        },
+        {
+          "name": "memo_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "position_settle",
+          "docs": [
+            "Closed manually in handler (see `position`)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  95,
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "meteora_position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "output_mint"
+        },
+        {
+          "name": "position_vault_output_ata",
+          "writable": true
+        },
+        {
+          "name": "proposer_output_ata",
+          "writable": true
+        },
+        {
+          "name": "tax_reserve_output_ata",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "output_token_program"
+        },
+        {
+          "name": "trade_auth",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  100,
+                  101,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "treasury_open_combined",
+      "docs": [
+        "Bot-signed direct tx — consumes a TradeAuth (action=Open) and inlines",
+        "deposit + open_position + record_settle in one atomic CPI. The TradeAuth",
+        "is closed (rent → bot) on success.",
+        "",
+        "Source-of-truth for the trade params is the on-chain TradeAuth, NOT bot",
+        "args, so a compromised bot cannot deviate from what governance approved."
+      ],
+      "discriminator": [
+        132,
+        165,
+        71,
+        200,
+        215,
+        71,
+        74,
+        251
+      ],
+      "accounts": [
+        {
+          "name": "bot",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "user_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault.owner",
+                "account": "UserVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "lb_pair",
+          "writable": true
+        },
+        {
+          "name": "position_counter",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  95,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault"
+              },
+              {
+                "kind": "account",
+                "path": "lb_pair"
+              }
+            ]
+          }
+        },
+        {
+          "name": "meteora_position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  101,
+                  116,
+                  101,
+                  111,
+                  114,
+                  97,
+                  95,
+                  112,
+                  111,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault"
+              },
+              {
+                "kind": "account",
+                "path": "lb_pair"
+              },
+              {
+                "kind": "account",
+                "path": "position_counter.count",
+                "account": "PositionCounter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bin_array_bitmap_ext"
+        },
+        {
+          "name": "reserve_x",
+          "writable": true
+        },
+        {
+          "name": "reserve_y",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "meteora_position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "meteora_position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_vault_deposit_ata",
+          "writable": true
+        },
+        {
+          "name": "vault_token_x",
+          "writable": true
+        },
+        {
+          "name": "vault_token_y",
+          "writable": true
+        },
+        {
+          "name": "token_x_program"
+        },
+        {
+          "name": "token_y_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "bin_array_lower",
+          "writable": true
+        },
+        {
+          "name": "bin_array_upper",
+          "writable": true
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "dlmm_program"
+        },
+        {
+          "name": "token_x_mint"
+        },
+        {
+          "name": "token_y_mint"
+        },
+        {
+          "name": "caller_token_account",
+          "docs": [
+            "Source: vault.owner's direct ATA (NTP's CRANK or WSOL ATA).",
+            "Bot must have been pre-approved as Token-2022 delegate over this ATA",
+            "via a one-time governance proposal (see Phase 7 of marker plan)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "deposit_token_mint",
+          "docs": [
+            "transfer_checked enforces mint match against caller_token_account."
+          ]
+        },
+        {
+          "name": "deposit_token_program"
+        },
+        {
+          "name": "position_settle",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  95,
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "meteora_position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "trade_auth",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  97,
+                  100,
+                  101,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "_rent_lamports",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "unpause",
       "discriminator": [
         169,
@@ -2674,6 +3798,45 @@
           "name": "memo_program"
         },
         {
+          "name": "position_settle",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  95,
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.meteora_position",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "proposer_output_ata",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "tax_reserve_output_ata",
+          "writable": true,
+          "optional": true
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }
@@ -2851,6 +4014,157 @@
       ]
     },
     {
+      "name": "withdraw_treasury_token",
+      "docs": [
+        "Move SPL/Token-2022 tokens from vault's ATA → `vault.owner`'s ATA.",
+        "Governance-only: caller must equal `user_vault.owner` (NTP via",
+        "SPL Governance `invoke_signed`).",
+        "",
+        "Used in Path B CLOSE payloads to return residual treasury working capital",
+        "to NTP's direct ATA, restoring Realms-visible reserves. Distinct from",
+        "`withdraw_token`, which is dual-callable by the bot for the Path A surface."
+      ],
+      "discriminator": [
+        63,
+        112,
+        138,
+        126,
+        181,
+        23,
+        101,
+        154
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Must equal `user_vault.owner`. For the treasury vault that's the",
+            "Native Treasury PDA, signable only via SPL Governance executeTransaction."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_vault.owner",
+                "account": "UserVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_mint"
+        },
+        {
+          "name": "vault_token_account",
+          "docs": [
+            "Source: vault PDA's ATA. Authority is the vault PDA (signed by seeds)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "owner_token_account",
+          "docs": [
+            "Destination: caller-owned ATA (for treasury vault, this is NTP's direct",
+            "ATA — restores Realms-visible reserves)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "wrap_caller_sol",
+      "docs": [
+        "Wrap native SOL → WSOL in a caller-owned WSOL ATA.",
+        "Generic: source = caller's lamports (must be system-owned), destination =",
+        "any WSOL ATA where `token::authority == caller`. Used in Path B open marker",
+        "proposals to atomically wrap NTP native lamports → NTP's WSOL ATA inside",
+        "the same governance tx that mints `TradeAuth`. Caller signs as Signer,",
+        "so for NTP use governance signs via `invoke_signed`."
+      ],
+      "discriminator": [
+        203,
+        147,
+        177,
+        25,
+        195,
+        217,
+        13,
+        84
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "caller_wsol_ata",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "wrap_sol_in_vault",
       "docs": [
         "Wrap native SOL in user vault to WSOL in the vault's WSOL ATA.",
@@ -2986,6 +4300,19 @@
         104,
         134,
         118
+      ]
+    },
+    {
+      "name": "TradeAuth",
+      "discriminator": [
+        231,
+        65,
+        252,
+        89,
+        210,
+        254,
+        16,
+        139
       ]
     },
     {
@@ -3396,6 +4723,51 @@
       "code": 6054,
       "name": "InvalidTaxReserveAta",
       "msg": "Tax reserve ATA missing or owner mismatch"
+    },
+    {
+      "code": 6055,
+      "name": "TradeAuthExpired",
+      "msg": "TradeAuth has expired"
+    },
+    {
+      "code": 6056,
+      "name": "TradeAuthNotExpired",
+      "msg": "TradeAuth has not yet expired — cannot cancel"
+    },
+    {
+      "code": 6057,
+      "name": "TradeAuthBotMismatch",
+      "msg": "TradeAuth bot does not match Config.bot"
+    },
+    {
+      "code": 6058,
+      "name": "TradeAuthVaultMismatch",
+      "msg": "TradeAuth user_vault does not match passed vault"
+    },
+    {
+      "code": 6059,
+      "name": "TradeAuthPoolMismatch",
+      "msg": "TradeAuth lb_pair does not match passed pool"
+    },
+    {
+      "code": 6060,
+      "name": "TradeAuthActionMismatch",
+      "msg": "TradeAuth action mismatch (open/close)"
+    },
+    {
+      "code": 6061,
+      "name": "TradeAuthSourceAtaMismatch",
+      "msg": "TradeAuth source ATA must be vault.owner's direct ATA"
+    },
+    {
+      "code": 6062,
+      "name": "TradeAuthInvalidSide",
+      "msg": "TradeAuth side byte invalid (must be 0=Sell or 1=Buy)"
+    },
+    {
+      "code": 6063,
+      "name": "MissingProposerAta",
+      "msg": "position_settle was passed but proposer_output_ata is missing"
     }
   ],
   "types": [
@@ -3852,6 +5224,69 @@
           },
           {
             "name": "Sell"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TradeAuth",
+      "docs": [
+        "Marker PDA created by `authorize_treasury_*` (governance-gated). Consumed +",
+        "closed by `treasury_*_combined` (bot-signed direct tx). One active auth per",
+        "treasury vault — serializes governance trades and prevents reuse.",
+        "",
+        "Seeds: [b\"trade_auth\", user_vault.as_ref()]"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bot",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposer",
+            "type": "pubkey"
+          },
+          {
+            "name": "lb_pair",
+            "type": "pubkey"
+          },
+          {
+            "name": "user_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "action",
+            "type": "u8"
+          },
+          {
+            "name": "side",
+            "type": "u8"
+          },
+          {
+            "name": "min_bin_id",
+            "type": "i32"
+          },
+          {
+            "name": "max_bin_id",
+            "type": "i32"
+          },
+          {
+            "name": "slippage",
+            "type": "i32"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }

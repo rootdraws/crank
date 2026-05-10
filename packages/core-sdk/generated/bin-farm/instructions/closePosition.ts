@@ -72,6 +72,9 @@ export type ClosePositionInstruction<
   TAccountTokenXProgram extends string | AccountMeta<string> = string,
   TAccountTokenYProgram extends string | AccountMeta<string> = string,
   TAccountMemoProgram extends string | AccountMeta<string> = string,
+  TAccountPositionSettle extends string | AccountMeta<string> = string,
+  TAccountProposerOutputAta extends string | AccountMeta<string> = string,
+  TAccountTaxReserveOutputAta extends string | AccountMeta<string> = string,
   TAccountSystemProgram extends string | AccountMeta<string> =
     '11111111111111111111111111111111',
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -157,6 +160,15 @@ export type ClosePositionInstruction<
       TAccountMemoProgram extends string
         ? ReadonlyAccount<TAccountMemoProgram>
         : TAccountMemoProgram,
+      TAccountPositionSettle extends string
+        ? WritableAccount<TAccountPositionSettle>
+        : TAccountPositionSettle,
+      TAccountProposerOutputAta extends string
+        ? WritableAccount<TAccountProposerOutputAta>
+        : TAccountProposerOutputAta,
+      TAccountTaxReserveOutputAta extends string
+        ? WritableAccount<TAccountTaxReserveOutputAta>
+        : TAccountTaxReserveOutputAta,
       TAccountSystemProgram extends string
         ? ReadonlyAccount<TAccountSystemProgram>
         : TAccountSystemProgram,
@@ -220,6 +232,9 @@ export type ClosePositionAsyncInput<
   TAccountTokenXProgram extends string = string,
   TAccountTokenYProgram extends string = string,
   TAccountMemoProgram extends string = string,
+  TAccountPositionSettle extends string = string,
+  TAccountProposerOutputAta extends string = string,
+  TAccountTaxReserveOutputAta extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
   bot: TransactionSigner<TAccountBot>;
@@ -249,6 +264,9 @@ export type ClosePositionAsyncInput<
   tokenXProgram: Address<TAccountTokenXProgram>;
   tokenYProgram: Address<TAccountTokenYProgram>;
   memoProgram: Address<TAccountMemoProgram>;
+  positionSettle?: Address<TAccountPositionSettle>;
+  proposerOutputAta?: Address<TAccountProposerOutputAta>;
+  taxReserveOutputAta?: Address<TAccountTaxReserveOutputAta>;
   systemProgram?: Address<TAccountSystemProgram>;
 };
 
@@ -279,6 +297,9 @@ export async function getClosePositionInstructionAsync<
   TAccountTokenXProgram extends string,
   TAccountTokenYProgram extends string,
   TAccountMemoProgram extends string,
+  TAccountPositionSettle extends string,
+  TAccountProposerOutputAta extends string,
+  TAccountTaxReserveOutputAta extends string,
   TAccountSystemProgram extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
@@ -309,6 +330,9 @@ export async function getClosePositionInstructionAsync<
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountPositionSettle,
+    TAccountProposerOutputAta,
+    TAccountTaxReserveOutputAta,
     TAccountSystemProgram
   >,
   config?: { programAddress?: TProgramAddress }
@@ -341,6 +365,9 @@ export async function getClosePositionInstructionAsync<
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountPositionSettle,
+    TAccountProposerOutputAta,
+    TAccountTaxReserveOutputAta,
     TAccountSystemProgram
   >
 > {
@@ -378,6 +405,15 @@ export async function getClosePositionInstructionAsync<
     tokenXProgram: { value: input.tokenXProgram ?? null, isWritable: false },
     tokenYProgram: { value: input.tokenYProgram ?? null, isWritable: false },
     memoProgram: { value: input.memoProgram ?? null, isWritable: false },
+    positionSettle: { value: input.positionSettle ?? null, isWritable: true },
+    proposerOutputAta: {
+      value: input.proposerOutputAta ?? null,
+      isWritable: true,
+    },
+    taxReserveOutputAta: {
+      value: input.taxReserveOutputAta ?? null,
+      isWritable: true,
+    },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
@@ -428,6 +464,9 @@ export async function getClosePositionInstructionAsync<
       getAccountMeta(accounts.tokenXProgram),
       getAccountMeta(accounts.tokenYProgram),
       getAccountMeta(accounts.memoProgram),
+      getAccountMeta(accounts.positionSettle),
+      getAccountMeta(accounts.proposerOutputAta),
+      getAccountMeta(accounts.taxReserveOutputAta),
       getAccountMeta(accounts.systemProgram),
     ],
     data: getClosePositionInstructionDataEncoder().encode({}),
@@ -460,6 +499,9 @@ export async function getClosePositionInstructionAsync<
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountPositionSettle,
+    TAccountProposerOutputAta,
+    TAccountTaxReserveOutputAta,
     TAccountSystemProgram
   >);
 }
@@ -491,6 +533,9 @@ export type ClosePositionInput<
   TAccountTokenXProgram extends string = string,
   TAccountTokenYProgram extends string = string,
   TAccountMemoProgram extends string = string,
+  TAccountPositionSettle extends string = string,
+  TAccountProposerOutputAta extends string = string,
+  TAccountTaxReserveOutputAta extends string = string,
   TAccountSystemProgram extends string = string,
 > = {
   bot: TransactionSigner<TAccountBot>;
@@ -520,6 +565,9 @@ export type ClosePositionInput<
   tokenXProgram: Address<TAccountTokenXProgram>;
   tokenYProgram: Address<TAccountTokenYProgram>;
   memoProgram: Address<TAccountMemoProgram>;
+  positionSettle?: Address<TAccountPositionSettle>;
+  proposerOutputAta?: Address<TAccountProposerOutputAta>;
+  taxReserveOutputAta?: Address<TAccountTaxReserveOutputAta>;
   systemProgram?: Address<TAccountSystemProgram>;
 };
 
@@ -550,6 +598,9 @@ export function getClosePositionInstruction<
   TAccountTokenXProgram extends string,
   TAccountTokenYProgram extends string,
   TAccountMemoProgram extends string,
+  TAccountPositionSettle extends string,
+  TAccountProposerOutputAta extends string,
+  TAccountTaxReserveOutputAta extends string,
   TAccountSystemProgram extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
@@ -580,6 +631,9 @@ export function getClosePositionInstruction<
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountPositionSettle,
+    TAccountProposerOutputAta,
+    TAccountTaxReserveOutputAta,
     TAccountSystemProgram
   >,
   config?: { programAddress?: TProgramAddress }
@@ -611,6 +665,9 @@ export function getClosePositionInstruction<
   TAccountTokenXProgram,
   TAccountTokenYProgram,
   TAccountMemoProgram,
+  TAccountPositionSettle,
+  TAccountProposerOutputAta,
+  TAccountTaxReserveOutputAta,
   TAccountSystemProgram
 > {
   // Program address.
@@ -647,6 +704,15 @@ export function getClosePositionInstruction<
     tokenXProgram: { value: input.tokenXProgram ?? null, isWritable: false },
     tokenYProgram: { value: input.tokenYProgram ?? null, isWritable: false },
     memoProgram: { value: input.memoProgram ?? null, isWritable: false },
+    positionSettle: { value: input.positionSettle ?? null, isWritable: true },
+    proposerOutputAta: {
+      value: input.proposerOutputAta ?? null,
+      isWritable: true,
+    },
+    taxReserveOutputAta: {
+      value: input.taxReserveOutputAta ?? null,
+      isWritable: true,
+    },
     systemProgram: { value: input.systemProgram ?? null, isWritable: false },
   };
   const accounts = originalAccounts as Record<
@@ -689,6 +755,9 @@ export function getClosePositionInstruction<
       getAccountMeta(accounts.tokenXProgram),
       getAccountMeta(accounts.tokenYProgram),
       getAccountMeta(accounts.memoProgram),
+      getAccountMeta(accounts.positionSettle),
+      getAccountMeta(accounts.proposerOutputAta),
+      getAccountMeta(accounts.taxReserveOutputAta),
       getAccountMeta(accounts.systemProgram),
     ],
     data: getClosePositionInstructionDataEncoder().encode({}),
@@ -721,6 +790,9 @@ export function getClosePositionInstruction<
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountPositionSettle,
+    TAccountProposerOutputAta,
+    TAccountTaxReserveOutputAta,
     TAccountSystemProgram
   >);
 }
@@ -758,7 +830,10 @@ export type ParsedClosePositionInstruction<
     tokenXProgram: TAccountMetas[23];
     tokenYProgram: TAccountMetas[24];
     memoProgram: TAccountMetas[25];
-    systemProgram: TAccountMetas[26];
+    positionSettle?: TAccountMetas[26] | undefined;
+    proposerOutputAta?: TAccountMetas[27] | undefined;
+    taxReserveOutputAta?: TAccountMetas[28] | undefined;
+    systemProgram: TAccountMetas[29];
   };
   data: ClosePositionInstructionData;
 };
@@ -771,7 +846,7 @@ export function parseClosePositionInstruction<
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
 ): ParsedClosePositionInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 27) {
+  if (instruction.accounts.length < 30) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -780,6 +855,12 @@ export function parseClosePositionInstruction<
     const accountMeta = (instruction.accounts as TAccountMetas)[accountIndex]!;
     accountIndex += 1;
     return accountMeta;
+  };
+  const getNextOptionalAccount = () => {
+    const accountMeta = getNextAccount();
+    return accountMeta.address === BIN_FARM_PROGRAM_ADDRESS
+      ? undefined
+      : accountMeta;
   };
   return {
     programAddress: instruction.programAddress,
@@ -810,6 +891,9 @@ export function parseClosePositionInstruction<
       tokenXProgram: getNextAccount(),
       tokenYProgram: getNextAccount(),
       memoProgram: getNextAccount(),
+      positionSettle: getNextOptionalAccount(),
+      proposerOutputAta: getNextOptionalAccount(),
+      taxReserveOutputAta: getNextOptionalAccount(),
       systemProgram: getNextAccount(),
     },
     data: getClosePositionInstructionDataDecoder().decode(instruction.data),

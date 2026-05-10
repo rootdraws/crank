@@ -10,6 +10,7 @@ import {
   combineCodec,
   fixDecoderSize,
   fixEncoderSize,
+  getAddressEncoder,
   getBytesDecoder,
   getBytesEncoder,
   getProgramDerivedAddress,
@@ -32,19 +33,25 @@ import {
   type WritableSignerAccount,
 } from '@solana/kit';
 import { BIN_FARM_PROGRAM_ADDRESS } from '../programs';
-import { getAccountMetaFactory, type ResolvedAccount } from '../shared';
+import {
+  expectAddress,
+  getAccountMetaFactory,
+  type ResolvedAccount,
+} from '../shared';
 
-export const USER_CLOSE_DISCRIMINATOR = new Uint8Array([
-  126, 78, 180, 205, 96, 242, 20, 2,
+export const TREASURY_CLOSE_COMBINED_DISCRIMINATOR = new Uint8Array([
+  133, 69, 4, 90, 130, 239, 9, 111,
 ]);
 
-export function getUserCloseDiscriminatorBytes() {
-  return fixEncoderSize(getBytesEncoder(), 8).encode(USER_CLOSE_DISCRIMINATOR);
+export function getTreasuryCloseCombinedDiscriminatorBytes() {
+  return fixEncoderSize(getBytesEncoder(), 8).encode(
+    TREASURY_CLOSE_COMBINED_DISCRIMINATOR
+  );
 }
 
-export type UserCloseInstruction<
+export type TreasuryCloseCombinedInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
-  TAccountCaller extends string | AccountMeta<string> = string,
+  TAccountBot extends string | AccountMeta<string> = string,
   TAccountConfig extends string | AccountMeta<string> = string,
   TAccountUserVault extends string | AccountMeta<string> = string,
   TAccountPosition extends string | AccountMeta<string> = string,
@@ -62,28 +69,31 @@ export type UserCloseInstruction<
   TAccountDlmmProgram extends string | AccountMeta<string> = string,
   TAccountVaultTokenX extends string | AccountMeta<string> = string,
   TAccountVaultTokenY extends string | AccountMeta<string> = string,
-  TAccountUserTokenX extends string | AccountMeta<string> = string,
-  TAccountUserTokenY extends string | AccountMeta<string> = string,
+  TAccountNtpTokenXAta extends string | AccountMeta<string> = string,
+  TAccountNtpSolAccount extends string | AccountMeta<string> = string,
   TAccountFeeDest extends string | AccountMeta<string> = string,
   TAccountFeeDestTokenX extends string | AccountMeta<string> = string,
   TAccountFeeDestTokenY extends string | AccountMeta<string> = string,
   TAccountTokenXProgram extends string | AccountMeta<string> = string,
   TAccountTokenYProgram extends string | AccountMeta<string> = string,
   TAccountMemoProgram extends string | AccountMeta<string> = string,
-  TAccountPositionSettle extends string | AccountMeta<string> = string,
-  TAccountProposerOutputAta extends string | AccountMeta<string> = string,
-  TAccountTaxReserveOutputAta extends string | AccountMeta<string> = string,
   TAccountSystemProgram extends string | AccountMeta<string> =
     '11111111111111111111111111111111',
+  TAccountPositionSettle extends string | AccountMeta<string> = string,
+  TAccountOutputMint extends string | AccountMeta<string> = string,
+  TAccountPositionVaultOutputAta extends string | AccountMeta<string> = string,
+  TAccountProposerOutputAta extends string | AccountMeta<string> = string,
+  TAccountTaxReserveOutputAta extends string | AccountMeta<string> = string,
+  TAccountOutputTokenProgram extends string | AccountMeta<string> = string,
+  TAccountTradeAuth extends string | AccountMeta<string> = string,
   TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
   InstructionWithData<ReadonlyUint8Array> &
   InstructionWithAccounts<
     [
-      TAccountCaller extends string
-        ? WritableSignerAccount<TAccountCaller> &
-            AccountSignerMeta<TAccountCaller>
-        : TAccountCaller,
+      TAccountBot extends string
+        ? WritableSignerAccount<TAccountBot> & AccountSignerMeta<TAccountBot>
+        : TAccountBot,
       TAccountConfig extends string
         ? WritableAccount<TAccountConfig>
         : TAccountConfig,
@@ -135,12 +145,12 @@ export type UserCloseInstruction<
       TAccountVaultTokenY extends string
         ? WritableAccount<TAccountVaultTokenY>
         : TAccountVaultTokenY,
-      TAccountUserTokenX extends string
-        ? WritableAccount<TAccountUserTokenX>
-        : TAccountUserTokenX,
-      TAccountUserTokenY extends string
-        ? WritableAccount<TAccountUserTokenY>
-        : TAccountUserTokenY,
+      TAccountNtpTokenXAta extends string
+        ? WritableAccount<TAccountNtpTokenXAta>
+        : TAccountNtpTokenXAta,
+      TAccountNtpSolAccount extends string
+        ? WritableAccount<TAccountNtpSolAccount>
+        : TAccountNtpSolAccount,
       TAccountFeeDest extends string
         ? ReadonlyAccount<TAccountFeeDest>
         : TAccountFeeDest,
@@ -159,51 +169,68 @@ export type UserCloseInstruction<
       TAccountMemoProgram extends string
         ? ReadonlyAccount<TAccountMemoProgram>
         : TAccountMemoProgram,
+      TAccountSystemProgram extends string
+        ? ReadonlyAccount<TAccountSystemProgram>
+        : TAccountSystemProgram,
       TAccountPositionSettle extends string
         ? WritableAccount<TAccountPositionSettle>
         : TAccountPositionSettle,
+      TAccountOutputMint extends string
+        ? ReadonlyAccount<TAccountOutputMint>
+        : TAccountOutputMint,
+      TAccountPositionVaultOutputAta extends string
+        ? WritableAccount<TAccountPositionVaultOutputAta>
+        : TAccountPositionVaultOutputAta,
       TAccountProposerOutputAta extends string
         ? WritableAccount<TAccountProposerOutputAta>
         : TAccountProposerOutputAta,
       TAccountTaxReserveOutputAta extends string
         ? WritableAccount<TAccountTaxReserveOutputAta>
         : TAccountTaxReserveOutputAta,
-      TAccountSystemProgram extends string
-        ? ReadonlyAccount<TAccountSystemProgram>
-        : TAccountSystemProgram,
+      TAccountOutputTokenProgram extends string
+        ? ReadonlyAccount<TAccountOutputTokenProgram>
+        : TAccountOutputTokenProgram,
+      TAccountTradeAuth extends string
+        ? WritableAccount<TAccountTradeAuth>
+        : TAccountTradeAuth,
       ...TRemainingAccounts,
     ]
   >;
 
-export type UserCloseInstructionData = { discriminator: ReadonlyUint8Array };
+export type TreasuryCloseCombinedInstructionData = {
+  discriminator: ReadonlyUint8Array;
+};
 
-export type UserCloseInstructionDataArgs = {};
+export type TreasuryCloseCombinedInstructionDataArgs = {};
 
-export function getUserCloseInstructionDataEncoder(): FixedSizeEncoder<UserCloseInstructionDataArgs> {
+export function getTreasuryCloseCombinedInstructionDataEncoder(): FixedSizeEncoder<TreasuryCloseCombinedInstructionDataArgs> {
   return transformEncoder(
     getStructEncoder([['discriminator', fixEncoderSize(getBytesEncoder(), 8)]]),
-    (value) => ({ ...value, discriminator: USER_CLOSE_DISCRIMINATOR })
+    (value) => ({
+      ...value,
+      discriminator: TREASURY_CLOSE_COMBINED_DISCRIMINATOR,
+    })
   );
 }
 
-export function getUserCloseInstructionDataDecoder(): FixedSizeDecoder<UserCloseInstructionData> {
+export function getTreasuryCloseCombinedInstructionDataDecoder(): FixedSizeDecoder<TreasuryCloseCombinedInstructionData> {
   return getStructDecoder([
     ['discriminator', fixDecoderSize(getBytesDecoder(), 8)],
   ]);
 }
 
-export function getUserCloseInstructionDataCodec(): FixedSizeCodec<
-  UserCloseInstructionDataArgs,
-  UserCloseInstructionData
+export function getTreasuryCloseCombinedInstructionDataCodec(): FixedSizeCodec<
+  TreasuryCloseCombinedInstructionDataArgs,
+  TreasuryCloseCombinedInstructionData
 > {
   return combineCodec(
-    getUserCloseInstructionDataEncoder(),
-    getUserCloseInstructionDataDecoder()
+    getTreasuryCloseCombinedInstructionDataEncoder(),
+    getTreasuryCloseCombinedInstructionDataDecoder()
   );
 }
 
-export type UserCloseAsyncInput<
-  TAccountCaller extends string = string,
+export type TreasuryCloseCombinedAsyncInput<
+  TAccountBot extends string = string,
   TAccountConfig extends string = string,
   TAccountUserVault extends string = string,
   TAccountPosition extends string = string,
@@ -221,25 +248,32 @@ export type UserCloseAsyncInput<
   TAccountDlmmProgram extends string = string,
   TAccountVaultTokenX extends string = string,
   TAccountVaultTokenY extends string = string,
-  TAccountUserTokenX extends string = string,
-  TAccountUserTokenY extends string = string,
+  TAccountNtpTokenXAta extends string = string,
+  TAccountNtpSolAccount extends string = string,
   TAccountFeeDest extends string = string,
   TAccountFeeDestTokenX extends string = string,
   TAccountFeeDestTokenY extends string = string,
   TAccountTokenXProgram extends string = string,
   TAccountTokenYProgram extends string = string,
   TAccountMemoProgram extends string = string,
+  TAccountSystemProgram extends string = string,
   TAccountPositionSettle extends string = string,
+  TAccountOutputMint extends string = string,
+  TAccountPositionVaultOutputAta extends string = string,
   TAccountProposerOutputAta extends string = string,
   TAccountTaxReserveOutputAta extends string = string,
-  TAccountSystemProgram extends string = string,
+  TAccountOutputTokenProgram extends string = string,
+  TAccountTradeAuth extends string = string,
 > = {
-  /** Caller: authorized bot or vault owner (real wallet) */
-  caller: TransactionSigner<TAccountCaller>;
+  bot: TransactionSigner<TAccountBot>;
   config?: Address<TAccountConfig>;
-  /** UserVault PDA — authorization checked in handler body (dual-caller) */
   userVault: Address<TAccountUserVault>;
+  /**
+   * Closed manually in handler (lamports → bot, discriminator zeroed) to
+   * avoid Anchor close = X stack pressure in try_accounts (4KB BPF ceiling).
+   */
   position: Address<TAccountPosition>;
+  /** Closed manually in handler (see `position`). */
   vault: Address<TAccountVault>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
   lbPair: Address<TAccountLbPair>;
@@ -254,22 +288,32 @@ export type UserCloseAsyncInput<
   dlmmProgram: Address<TAccountDlmmProgram>;
   vaultTokenX: Address<TAccountVaultTokenX>;
   vaultTokenY: Address<TAccountVaultTokenY>;
-  userTokenX: Address<TAccountUserTokenX>;
-  userTokenY: Address<TAccountUserTokenY>;
+  /**
+   * NTP's direct token-X ATA (CRANK for CRANK/SOL pool). Residue X transfers
+   * here on close — Realms-visible. Owner+mint constrained on-chain.
+   */
+  ntpTokenXAta: Address<TAccountNtpTokenXAta>;
+  /** WSOL ATA close — auto-unwraps WSOL balance into NTP's native SOL. */
+  ntpSolAccount: Address<TAccountNtpSolAccount>;
   feeDest: Address<TAccountFeeDest>;
   feeDestTokenX: Address<TAccountFeeDestTokenX>;
   feeDestTokenY: Address<TAccountFeeDestTokenY>;
   tokenXProgram: Address<TAccountTokenXProgram>;
   tokenYProgram: Address<TAccountTokenYProgram>;
   memoProgram: Address<TAccountMemoProgram>;
-  positionSettle?: Address<TAccountPositionSettle>;
-  proposerOutputAta?: Address<TAccountProposerOutputAta>;
-  taxReserveOutputAta?: Address<TAccountTaxReserveOutputAta>;
   systemProgram?: Address<TAccountSystemProgram>;
+  /** Closed manually in handler (see `position`). */
+  positionSettle?: Address<TAccountPositionSettle>;
+  outputMint: Address<TAccountOutputMint>;
+  positionVaultOutputAta: Address<TAccountPositionVaultOutputAta>;
+  proposerOutputAta: Address<TAccountProposerOutputAta>;
+  taxReserveOutputAta?: Address<TAccountTaxReserveOutputAta>;
+  outputTokenProgram: Address<TAccountOutputTokenProgram>;
+  tradeAuth?: Address<TAccountTradeAuth>;
 };
 
-export async function getUserCloseInstructionAsync<
-  TAccountCaller extends string,
+export async function getTreasuryCloseCombinedInstructionAsync<
+  TAccountBot extends string,
   TAccountConfig extends string,
   TAccountUserVault extends string,
   TAccountPosition extends string,
@@ -287,22 +331,26 @@ export async function getUserCloseInstructionAsync<
   TAccountDlmmProgram extends string,
   TAccountVaultTokenX extends string,
   TAccountVaultTokenY extends string,
-  TAccountUserTokenX extends string,
-  TAccountUserTokenY extends string,
+  TAccountNtpTokenXAta extends string,
+  TAccountNtpSolAccount extends string,
   TAccountFeeDest extends string,
   TAccountFeeDestTokenX extends string,
   TAccountFeeDestTokenY extends string,
   TAccountTokenXProgram extends string,
   TAccountTokenYProgram extends string,
   TAccountMemoProgram extends string,
+  TAccountSystemProgram extends string,
   TAccountPositionSettle extends string,
+  TAccountOutputMint extends string,
+  TAccountPositionVaultOutputAta extends string,
   TAccountProposerOutputAta extends string,
   TAccountTaxReserveOutputAta extends string,
-  TAccountSystemProgram extends string,
+  TAccountOutputTokenProgram extends string,
+  TAccountTradeAuth extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
-  input: UserCloseAsyncInput<
-    TAccountCaller,
+  input: TreasuryCloseCombinedAsyncInput<
+    TAccountBot,
     TAccountConfig,
     TAccountUserVault,
     TAccountPosition,
@@ -320,24 +368,28 @@ export async function getUserCloseInstructionAsync<
     TAccountDlmmProgram,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
-    TAccountUserTokenX,
-    TAccountUserTokenY,
+    TAccountNtpTokenXAta,
+    TAccountNtpSolAccount,
     TAccountFeeDest,
     TAccountFeeDestTokenX,
     TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountSystemProgram,
     TAccountPositionSettle,
+    TAccountOutputMint,
+    TAccountPositionVaultOutputAta,
     TAccountProposerOutputAta,
     TAccountTaxReserveOutputAta,
-    TAccountSystemProgram
+    TAccountOutputTokenProgram,
+    TAccountTradeAuth
   >,
   config?: { programAddress?: TProgramAddress }
 ): Promise<
-  UserCloseInstruction<
+  TreasuryCloseCombinedInstruction<
     TProgramAddress,
-    TAccountCaller,
+    TAccountBot,
     TAccountConfig,
     TAccountUserVault,
     TAccountPosition,
@@ -355,18 +407,22 @@ export async function getUserCloseInstructionAsync<
     TAccountDlmmProgram,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
-    TAccountUserTokenX,
-    TAccountUserTokenY,
+    TAccountNtpTokenXAta,
+    TAccountNtpSolAccount,
     TAccountFeeDest,
     TAccountFeeDestTokenX,
     TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountSystemProgram,
     TAccountPositionSettle,
+    TAccountOutputMint,
+    TAccountPositionVaultOutputAta,
     TAccountProposerOutputAta,
     TAccountTaxReserveOutputAta,
-    TAccountSystemProgram
+    TAccountOutputTokenProgram,
+    TAccountTradeAuth
   >
 > {
   // Program address.
@@ -374,7 +430,7 @@ export async function getUserCloseInstructionAsync<
 
   // Original accounts.
   const originalAccounts = {
-    caller: { value: input.caller ?? null, isWritable: true },
+    bot: { value: input.bot ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
     userVault: { value: input.userVault ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
@@ -395,15 +451,21 @@ export async function getUserCloseInstructionAsync<
     dlmmProgram: { value: input.dlmmProgram ?? null, isWritable: false },
     vaultTokenX: { value: input.vaultTokenX ?? null, isWritable: true },
     vaultTokenY: { value: input.vaultTokenY ?? null, isWritable: true },
-    userTokenX: { value: input.userTokenX ?? null, isWritable: true },
-    userTokenY: { value: input.userTokenY ?? null, isWritable: true },
+    ntpTokenXAta: { value: input.ntpTokenXAta ?? null, isWritable: true },
+    ntpSolAccount: { value: input.ntpSolAccount ?? null, isWritable: true },
     feeDest: { value: input.feeDest ?? null, isWritable: false },
     feeDestTokenX: { value: input.feeDestTokenX ?? null, isWritable: true },
     feeDestTokenY: { value: input.feeDestTokenY ?? null, isWritable: true },
     tokenXProgram: { value: input.tokenXProgram ?? null, isWritable: false },
     tokenYProgram: { value: input.tokenYProgram ?? null, isWritable: false },
     memoProgram: { value: input.memoProgram ?? null, isWritable: false },
+    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
     positionSettle: { value: input.positionSettle ?? null, isWritable: true },
+    outputMint: { value: input.outputMint ?? null, isWritable: false },
+    positionVaultOutputAta: {
+      value: input.positionVaultOutputAta ?? null,
+      isWritable: true,
+    },
     proposerOutputAta: {
       value: input.proposerOutputAta ?? null,
       isWritable: true,
@@ -412,7 +474,11 @@ export async function getUserCloseInstructionAsync<
       value: input.taxReserveOutputAta ?? null,
       isWritable: true,
     },
-    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    outputTokenProgram: {
+      value: input.outputTokenProgram ?? null,
+      isWritable: false,
+    },
+    tradeAuth: { value: input.tradeAuth ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -432,11 +498,35 @@ export async function getUserCloseInstructionAsync<
     accounts.systemProgram.value =
       '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
   }
+  if (!accounts.positionSettle.value) {
+    accounts.positionSettle.value = await getProgramDerivedAddress({
+      programAddress,
+      seeds: [
+        getBytesEncoder().encode(
+          new Uint8Array([112, 111, 115, 95, 115, 101, 116, 116, 108, 101])
+        ),
+        getAddressEncoder().encode(
+          expectAddress(accounts.meteoraPosition.value)
+        ),
+      ],
+    });
+  }
+  if (!accounts.tradeAuth.value) {
+    accounts.tradeAuth.value = await getProgramDerivedAddress({
+      programAddress,
+      seeds: [
+        getBytesEncoder().encode(
+          new Uint8Array([116, 114, 97, 100, 101, 95, 97, 117, 116, 104])
+        ),
+        getAddressEncoder().encode(expectAddress(accounts.userVault.value)),
+      ],
+    });
+  }
 
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.caller),
+      getAccountMeta(accounts.bot),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.position),
@@ -454,24 +544,28 @@ export async function getUserCloseInstructionAsync<
       getAccountMeta(accounts.dlmmProgram),
       getAccountMeta(accounts.vaultTokenX),
       getAccountMeta(accounts.vaultTokenY),
-      getAccountMeta(accounts.userTokenX),
-      getAccountMeta(accounts.userTokenY),
+      getAccountMeta(accounts.ntpTokenXAta),
+      getAccountMeta(accounts.ntpSolAccount),
       getAccountMeta(accounts.feeDest),
       getAccountMeta(accounts.feeDestTokenX),
       getAccountMeta(accounts.feeDestTokenY),
       getAccountMeta(accounts.tokenXProgram),
       getAccountMeta(accounts.tokenYProgram),
       getAccountMeta(accounts.memoProgram),
+      getAccountMeta(accounts.systemProgram),
       getAccountMeta(accounts.positionSettle),
+      getAccountMeta(accounts.outputMint),
+      getAccountMeta(accounts.positionVaultOutputAta),
       getAccountMeta(accounts.proposerOutputAta),
       getAccountMeta(accounts.taxReserveOutputAta),
-      getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.outputTokenProgram),
+      getAccountMeta(accounts.tradeAuth),
     ],
-    data: getUserCloseInstructionDataEncoder().encode({}),
+    data: getTreasuryCloseCombinedInstructionDataEncoder().encode({}),
     programAddress,
-  } as UserCloseInstruction<
+  } as TreasuryCloseCombinedInstruction<
     TProgramAddress,
-    TAccountCaller,
+    TAccountBot,
     TAccountConfig,
     TAccountUserVault,
     TAccountPosition,
@@ -489,23 +583,27 @@ export async function getUserCloseInstructionAsync<
     TAccountDlmmProgram,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
-    TAccountUserTokenX,
-    TAccountUserTokenY,
+    TAccountNtpTokenXAta,
+    TAccountNtpSolAccount,
     TAccountFeeDest,
     TAccountFeeDestTokenX,
     TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountSystemProgram,
     TAccountPositionSettle,
+    TAccountOutputMint,
+    TAccountPositionVaultOutputAta,
     TAccountProposerOutputAta,
     TAccountTaxReserveOutputAta,
-    TAccountSystemProgram
+    TAccountOutputTokenProgram,
+    TAccountTradeAuth
   >);
 }
 
-export type UserCloseInput<
-  TAccountCaller extends string = string,
+export type TreasuryCloseCombinedInput<
+  TAccountBot extends string = string,
   TAccountConfig extends string = string,
   TAccountUserVault extends string = string,
   TAccountPosition extends string = string,
@@ -523,25 +621,32 @@ export type UserCloseInput<
   TAccountDlmmProgram extends string = string,
   TAccountVaultTokenX extends string = string,
   TAccountVaultTokenY extends string = string,
-  TAccountUserTokenX extends string = string,
-  TAccountUserTokenY extends string = string,
+  TAccountNtpTokenXAta extends string = string,
+  TAccountNtpSolAccount extends string = string,
   TAccountFeeDest extends string = string,
   TAccountFeeDestTokenX extends string = string,
   TAccountFeeDestTokenY extends string = string,
   TAccountTokenXProgram extends string = string,
   TAccountTokenYProgram extends string = string,
   TAccountMemoProgram extends string = string,
+  TAccountSystemProgram extends string = string,
   TAccountPositionSettle extends string = string,
+  TAccountOutputMint extends string = string,
+  TAccountPositionVaultOutputAta extends string = string,
   TAccountProposerOutputAta extends string = string,
   TAccountTaxReserveOutputAta extends string = string,
-  TAccountSystemProgram extends string = string,
+  TAccountOutputTokenProgram extends string = string,
+  TAccountTradeAuth extends string = string,
 > = {
-  /** Caller: authorized bot or vault owner (real wallet) */
-  caller: TransactionSigner<TAccountCaller>;
+  bot: TransactionSigner<TAccountBot>;
   config: Address<TAccountConfig>;
-  /** UserVault PDA — authorization checked in handler body (dual-caller) */
   userVault: Address<TAccountUserVault>;
+  /**
+   * Closed manually in handler (lamports → bot, discriminator zeroed) to
+   * avoid Anchor close = X stack pressure in try_accounts (4KB BPF ceiling).
+   */
   position: Address<TAccountPosition>;
+  /** Closed manually in handler (see `position`). */
   vault: Address<TAccountVault>;
   meteoraPosition: Address<TAccountMeteoraPosition>;
   lbPair: Address<TAccountLbPair>;
@@ -556,22 +661,32 @@ export type UserCloseInput<
   dlmmProgram: Address<TAccountDlmmProgram>;
   vaultTokenX: Address<TAccountVaultTokenX>;
   vaultTokenY: Address<TAccountVaultTokenY>;
-  userTokenX: Address<TAccountUserTokenX>;
-  userTokenY: Address<TAccountUserTokenY>;
+  /**
+   * NTP's direct token-X ATA (CRANK for CRANK/SOL pool). Residue X transfers
+   * here on close — Realms-visible. Owner+mint constrained on-chain.
+   */
+  ntpTokenXAta: Address<TAccountNtpTokenXAta>;
+  /** WSOL ATA close — auto-unwraps WSOL balance into NTP's native SOL. */
+  ntpSolAccount: Address<TAccountNtpSolAccount>;
   feeDest: Address<TAccountFeeDest>;
   feeDestTokenX: Address<TAccountFeeDestTokenX>;
   feeDestTokenY: Address<TAccountFeeDestTokenY>;
   tokenXProgram: Address<TAccountTokenXProgram>;
   tokenYProgram: Address<TAccountTokenYProgram>;
   memoProgram: Address<TAccountMemoProgram>;
-  positionSettle?: Address<TAccountPositionSettle>;
-  proposerOutputAta?: Address<TAccountProposerOutputAta>;
-  taxReserveOutputAta?: Address<TAccountTaxReserveOutputAta>;
   systemProgram?: Address<TAccountSystemProgram>;
+  /** Closed manually in handler (see `position`). */
+  positionSettle: Address<TAccountPositionSettle>;
+  outputMint: Address<TAccountOutputMint>;
+  positionVaultOutputAta: Address<TAccountPositionVaultOutputAta>;
+  proposerOutputAta: Address<TAccountProposerOutputAta>;
+  taxReserveOutputAta?: Address<TAccountTaxReserveOutputAta>;
+  outputTokenProgram: Address<TAccountOutputTokenProgram>;
+  tradeAuth: Address<TAccountTradeAuth>;
 };
 
-export function getUserCloseInstruction<
-  TAccountCaller extends string,
+export function getTreasuryCloseCombinedInstruction<
+  TAccountBot extends string,
   TAccountConfig extends string,
   TAccountUserVault extends string,
   TAccountPosition extends string,
@@ -589,22 +704,26 @@ export function getUserCloseInstruction<
   TAccountDlmmProgram extends string,
   TAccountVaultTokenX extends string,
   TAccountVaultTokenY extends string,
-  TAccountUserTokenX extends string,
-  TAccountUserTokenY extends string,
+  TAccountNtpTokenXAta extends string,
+  TAccountNtpSolAccount extends string,
   TAccountFeeDest extends string,
   TAccountFeeDestTokenX extends string,
   TAccountFeeDestTokenY extends string,
   TAccountTokenXProgram extends string,
   TAccountTokenYProgram extends string,
   TAccountMemoProgram extends string,
+  TAccountSystemProgram extends string,
   TAccountPositionSettle extends string,
+  TAccountOutputMint extends string,
+  TAccountPositionVaultOutputAta extends string,
   TAccountProposerOutputAta extends string,
   TAccountTaxReserveOutputAta extends string,
-  TAccountSystemProgram extends string,
+  TAccountOutputTokenProgram extends string,
+  TAccountTradeAuth extends string,
   TProgramAddress extends Address = typeof BIN_FARM_PROGRAM_ADDRESS,
 >(
-  input: UserCloseInput<
-    TAccountCaller,
+  input: TreasuryCloseCombinedInput<
+    TAccountBot,
     TAccountConfig,
     TAccountUserVault,
     TAccountPosition,
@@ -622,23 +741,27 @@ export function getUserCloseInstruction<
     TAccountDlmmProgram,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
-    TAccountUserTokenX,
-    TAccountUserTokenY,
+    TAccountNtpTokenXAta,
+    TAccountNtpSolAccount,
     TAccountFeeDest,
     TAccountFeeDestTokenX,
     TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountSystemProgram,
     TAccountPositionSettle,
+    TAccountOutputMint,
+    TAccountPositionVaultOutputAta,
     TAccountProposerOutputAta,
     TAccountTaxReserveOutputAta,
-    TAccountSystemProgram
+    TAccountOutputTokenProgram,
+    TAccountTradeAuth
   >,
   config?: { programAddress?: TProgramAddress }
-): UserCloseInstruction<
+): TreasuryCloseCombinedInstruction<
   TProgramAddress,
-  TAccountCaller,
+  TAccountBot,
   TAccountConfig,
   TAccountUserVault,
   TAccountPosition,
@@ -656,25 +779,29 @@ export function getUserCloseInstruction<
   TAccountDlmmProgram,
   TAccountVaultTokenX,
   TAccountVaultTokenY,
-  TAccountUserTokenX,
-  TAccountUserTokenY,
+  TAccountNtpTokenXAta,
+  TAccountNtpSolAccount,
   TAccountFeeDest,
   TAccountFeeDestTokenX,
   TAccountFeeDestTokenY,
   TAccountTokenXProgram,
   TAccountTokenYProgram,
   TAccountMemoProgram,
+  TAccountSystemProgram,
   TAccountPositionSettle,
+  TAccountOutputMint,
+  TAccountPositionVaultOutputAta,
   TAccountProposerOutputAta,
   TAccountTaxReserveOutputAta,
-  TAccountSystemProgram
+  TAccountOutputTokenProgram,
+  TAccountTradeAuth
 > {
   // Program address.
   const programAddress = config?.programAddress ?? BIN_FARM_PROGRAM_ADDRESS;
 
   // Original accounts.
   const originalAccounts = {
-    caller: { value: input.caller ?? null, isWritable: true },
+    bot: { value: input.bot ?? null, isWritable: true },
     config: { value: input.config ?? null, isWritable: true },
     userVault: { value: input.userVault ?? null, isWritable: true },
     position: { value: input.position ?? null, isWritable: true },
@@ -695,15 +822,21 @@ export function getUserCloseInstruction<
     dlmmProgram: { value: input.dlmmProgram ?? null, isWritable: false },
     vaultTokenX: { value: input.vaultTokenX ?? null, isWritable: true },
     vaultTokenY: { value: input.vaultTokenY ?? null, isWritable: true },
-    userTokenX: { value: input.userTokenX ?? null, isWritable: true },
-    userTokenY: { value: input.userTokenY ?? null, isWritable: true },
+    ntpTokenXAta: { value: input.ntpTokenXAta ?? null, isWritable: true },
+    ntpSolAccount: { value: input.ntpSolAccount ?? null, isWritable: true },
     feeDest: { value: input.feeDest ?? null, isWritable: false },
     feeDestTokenX: { value: input.feeDestTokenX ?? null, isWritable: true },
     feeDestTokenY: { value: input.feeDestTokenY ?? null, isWritable: true },
     tokenXProgram: { value: input.tokenXProgram ?? null, isWritable: false },
     tokenYProgram: { value: input.tokenYProgram ?? null, isWritable: false },
     memoProgram: { value: input.memoProgram ?? null, isWritable: false },
+    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
     positionSettle: { value: input.positionSettle ?? null, isWritable: true },
+    outputMint: { value: input.outputMint ?? null, isWritable: false },
+    positionVaultOutputAta: {
+      value: input.positionVaultOutputAta ?? null,
+      isWritable: true,
+    },
     proposerOutputAta: {
       value: input.proposerOutputAta ?? null,
       isWritable: true,
@@ -712,7 +845,11 @@ export function getUserCloseInstruction<
       value: input.taxReserveOutputAta ?? null,
       isWritable: true,
     },
-    systemProgram: { value: input.systemProgram ?? null, isWritable: false },
+    outputTokenProgram: {
+      value: input.outputTokenProgram ?? null,
+      isWritable: false,
+    },
+    tradeAuth: { value: input.tradeAuth ?? null, isWritable: true },
   };
   const accounts = originalAccounts as Record<
     keyof typeof originalAccounts,
@@ -728,7 +865,7 @@ export function getUserCloseInstruction<
   const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
   return Object.freeze({
     accounts: [
-      getAccountMeta(accounts.caller),
+      getAccountMeta(accounts.bot),
       getAccountMeta(accounts.config),
       getAccountMeta(accounts.userVault),
       getAccountMeta(accounts.position),
@@ -746,24 +883,28 @@ export function getUserCloseInstruction<
       getAccountMeta(accounts.dlmmProgram),
       getAccountMeta(accounts.vaultTokenX),
       getAccountMeta(accounts.vaultTokenY),
-      getAccountMeta(accounts.userTokenX),
-      getAccountMeta(accounts.userTokenY),
+      getAccountMeta(accounts.ntpTokenXAta),
+      getAccountMeta(accounts.ntpSolAccount),
       getAccountMeta(accounts.feeDest),
       getAccountMeta(accounts.feeDestTokenX),
       getAccountMeta(accounts.feeDestTokenY),
       getAccountMeta(accounts.tokenXProgram),
       getAccountMeta(accounts.tokenYProgram),
       getAccountMeta(accounts.memoProgram),
+      getAccountMeta(accounts.systemProgram),
       getAccountMeta(accounts.positionSettle),
+      getAccountMeta(accounts.outputMint),
+      getAccountMeta(accounts.positionVaultOutputAta),
       getAccountMeta(accounts.proposerOutputAta),
       getAccountMeta(accounts.taxReserveOutputAta),
-      getAccountMeta(accounts.systemProgram),
+      getAccountMeta(accounts.outputTokenProgram),
+      getAccountMeta(accounts.tradeAuth),
     ],
-    data: getUserCloseInstructionDataEncoder().encode({}),
+    data: getTreasuryCloseCombinedInstructionDataEncoder().encode({}),
     programAddress,
-  } as UserCloseInstruction<
+  } as TreasuryCloseCombinedInstruction<
     TProgramAddress,
-    TAccountCaller,
+    TAccountBot,
     TAccountConfig,
     TAccountUserVault,
     TAccountPosition,
@@ -781,33 +922,40 @@ export function getUserCloseInstruction<
     TAccountDlmmProgram,
     TAccountVaultTokenX,
     TAccountVaultTokenY,
-    TAccountUserTokenX,
-    TAccountUserTokenY,
+    TAccountNtpTokenXAta,
+    TAccountNtpSolAccount,
     TAccountFeeDest,
     TAccountFeeDestTokenX,
     TAccountFeeDestTokenY,
     TAccountTokenXProgram,
     TAccountTokenYProgram,
     TAccountMemoProgram,
+    TAccountSystemProgram,
     TAccountPositionSettle,
+    TAccountOutputMint,
+    TAccountPositionVaultOutputAta,
     TAccountProposerOutputAta,
     TAccountTaxReserveOutputAta,
-    TAccountSystemProgram
+    TAccountOutputTokenProgram,
+    TAccountTradeAuth
   >);
 }
 
-export type ParsedUserCloseInstruction<
+export type ParsedTreasuryCloseCombinedInstruction<
   TProgram extends string = typeof BIN_FARM_PROGRAM_ADDRESS,
   TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
   programAddress: Address<TProgram>;
   accounts: {
-    /** Caller: authorized bot or vault owner (real wallet) */
-    caller: TAccountMetas[0];
+    bot: TAccountMetas[0];
     config: TAccountMetas[1];
-    /** UserVault PDA — authorization checked in handler body (dual-caller) */
     userVault: TAccountMetas[2];
+    /**
+     * Closed manually in handler (lamports → bot, discriminator zeroed) to
+     * avoid Anchor close = X stack pressure in try_accounts (4KB BPF ceiling).
+     */
     position: TAccountMetas[3];
+    /** Closed manually in handler (see `position`). */
     vault: TAccountMetas[4];
     meteoraPosition: TAccountMetas[5];
     lbPair: TAccountMetas[6];
@@ -822,31 +970,41 @@ export type ParsedUserCloseInstruction<
     dlmmProgram: TAccountMetas[15];
     vaultTokenX: TAccountMetas[16];
     vaultTokenY: TAccountMetas[17];
-    userTokenX: TAccountMetas[18];
-    userTokenY: TAccountMetas[19];
+    /**
+     * NTP's direct token-X ATA (CRANK for CRANK/SOL pool). Residue X transfers
+     * here on close — Realms-visible. Owner+mint constrained on-chain.
+     */
+    ntpTokenXAta: TAccountMetas[18];
+    /** WSOL ATA close — auto-unwraps WSOL balance into NTP's native SOL. */
+    ntpSolAccount: TAccountMetas[19];
     feeDest: TAccountMetas[20];
     feeDestTokenX: TAccountMetas[21];
     feeDestTokenY: TAccountMetas[22];
     tokenXProgram: TAccountMetas[23];
     tokenYProgram: TAccountMetas[24];
     memoProgram: TAccountMetas[25];
-    positionSettle?: TAccountMetas[26] | undefined;
-    proposerOutputAta?: TAccountMetas[27] | undefined;
-    taxReserveOutputAta?: TAccountMetas[28] | undefined;
-    systemProgram: TAccountMetas[29];
+    systemProgram: TAccountMetas[26];
+    /** Closed manually in handler (see `position`). */
+    positionSettle: TAccountMetas[27];
+    outputMint: TAccountMetas[28];
+    positionVaultOutputAta: TAccountMetas[29];
+    proposerOutputAta: TAccountMetas[30];
+    taxReserveOutputAta?: TAccountMetas[31] | undefined;
+    outputTokenProgram: TAccountMetas[32];
+    tradeAuth: TAccountMetas[33];
   };
-  data: UserCloseInstructionData;
+  data: TreasuryCloseCombinedInstructionData;
 };
 
-export function parseUserCloseInstruction<
+export function parseTreasuryCloseCombinedInstruction<
   TProgram extends string,
   TAccountMetas extends readonly AccountMeta[],
 >(
   instruction: Instruction<TProgram> &
     InstructionWithAccounts<TAccountMetas> &
     InstructionWithData<ReadonlyUint8Array>
-): ParsedUserCloseInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 30) {
+): ParsedTreasuryCloseCombinedInstruction<TProgram, TAccountMetas> {
+  if (instruction.accounts.length < 34) {
     // TODO: Coded error.
     throw new Error('Not enough accounts');
   }
@@ -865,7 +1023,7 @@ export function parseUserCloseInstruction<
   return {
     programAddress: instruction.programAddress,
     accounts: {
-      caller: getNextAccount(),
+      bot: getNextAccount(),
       config: getNextAccount(),
       userVault: getNextAccount(),
       position: getNextAccount(),
@@ -883,19 +1041,25 @@ export function parseUserCloseInstruction<
       dlmmProgram: getNextAccount(),
       vaultTokenX: getNextAccount(),
       vaultTokenY: getNextAccount(),
-      userTokenX: getNextAccount(),
-      userTokenY: getNextAccount(),
+      ntpTokenXAta: getNextAccount(),
+      ntpSolAccount: getNextAccount(),
       feeDest: getNextAccount(),
       feeDestTokenX: getNextAccount(),
       feeDestTokenY: getNextAccount(),
       tokenXProgram: getNextAccount(),
       tokenYProgram: getNextAccount(),
       memoProgram: getNextAccount(),
-      positionSettle: getNextOptionalAccount(),
-      proposerOutputAta: getNextOptionalAccount(),
-      taxReserveOutputAta: getNextOptionalAccount(),
       systemProgram: getNextAccount(),
+      positionSettle: getNextAccount(),
+      outputMint: getNextAccount(),
+      positionVaultOutputAta: getNextAccount(),
+      proposerOutputAta: getNextAccount(),
+      taxReserveOutputAta: getNextOptionalAccount(),
+      outputTokenProgram: getNextAccount(),
+      tradeAuth: getNextAccount(),
     },
-    data: getUserCloseInstructionDataDecoder().decode(instruction.data),
+    data: getTreasuryCloseCombinedInstructionDataDecoder().decode(
+      instruction.data
+    ),
   };
 }

@@ -124,6 +124,24 @@ export const BIN_FARM_ERROR__MATCH_RATIO_TOO_HIGH = 0x17a4; // 6052
 export const BIN_FARM_ERROR__PAYOUT_ADMIN_ALREADY_INITIALIZED = 0x17a5; // 6053
 /** InvalidTaxReserveAta: Tax reserve ATA missing or owner mismatch */
 export const BIN_FARM_ERROR__INVALID_TAX_RESERVE_ATA = 0x17a6; // 6054
+/** TradeAuthExpired: TradeAuth has expired */
+export const BIN_FARM_ERROR__TRADE_AUTH_EXPIRED = 0x17a7; // 6055
+/** TradeAuthNotExpired: TradeAuth has not yet expired — cannot cancel */
+export const BIN_FARM_ERROR__TRADE_AUTH_NOT_EXPIRED = 0x17a8; // 6056
+/** TradeAuthBotMismatch: TradeAuth bot does not match Config.bot */
+export const BIN_FARM_ERROR__TRADE_AUTH_BOT_MISMATCH = 0x17a9; // 6057
+/** TradeAuthVaultMismatch: TradeAuth user_vault does not match passed vault */
+export const BIN_FARM_ERROR__TRADE_AUTH_VAULT_MISMATCH = 0x17aa; // 6058
+/** TradeAuthPoolMismatch: TradeAuth lb_pair does not match passed pool */
+export const BIN_FARM_ERROR__TRADE_AUTH_POOL_MISMATCH = 0x17ab; // 6059
+/** TradeAuthActionMismatch: TradeAuth action mismatch (open/close) */
+export const BIN_FARM_ERROR__TRADE_AUTH_ACTION_MISMATCH = 0x17ac; // 6060
+/** TradeAuthSourceAtaMismatch: TradeAuth source ATA must be vault.owner's direct ATA */
+export const BIN_FARM_ERROR__TRADE_AUTH_SOURCE_ATA_MISMATCH = 0x17ad; // 6061
+/** TradeAuthInvalidSide: TradeAuth side byte invalid (must be 0=Sell or 1=Buy) */
+export const BIN_FARM_ERROR__TRADE_AUTH_INVALID_SIDE = 0x17ae; // 6062
+/** MissingProposerAta: position_settle was passed but proposer_output_ata is missing */
+export const BIN_FARM_ERROR__MISSING_PROPOSER_ATA = 0x17af; // 6063
 
 export type BinFarmError =
   | typeof BIN_FARM_ERROR__ALREADY_SETTLED
@@ -156,6 +174,7 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__INVALID_VAULT_OWNER
   | typeof BIN_FARM_ERROR__MATCH_RATIO_TOO_HIGH
   | typeof BIN_FARM_ERROR__MISSING_KEEPER_ATA
+  | typeof BIN_FARM_ERROR__MISSING_PROPOSER_ATA
   | typeof BIN_FARM_ERROR__NO_BINS_PROVIDED
   | typeof BIN_FARM_ERROR__NON_CONTIGUOUS_BINS
   | typeof BIN_FARM_ERROR__NO_PENDING_AUTHORITY
@@ -175,6 +194,14 @@ export type BinFarmError =
   | typeof BIN_FARM_ERROR__ROVER_BIN_STEP_TOO_SMALL
   | typeof BIN_FARM_ERROR__ROVER_DEPOSIT_TOO_SMALL
   | typeof BIN_FARM_ERROR__TOO_MANY_BINS
+  | typeof BIN_FARM_ERROR__TRADE_AUTH_ACTION_MISMATCH
+  | typeof BIN_FARM_ERROR__TRADE_AUTH_BOT_MISMATCH
+  | typeof BIN_FARM_ERROR__TRADE_AUTH_EXPIRED
+  | typeof BIN_FARM_ERROR__TRADE_AUTH_INVALID_SIDE
+  | typeof BIN_FARM_ERROR__TRADE_AUTH_NOT_EXPIRED
+  | typeof BIN_FARM_ERROR__TRADE_AUTH_POOL_MISMATCH
+  | typeof BIN_FARM_ERROR__TRADE_AUTH_SOURCE_ATA_MISMATCH
+  | typeof BIN_FARM_ERROR__TRADE_AUTH_VAULT_MISMATCH
   | typeof BIN_FARM_ERROR__TRADER_DEST_ALREADY_SET
   | typeof BIN_FARM_ERROR__TRADER_DEST_NOT_SET
   | typeof BIN_FARM_ERROR__UNAUTHORIZED
@@ -215,6 +242,7 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__INVALID_VAULT_OWNER]: `Invalid vault owner — does not match PDA seed`,
     [BIN_FARM_ERROR__MATCH_RATIO_TOO_HIGH]: `match_ratio_bps exceeds maximum (50000 bps = 5x)`,
     [BIN_FARM_ERROR__MISSING_KEEPER_ATA]: `Permissionless harvester must provide keeper ATA in remaining_accounts`,
+    [BIN_FARM_ERROR__MISSING_PROPOSER_ATA]: `position_settle was passed but proposer_output_ata is missing`,
     [BIN_FARM_ERROR__NO_BINS_PROVIDED]: `No bin IDs provided`,
     [BIN_FARM_ERROR__NON_CONTIGUOUS_BINS]: `Bin IDs must be contiguous (no gaps)`,
     [BIN_FARM_ERROR__NO_PENDING_AUTHORITY]: `No pending authority`,
@@ -234,6 +262,14 @@ if (process.env.NODE_ENV !== 'production') {
     [BIN_FARM_ERROR__ROVER_BIN_STEP_TOO_SMALL]: `Rover bin_step too small (minimum 20 — prevents instant liquidation on tight pools)`,
     [BIN_FARM_ERROR__ROVER_DEPOSIT_TOO_SMALL]: `Rover deposit below minimum (anti-griefing)`,
     [BIN_FARM_ERROR__TOO_MANY_BINS]: `Too many bins (max 70 per call)`,
+    [BIN_FARM_ERROR__TRADE_AUTH_ACTION_MISMATCH]: `TradeAuth action mismatch (open/close)`,
+    [BIN_FARM_ERROR__TRADE_AUTH_BOT_MISMATCH]: `TradeAuth bot does not match Config.bot`,
+    [BIN_FARM_ERROR__TRADE_AUTH_EXPIRED]: `TradeAuth has expired`,
+    [BIN_FARM_ERROR__TRADE_AUTH_INVALID_SIDE]: `TradeAuth side byte invalid (must be 0=Sell or 1=Buy)`,
+    [BIN_FARM_ERROR__TRADE_AUTH_NOT_EXPIRED]: `TradeAuth has not yet expired — cannot cancel`,
+    [BIN_FARM_ERROR__TRADE_AUTH_POOL_MISMATCH]: `TradeAuth lb_pair does not match passed pool`,
+    [BIN_FARM_ERROR__TRADE_AUTH_SOURCE_ATA_MISMATCH]: `TradeAuth source ATA must be vault.owner's direct ATA`,
+    [BIN_FARM_ERROR__TRADE_AUTH_VAULT_MISMATCH]: `TradeAuth user_vault does not match passed vault`,
     [BIN_FARM_ERROR__TRADER_DEST_ALREADY_SET]: `Trader destination already set — use propose_trader_dest for changes`,
     [BIN_FARM_ERROR__TRADER_DEST_NOT_SET]: `Trader destination not set — call set_trader_dest first`,
     [BIN_FARM_ERROR__UNAUTHORIZED]: `Not authorized`,

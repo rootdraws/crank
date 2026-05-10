@@ -16,12 +16,17 @@ import {
 import {
   type ParsedAcceptAuthorityInstruction,
   type ParsedApplyEmergencyCloseInstruction,
+  type ParsedAuthorizeTreasuryCloseInstruction,
+  type ParsedAuthorizeTreasuryOpenInstruction,
   type ParsedBotPauseInstruction,
   type ParsedBotUnpauseInstruction,
+  type ParsedCancelExpiredTradeAuthInstruction,
   type ParsedClaimFeesInstruction,
   type ParsedClosePositionInstruction,
   type ParsedCloseSettleInstruction,
   type ParsedCreateVaultInstruction,
+  type ParsedDepositTreasuryTokenInstruction,
+  type ParsedDrainTreasuryNativeToNtpInstruction,
   type ParsedExpandConfigV2Instruction,
   type ParsedHarvestBinsInstruction,
   type ParsedInitializeInstruction,
@@ -36,6 +41,8 @@ import {
   type ParsedSetTaxConfigInstruction,
   type ParsedSettleProposerInstruction,
   type ParsedTransferAuthorityInstruction,
+  type ParsedTreasuryCloseCombinedInstruction,
+  type ParsedTreasuryOpenCombinedInstruction,
   type ParsedUnpauseInstruction,
   type ParsedUnwrapWsolInVaultInstruction,
   type ParsedUpdateBotInstruction,
@@ -46,6 +53,8 @@ import {
   type ParsedUserCloseInstruction,
   type ParsedWithdrawSolInstruction,
   type ParsedWithdrawTokenInstruction,
+  type ParsedWithdrawTreasuryTokenInstruction,
+  type ParsedWrapCallerSolInstruction,
   type ParsedWrapSolInVaultInstruction,
 } from '../instructions';
 
@@ -57,6 +66,7 @@ export enum BinFarmAccount {
   Position,
   PositionCounter,
   PositionSettle,
+  TradeAuth,
   UserVault,
   Vault,
 }
@@ -113,6 +123,17 @@ export function identifyBinFarmAccount(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([231, 65, 252, 89, 210, 254, 16, 139])
+      ),
+      0
+    )
+  ) {
+    return BinFarmAccount.TradeAuth;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([23, 76, 96, 159, 210, 10, 5, 22])
       ),
       0
@@ -139,12 +160,17 @@ export function identifyBinFarmAccount(
 export enum BinFarmInstruction {
   AcceptAuthority,
   ApplyEmergencyClose,
+  AuthorizeTreasuryClose,
+  AuthorizeTreasuryOpen,
   BotPause,
   BotUnpause,
+  CancelExpiredTradeAuth,
   ClaimFees,
   ClosePosition,
   CloseSettle,
   CreateVault,
+  DepositTreasuryToken,
+  DrainTreasuryNativeToNtp,
   ExpandConfigV2,
   HarvestBins,
   InitPayoutConfig,
@@ -159,6 +185,8 @@ export enum BinFarmInstruction {
   SetTaxConfig,
   SettleProposer,
   TransferAuthority,
+  TreasuryCloseCombined,
+  TreasuryOpenCombined,
   Unpause,
   UnwrapWsolInVault,
   UpdateBot,
@@ -169,6 +197,8 @@ export enum BinFarmInstruction {
   UserClose,
   WithdrawSol,
   WithdrawToken,
+  WithdrawTreasuryToken,
+  WrapCallerSol,
   WrapSolInVault,
 }
 
@@ -202,6 +232,28 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([89, 219, 178, 7, 42, 244, 65, 113])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.AuthorizeTreasuryClose;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([204, 3, 120, 244, 185, 133, 44, 231])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.AuthorizeTreasuryOpen;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([213, 92, 15, 33, 223, 8, 193, 96])
       ),
       0
@@ -219,6 +271,17 @@ export function identifyBinFarmInstruction(
     )
   ) {
     return BinFarmInstruction.BotUnpause;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([59, 238, 91, 136, 23, 130, 80, 48])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.CancelExpiredTradeAuth;
   }
   if (
     containsBytes(
@@ -263,6 +326,28 @@ export function identifyBinFarmInstruction(
     )
   ) {
     return BinFarmInstruction.CreateVault;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([63, 196, 128, 255, 53, 51, 103, 82])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.DepositTreasuryToken;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([144, 47, 152, 42, 52, 57, 25, 38])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.DrainTreasuryNativeToNtp;
   }
   if (
     containsBytes(
@@ -422,6 +507,28 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([133, 69, 4, 90, 130, 239, 9, 111])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.TreasuryCloseCombined;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([132, 165, 71, 200, 215, 71, 74, 251])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.TreasuryOpenCombined;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([169, 144, 4, 38, 10, 141, 188, 255])
       ),
       0
@@ -532,6 +639,28 @@ export function identifyBinFarmInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([63, 112, 138, 126, 181, 23, 101, 154])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.WithdrawTreasuryToken;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([203, 147, 177, 25, 195, 217, 13, 84])
+      ),
+      0
+    )
+  ) {
+    return BinFarmInstruction.WrapCallerSol;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([178, 209, 149, 140, 92, 202, 99, 167])
       ),
       0
@@ -554,11 +683,20 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.ApplyEmergencyClose;
     } & ParsedApplyEmergencyCloseInstruction<TProgram>)
   | ({
+      instructionType: BinFarmInstruction.AuthorizeTreasuryClose;
+    } & ParsedAuthorizeTreasuryCloseInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.AuthorizeTreasuryOpen;
+    } & ParsedAuthorizeTreasuryOpenInstruction<TProgram>)
+  | ({
       instructionType: BinFarmInstruction.BotPause;
     } & ParsedBotPauseInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.BotUnpause;
     } & ParsedBotUnpauseInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.CancelExpiredTradeAuth;
+    } & ParsedCancelExpiredTradeAuthInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.ClaimFees;
     } & ParsedClaimFeesInstruction<TProgram>)
@@ -571,6 +709,12 @@ export type ParsedBinFarmInstruction<
   | ({
       instructionType: BinFarmInstruction.CreateVault;
     } & ParsedCreateVaultInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.DepositTreasuryToken;
+    } & ParsedDepositTreasuryTokenInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.DrainTreasuryNativeToNtp;
+    } & ParsedDrainTreasuryNativeToNtpInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.ExpandConfigV2;
     } & ParsedExpandConfigV2Instruction<TProgram>)
@@ -614,6 +758,12 @@ export type ParsedBinFarmInstruction<
       instructionType: BinFarmInstruction.TransferAuthority;
     } & ParsedTransferAuthorityInstruction<TProgram>)
   | ({
+      instructionType: BinFarmInstruction.TreasuryCloseCombined;
+    } & ParsedTreasuryCloseCombinedInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.TreasuryOpenCombined;
+    } & ParsedTreasuryOpenCombinedInstruction<TProgram>)
+  | ({
       instructionType: BinFarmInstruction.Unpause;
     } & ParsedUnpauseInstruction<TProgram>)
   | ({
@@ -643,6 +793,12 @@ export type ParsedBinFarmInstruction<
   | ({
       instructionType: BinFarmInstruction.WithdrawToken;
     } & ParsedWithdrawTokenInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.WithdrawTreasuryToken;
+    } & ParsedWithdrawTreasuryTokenInstruction<TProgram>)
+  | ({
+      instructionType: BinFarmInstruction.WrapCallerSol;
+    } & ParsedWrapCallerSolInstruction<TProgram>)
   | ({
       instructionType: BinFarmInstruction.WrapSolInVault;
     } & ParsedWrapSolInVaultInstruction<TProgram>);
