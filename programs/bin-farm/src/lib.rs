@@ -794,6 +794,30 @@ pub mod bin_farm {
         let position_key = ctx.accounts.position.key();
         let owner_key = ctx.accounts.user_vault.owner;
 
+        // Inline settle for treasury-matched positions. When PositionSettle exists,
+        // pay proposer + tax cuts BEFORE execute_close_transfers drains the vault.
+        if let Some(settle) = ctx.accounts.position_settle.as_mut() {
+            let proposer_ata = ctx.accounts.proposer_output_ata.as_deref()
+                .ok_or(CoreError::MissingProposerAta)?;
+            let tax_ata = ctx.accounts.tax_reserve_output_ata.as_deref();
+            run_inline_settle(
+                &ctx.accounts.config,
+                settle.as_mut(),
+                side,
+                &mut ctx.accounts.vault_token_x,
+                &mut ctx.accounts.vault_token_y,
+                proposer_ata,
+                tax_ata,
+                &ctx.accounts.token_x_mint.to_account_info(),
+                &ctx.accounts.token_y_mint.to_account_info(),
+                &ctx.accounts.token_x_program,
+                &ctx.accounts.token_y_program,
+                &ctx.accounts.vault.to_account_info(),
+                &ctx.accounts.memo_program,
+                signer,
+            )?;
+        }
+
         let (x_fee, y_fee, x_out, y_out) = execute_close_transfers(
             side,
             ctx.accounts.config.fee_bps,
@@ -944,6 +968,29 @@ pub mod bin_farm {
 
         let position_key = ctx.accounts.position.key();
         let owner_key = ctx.accounts.user_vault.owner;
+
+        // Inline settle for treasury-matched positions (see ClosePosition for rationale).
+        if let Some(settle) = ctx.accounts.position_settle.as_mut() {
+            let proposer_ata = ctx.accounts.proposer_output_ata.as_deref()
+                .ok_or(CoreError::MissingProposerAta)?;
+            let tax_ata = ctx.accounts.tax_reserve_output_ata.as_deref();
+            run_inline_settle(
+                &ctx.accounts.config,
+                settle.as_mut(),
+                side,
+                &mut ctx.accounts.vault_token_x,
+                &mut ctx.accounts.vault_token_y,
+                proposer_ata,
+                tax_ata,
+                &ctx.accounts.token_x_mint.to_account_info(),
+                &ctx.accounts.token_y_mint.to_account_info(),
+                &ctx.accounts.token_x_program,
+                &ctx.accounts.token_y_program,
+                &ctx.accounts.vault.to_account_info(),
+                &ctx.accounts.memo_program,
+                signer,
+            )?;
+        }
 
         let (x_fee, y_fee, x_out, y_out) = execute_close_transfers(
             side,
@@ -1422,6 +1469,37 @@ pub mod bin_farm {
         Ok(())
     }
 
+    /// Wrap native SOL → WSOL in a caller-owned WSOL ATA.
+    /// Generic: source = caller's lamports (must be system-owned), destination =
+    /// any WSOL ATA where `token::authority == caller`. Used in Path B open marker
+    /// proposals to atomically wrap NTP native lamports → NTP's WSOL ATA inside
+    /// the same governance tx that mints `TradeAuth`. Caller signs as Signer,
+    /// so for NTP use governance signs via `invoke_signed`.
+    pub fn wrap_caller_sol(ctx: Context<WrapCallerSol>, amount: u64) -> Result<()> {
+        require!(amount > 0, CoreError::ZeroAmount);
+
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.caller.to_account_info(),
+                    to: ctx.accounts.caller_wsol_ata.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        anchor_spl::token::sync_native(CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            anchor_spl::token::SyncNative {
+                account: ctx.accounts.caller_wsol_ata.to_account_info(),
+            },
+        ))?;
+
+        msg!("wrap_caller_sol: {} lamports → caller WSOL ATA", amount);
+        Ok(())
+    }
+
     /// Unwrap WSOL in vault back to native SOL.
     /// Closes the vault's WSOL ATA — token balance returns to vault PDA,
     /// ATA rent returns to caller (bot paid for creation, bot gets rent back).
@@ -1472,8 +1550,105 @@ pub mod bin_farm {
         Ok(())
     }
 
+    /// Move SPL/Token-2022 tokens from `vault.owner`'s ATA → vault's ATA.
+    /// Governance-only: caller must equal `user_vault.owner` (i.e. NTP, signed by
+    /// SPL Governance via `invoke_signed` during proposal execution).
+    ///
+    /// Used in Path B OPEN payloads to flow working capital from the protocol's
+    /// visible NTP-ATA reserves into the treasury vault for one trade. Pair with
+    /// `withdraw_treasury_token` in the CLOSE payload to return the residue.
+    pub fn deposit_treasury_token(ctx: Context<DepositTreasuryToken>, amount: u64) -> Result<()> {
+        require!(
+            ctx.accounts.caller.key() == ctx.accounts.user_vault.owner,
+            CoreError::UnauthorizedCaller
+        );
+        require!(amount > 0, CoreError::ZeroAmount);
 
+        let decimals = read_mint_decimals(&ctx.accounts.token_mint)?;
 
+        transfer_checked(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.owner_token_account.to_account_info(),
+                    mint: ctx.accounts.token_mint.to_account_info(),
+                    to: ctx.accounts.vault_token_account.to_account_info(),
+                    authority: ctx.accounts.caller.to_account_info(),
+                },
+            ),
+            amount,
+            decimals,
+        )?;
+
+        msg!("Treasury deposit {} tokens vault.owner → vault", amount);
+        Ok(())
+    }
+
+    /// Move SPL/Token-2022 tokens from vault's ATA → `vault.owner`'s ATA.
+    /// Governance-only: caller must equal `user_vault.owner` (NTP via
+    /// SPL Governance `invoke_signed`).
+    ///
+    /// Used in Path B CLOSE payloads to return residual treasury working capital
+    /// to NTP's direct ATA, restoring Realms-visible reserves. Distinct from
+    /// `withdraw_token`, which is dual-callable by the bot for the Path A surface.
+    pub fn withdraw_treasury_token(ctx: Context<WithdrawTreasuryToken>, amount: u64) -> Result<()> {
+        require!(
+            ctx.accounts.caller.key() == ctx.accounts.user_vault.owner,
+            CoreError::UnauthorizedCaller
+        );
+        require!(amount > 0, CoreError::ZeroAmount);
+
+        let decimals = read_mint_decimals(&ctx.accounts.token_mint)?;
+        let owner_key = ctx.accounts.user_vault.owner;
+        let vault_seeds: &[&[u8]] = &[
+            b"user_vault",
+            owner_key.as_ref(),
+            &[ctx.accounts.user_vault.bump],
+        ];
+
+        transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault_token_account.to_account_info(),
+                    mint: ctx.accounts.token_mint.to_account_info(),
+                    to: ctx.accounts.owner_token_account.to_account_info(),
+                    authority: ctx.accounts.user_vault.to_account_info(),
+                },
+                &[vault_seeds],
+            ),
+            amount,
+            decimals,
+        )?;
+
+        msg!("Treasury withdraw {} tokens vault → vault.owner", amount);
+        Ok(())
+    }
+
+    /// Drain native lamports from the treasury user_vault back to the NTP
+    /// (= user_vault.owner). Governance-signed only (caller must equal
+    /// user_vault.owner; for the treasury vault that's the NTP, signable only
+    /// via SPL Governance executeTransaction). One-shot cleanup for operational
+    /// SOL pre-existing before Path B stopped using user_vault as a gas/rent
+    /// float. Leaves rent-exempt minimum behind so the PDA stays alive.
+    pub fn drain_treasury_native_to_ntp(ctx: Context<DrainTreasuryNativeToNtp>) -> Result<()> {
+        require!(
+            ctx.accounts.caller.key() == ctx.accounts.user_vault.owner,
+            CoreError::UnauthorizedCaller
+        );
+
+        let rent_min = Rent::get()?.minimum_balance(UserVault::SIZE);
+        let available = ctx.accounts.user_vault.to_account_info()
+            .lamports()
+            .saturating_sub(rent_min);
+        require!(available > 0, CoreError::InsufficientBalance);
+
+        **ctx.accounts.user_vault.to_account_info().try_borrow_mut_lamports()? -= available;
+        **ctx.accounts.caller.to_account_info().try_borrow_mut_lamports()? += available;
+
+        msg!("drain_treasury_native_to_ntp: {} lamports user_vault → NTP", available);
+        Ok(())
+    }
 
     /// Admin sets gas reimbursement amount per operation.
     pub fn update_gas_lamports(ctx: Context<AdminOnly>, gas_lamports: u64) -> Result<()> {
@@ -1826,6 +2001,742 @@ pub mod bin_farm {
         // Anchor's `close = user_vault` constraint handles the rent refund.
         Ok(())
     }
+
+    // ============ TREASURY MARKER PATTERN (Path B v3) ============
+    //
+    // Replaces the multi-index Path B (deposit + open_position_v2 + record_settle
+    // as 3 inner ixs across 3 ProposalTransaction PDAs) with a 1-ix marker
+    // proposal that creates a TradeAuth, plus a bot-signed combined ix that
+    // does the real work atomically. Cuts per-fire SOL cost ~$5 → ~$1.74.
+    //
+    // Security: authorize_treasury_* requires caller == user_vault.owner. For
+    // the treasury vault, that's NTP — only signable via SPL Governance
+    // invoke_signed during executeTransaction. The proposal-whitelist-addin
+    // gates which ixs can pass, so a compromised bot cannot fabricate a
+    // TradeAuth.
+
+    /// Marker ix #1 of the OPEN proposal payload. Creates a TradeAuth PDA the
+    /// bot will consume via `treasury_open_combined` after proposal execute.
+    pub fn authorize_treasury_open(
+        ctx: Context<AuthorizeTreasuryOpen>,
+        side: u8,
+        amount: u64,
+        min_bin_id: i32,
+        max_bin_id: i32,
+        slippage: i32,
+        proposer: Pubkey,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.caller.key() == ctx.accounts.user_vault.owner,
+            CoreError::UnauthorizedCaller
+        );
+        require!(amount > 0, CoreError::ZeroAmount);
+        require!(amount >= MIN_POSITION_AMOUNT, CoreError::PositionTooSmall);
+        require!(slippage >= 0 && slippage <= 20, CoreError::InvalidSlippage);
+        require!(min_bin_id <= max_bin_id, CoreError::InvalidBinRange);
+        let width = max_bin_id - min_bin_id + 1;
+        require!(width <= MAX_POSITION_WIDTH, CoreError::PositionTooWide);
+        require!(side == 0 || side == 1, CoreError::TradeAuthInvalidSide);
+        require!(proposer != Pubkey::default(), CoreError::InvalidProposer);
+
+        let auth = &mut ctx.accounts.trade_auth;
+        auth.bot = ctx.accounts.config.bot;
+        auth.proposer = proposer;
+        auth.lb_pair = ctx.accounts.lb_pair.key();
+        auth.user_vault = ctx.accounts.user_vault.key();
+        auth.action = TRADE_AUTH_ACTION_OPEN;
+        auth.side = side;
+        auth.min_bin_id = min_bin_id;
+        auth.max_bin_id = max_bin_id;
+        auth.slippage = slippage;
+        auth.amount = amount;
+        auth.expires_at = Clock::get()?.unix_timestamp + TRADE_AUTH_TTL_SECS;
+        auth.bump = ctx.bumps.trade_auth;
+
+        msg!(
+            "TradeAuth OPEN: vault={} pool={} side={} amt={} bins=[{},{}] proposer={}",
+            auth.user_vault, auth.lb_pair, side, amount, min_bin_id, max_bin_id, proposer
+        );
+        Ok(())
+    }
+
+    /// Marker ix of the CLOSE proposal payload. Creates a TradeAuth (action=Close)
+    /// the bot will consume via `treasury_close_combined`. The position to close
+    /// is identified by lb_pair + (off-chain) the proposer-recorded
+    /// PositionSettle reference; the on-chain authority binding is via
+    /// auth.user_vault and auth.lb_pair.
+    pub fn authorize_treasury_close(
+        ctx: Context<AuthorizeTreasuryClose>,
+        proposer: Pubkey,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.caller.key() == ctx.accounts.user_vault.owner,
+            CoreError::UnauthorizedCaller
+        );
+        require!(proposer != Pubkey::default(), CoreError::InvalidProposer);
+
+        let auth = &mut ctx.accounts.trade_auth;
+        auth.bot = ctx.accounts.config.bot;
+        auth.proposer = proposer;
+        auth.lb_pair = ctx.accounts.lb_pair.key();
+        auth.user_vault = ctx.accounts.user_vault.key();
+        auth.action = TRADE_AUTH_ACTION_CLOSE;
+        auth.side = 0;
+        auth.min_bin_id = 0;
+        auth.max_bin_id = 0;
+        auth.slippage = 0;
+        auth.amount = 0;
+        auth.expires_at = Clock::get()?.unix_timestamp + TRADE_AUTH_TTL_SECS;
+        auth.bump = ctx.bumps.trade_auth;
+
+        msg!(
+            "TradeAuth CLOSE: vault={} pool={} proposer={}",
+            auth.user_vault, auth.lb_pair, proposer
+        );
+        Ok(())
+    }
+
+    /// Bot-signed recovery: close an expired TradeAuth that wasn't consumed.
+    /// Refunds rent to bot. Required because `init` on the marker ix blocks any
+    /// new TradeAuth while a stale one exists for the same user_vault, and there
+    /// is no other path to close a TradeAuth outside of consume.
+    pub fn cancel_expired_trade_auth(ctx: Context<CancelExpiredTradeAuth>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            ctx.accounts.trade_auth.expires_at < now,
+            CoreError::TradeAuthNotExpired
+        );
+        require!(
+            ctx.accounts.bot.key() == ctx.accounts.trade_auth.bot,
+            CoreError::UnauthorizedCaller
+        );
+        msg!(
+            "cancel_expired_trade_auth: vault={} expired_at={} now={}",
+            ctx.accounts.trade_auth.user_vault,
+            ctx.accounts.trade_auth.expires_at,
+            now
+        );
+        Ok(())
+    }
+
+    /// Bot-signed direct tx — consumes a TradeAuth (action=Open) and inlines
+    /// deposit + open_position + record_settle in one atomic CPI. The TradeAuth
+    /// is closed (rent → bot) on success.
+    ///
+    /// Source-of-truth for the trade params is the on-chain TradeAuth, NOT bot
+    /// args, so a compromised bot cannot deviate from what governance approved.
+    pub fn treasury_open_combined<'info>(
+        ctx: Context<'_, '_, 'info, 'info, TreasuryOpenCombined<'info>>,
+        _rent_lamports: u64,
+    ) -> Result<()> {
+        require!(!ctx.accounts.config.paused, CoreError::Paused);
+        require!(ctx.accounts.bot.key() == ctx.accounts.config.bot, CoreError::Unauthorized);
+
+        // ---- Validate TradeAuth ----
+        let auth = &ctx.accounts.trade_auth;
+        let now = Clock::get()?.unix_timestamp;
+        require!(now < auth.expires_at, CoreError::TradeAuthExpired);
+        require!(auth.action == TRADE_AUTH_ACTION_OPEN, CoreError::TradeAuthActionMismatch);
+        require!(auth.bot == ctx.accounts.bot.key(), CoreError::TradeAuthBotMismatch);
+        require!(auth.user_vault == ctx.accounts.user_vault.key(), CoreError::TradeAuthVaultMismatch);
+        require!(auth.lb_pair == ctx.accounts.lb_pair.key(), CoreError::TradeAuthPoolMismatch);
+        require!(auth.side == 0 || auth.side == 1, CoreError::TradeAuthInvalidSide);
+        require!(auth.amount > 0, CoreError::ZeroAmount);
+        require!(auth.amount >= MIN_POSITION_AMOUNT, CoreError::PositionTooSmall);
+        require!(auth.slippage >= 0 && auth.slippage <= 20, CoreError::InvalidSlippage);
+        require!(auth.min_bin_id <= auth.max_bin_id, CoreError::InvalidBinRange);
+        let width = auth.max_bin_id - auth.min_bin_id + 1;
+        require!(width <= MAX_POSITION_WIDTH, CoreError::PositionTooWide);
+        require!(ctx.accounts.dlmm_program.key() == METEORA_DLMM_PROGRAM_ID, CoreError::InvalidProgram);
+
+        let amount = auth.amount;
+        let min_bin_id = auth.min_bin_id;
+        let max_bin_id = auth.max_bin_id;
+        let max_active_bin_slippage = auth.slippage;
+        let proposer = auth.proposer;
+
+        // ---- Validate ATA ownerships ----
+        // (mirrors open_position_v2:113-131)
+        {
+            let data = ctx.accounts.vault_token_x.try_borrow_data()?;
+            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
+            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
+            require!(owner == ctx.accounts.vault.key(), CoreError::InvalidTokenOwner);
+        }
+        {
+            let data = ctx.accounts.vault_token_y.try_borrow_data()?;
+            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
+            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
+            require!(owner == ctx.accounts.vault.key(), CoreError::InvalidTokenOwner);
+        }
+        {
+            let data = ctx.accounts.user_vault_deposit_ata.try_borrow_data()?;
+            require!(data.len() >= 64, CoreError::InvalidTokenOwner);
+            let owner = Pubkey::try_from(&data[32..64]).map_err(|_| CoreError::InvalidTokenOwner)?;
+            require!(owner == ctx.accounts.user_vault.key(), CoreError::InvalidTokenOwner);
+        }
+        // caller_token_account = vault.owner's direct ATA (NTP for treasury vault).
+        // InterfaceAccount.owner is the SPL token account owner field.
+        require!(
+            ctx.accounts.caller_token_account.owner == ctx.accounts.user_vault.owner,
+            CoreError::TradeAuthSourceAtaMismatch
+        );
+
+        // Derive on-chain side (mirrors open_position_v2:133-140)
+        let active_id = {
+            let data = ctx.accounts.lb_pair.try_borrow_data()?;
+            require!(data.len() >= 80, CoreError::InvalidPool);
+            i32::from_le_bytes(data[76..80].try_into().map_err(|_| CoreError::Overflow)?)
+        };
+        require!(active_id > -443636 && active_id < 443636, CoreError::InvalidBinRange);
+        let side = if min_bin_id > active_id { Side::Sell } else { Side::Buy };
+
+        // ---- INLINED FROM deposit_treasury_token (lib.rs:1482-1507) ----
+        // Bot signs as delegate over vault.owner's ATA. NTP must have approved
+        // bot via Token-2022 approve_checked in a one-time governance proposal
+        // (Phase 7 of marker refactor plan).
+        let dep_decimals = read_mint_decimals(&ctx.accounts.deposit_token_mint)?;
+        transfer_checked(
+            CpiContext::new(
+                ctx.accounts.deposit_token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.caller_token_account.to_account_info(),
+                    mint: ctx.accounts.deposit_token_mint.to_account_info(),
+                    to: ctx.accounts.user_vault_deposit_ata.to_account_info(),
+                    authority: ctx.accounts.bot.to_account_info(),
+                },
+            ),
+            amount,
+            dep_decimals,
+        )?;
+
+        // ---- INLINED FROM open_position_v2 (lib.rs:142-323) ----
+        let uv_owner_key = ctx.accounts.user_vault.owner;
+        let uv_bump = [ctx.accounts.user_vault.bump];
+        let user_vault_seeds: &[&[u8]] = &[b"user_vault", uv_owner_key.as_ref(), &uv_bump];
+
+        let pos_deposit_token_program = if side == Side::Sell {
+            &ctx.accounts.token_x_program
+        } else {
+            &ctx.accounts.token_y_program
+        };
+        let pos_deposit_position_vault = if side == Side::Sell {
+            &ctx.accounts.vault_token_x
+        } else {
+            &ctx.accounts.vault_token_y
+        };
+
+        // user_vault deposit ATA → position vault token ATA (user_vault PDA signs)
+        let transfer_ix = anchor_lang::solana_program::instruction::Instruction {
+            program_id: *pos_deposit_token_program.key,
+            accounts: vec![
+                anchor_lang::solana_program::instruction::AccountMeta::new(ctx.accounts.user_vault_deposit_ata.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new(pos_deposit_position_vault.key(), false),
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(ctx.accounts.user_vault.key(), true),
+            ],
+            data: {
+                let mut d = vec![3u8];
+                d.extend_from_slice(&amount.to_le_bytes());
+                d
+            },
+        };
+        anchor_lang::solana_program::program::invoke_signed(
+            &transfer_ix,
+            &[
+                ctx.accounts.user_vault_deposit_ata.to_account_info(),
+                pos_deposit_position_vault.to_account_info(),
+                ctx.accounts.user_vault.to_account_info(),
+                pos_deposit_token_program.to_account_info(),
+            ],
+            &[user_vault_seeds],
+        )?;
+
+        // Build PDA signer seeds for meteora_position + per-position vault
+        let user_vault_key = ctx.accounts.user_vault.key();
+        let lb_pair_key = ctx.accounts.lb_pair.key();
+        let count_bytes = ctx.accounts.position_counter.count.to_le_bytes();
+        let meteora_pos_bump = [ctx.bumps.meteora_position];
+        let meteora_pos_key = ctx.accounts.meteora_position.key();
+        let meteora_pos_seeds: &[&[u8]] = &[
+            b"meteora_pos",
+            user_vault_key.as_ref(),
+            lb_pair_key.as_ref(),
+            &count_bytes,
+            &meteora_pos_bump,
+        ];
+        let vault_seeds: &[&[u8]] = &[
+            b"vault",
+            meteora_pos_key.as_ref(),
+            &[ctx.bumps.vault],
+        ];
+        let signer = &[vault_seeds, meteora_pos_seeds];
+
+        let bin_array_lower = ctx.accounts.bin_array_lower.to_account_info();
+        let bin_array_upper = ctx.accounts.bin_array_upper.to_account_info();
+        let event_authority = ctx.accounts.event_authority.to_account_info();
+        let dlmm_program = ctx.accounts.dlmm_program.to_account_info();
+        let token_x_mint = ctx.accounts.token_x_mint.to_account_info();
+        let token_y_mint = ctx.accounts.token_y_mint.to_account_info();
+
+        initialize_position2(
+            &[
+                ctx.accounts.bot.to_account_info(),
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.lb_pair.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+                event_authority.clone(),
+                dlmm_program.clone(),
+            ],
+            min_bin_id,
+            width,
+            signer,
+        )?;
+
+        let (amount_x, amount_y) = if side == Side::Sell { (amount, 0u64) } else { (0u64, amount) };
+        let liquidity_params = LiquidityParameterByStrategy {
+            amount_x,
+            amount_y,
+            active_id,
+            max_active_bin_slippage,
+            strategy_parameters: StrategyParameters::spot_imbalanced(min_bin_id, max_bin_id),
+        };
+
+        add_liquidity_by_strategy2(
+            &[
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.lb_pair.to_account_info(),
+                ctx.accounts.bin_array_bitmap_ext.to_account_info(),
+                ctx.accounts.vault_token_x.to_account_info(),
+                ctx.accounts.vault_token_y.to_account_info(),
+                ctx.accounts.reserve_x.to_account_info(),
+                ctx.accounts.reserve_y.to_account_info(),
+                token_x_mint.clone(),
+                token_y_mint.clone(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.token_x_program.to_account_info(),
+                ctx.accounts.token_y_program.to_account_info(),
+                event_authority,
+                dlmm_program,
+            ],
+            liquidity_params,
+            RemainingAccountsInfo::empty_hooks(),
+            signer,
+            &[bin_array_lower, bin_array_upper],
+        )?;
+
+        let position = &mut ctx.accounts.position;
+        position.user_vault = ctx.accounts.user_vault.key();
+        position.lb_pair = ctx.accounts.lb_pair.key();
+        position.meteora_position = ctx.accounts.meteora_position.key();
+        position.side = side;
+        position.min_bin_id = min_bin_id;
+        position.max_bin_id = max_bin_id;
+        position.initial_amount = amount;
+        position.harvested_amount = 0;
+        position.created_at = Clock::get()?.unix_timestamp;
+        position.bump = ctx.bumps.position;
+
+        let vault = &mut ctx.accounts.vault;
+        vault.position = ctx.accounts.meteora_position.key();
+        vault.bump = ctx.bumps.vault;
+
+        let counter = &mut ctx.accounts.position_counter;
+        if counter.bump == 0 { counter.bump = ctx.bumps.position_counter; }
+        counter.count = counter.count.checked_add(1).ok_or(CoreError::Overflow)?;
+
+        let config = &mut ctx.accounts.config;
+        config.total_positions = config.total_positions.saturating_add(1);
+        config.total_volume = config.total_volume.saturating_add(amount);
+
+        // No gas/rent passthrough on Path B. Bot eats both at open and recovers
+        // bin-array + per-PDA rent on close (close_position2 rent → bot, Anchor
+        // close = bot on Position/Vault). NTP holds all DAO SOL; user_vault
+        // holds zero in steady state.
+
+        emit!(PositionOpenedEvent {
+            position: ctx.accounts.position.key(),
+            user: ctx.accounts.user_vault.owner,
+            lb_pair: ctx.accounts.lb_pair.key(),
+            side,
+            amount,
+            min_bin_id,
+            max_bin_id,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        // ---- INLINED FROM record_settle_meta (lib.rs:1737-1770) ----
+        let output_mint_pk = match ctx.accounts.position.side {
+            Side::Sell => ctx.accounts.token_y_mint.key(),
+            Side::Buy => ctx.accounts.token_x_mint.key(),
+        };
+        let settle = &mut ctx.accounts.position_settle;
+        settle.proposer = proposer;
+        settle.output_mint = output_mint_pk;
+        settle.payout_bps = ctx.accounts.config.payout_bps;
+        settle.settled = false;
+        settle.bump = ctx.bumps.position_settle;
+
+        msg!(
+            "treasury_open_combined: pos={} bins=[{},{}] amount={} side={:?} proposer={} output={}",
+            ctx.accounts.position.key(), min_bin_id, max_bin_id, amount, side, proposer, output_mint_pk
+        );
+
+        // TradeAuth closed via `close = bot` constraint; rent refunded.
+        Ok(())
+    }
+
+    /// Bot-signed direct tx — consumes a TradeAuth (action=Close) and inlines
+    /// settle_proposer + user_close + close_settle. The TradeAuth is closed
+    /// (rent → bot) on success.
+    pub fn treasury_close_combined<'info>(
+        ctx: Context<'_, '_, 'info, 'info, TreasuryCloseCombined<'info>>,
+    ) -> Result<()> {
+        require!(ctx.accounts.bot.key() == ctx.accounts.config.bot, CoreError::Unauthorized);
+
+        // ---- Validate TradeAuth ----
+        let auth = &ctx.accounts.trade_auth;
+        let now = Clock::get()?.unix_timestamp;
+        require!(now < auth.expires_at, CoreError::TradeAuthExpired);
+        require!(auth.action == TRADE_AUTH_ACTION_CLOSE, CoreError::TradeAuthActionMismatch);
+        require!(auth.bot == ctx.accounts.bot.key(), CoreError::TradeAuthBotMismatch);
+        require!(auth.user_vault == ctx.accounts.user_vault.key(), CoreError::TradeAuthVaultMismatch);
+        require!(auth.lb_pair == ctx.accounts.lb_pair.key(), CoreError::TradeAuthPoolMismatch);
+
+        // Validate fee_dest
+        let effective_fee_dest = if ctx.accounts.config.fee_dest == Pubkey::default() {
+            ctx.accounts.config.bot
+        } else {
+            ctx.accounts.config.fee_dest
+        };
+        require!(
+            ctx.accounts.fee_dest.key() == effective_fee_dest,
+            CoreError::InvalidFeeDest
+        );
+
+        // ---- INLINED FROM settle_proposer (lib.rs:1780-1885) ----
+        require!(!ctx.accounts.position_settle.settled, CoreError::AlreadySettled);
+        require!(
+            ctx.accounts.position_settle.output_mint == ctx.accounts.output_mint.key(),
+            CoreError::OutputMintMismatch
+        );
+        require!(
+            ctx.accounts.proposer_output_ata.owner == ctx.accounts.position_settle.proposer,
+            CoreError::InvalidProposer
+        );
+
+        let output_balance = ctx.accounts.position_vault_output_ata.amount;
+        let payout_bps = ctx.accounts.position_settle.payout_bps as u128;
+        let payout = (output_balance as u128)
+            .checked_mul(payout_bps).ok_or(CoreError::Overflow)?
+            .checked_div(10_000).ok_or(CoreError::Overflow)? as u64;
+
+        let cfg_tax_bps = ctx.accounts.config.tax_bps as u128;
+        let tax_payout: u64 = if ctx.accounts.config.tax_reserve != Pubkey::default() && cfg_tax_bps > 0 {
+            (output_balance as u128)
+                .checked_mul(cfg_tax_bps).ok_or(CoreError::Overflow)?
+                .checked_div(10_000).ok_or(CoreError::Overflow)? as u64
+        } else { 0 };
+
+        let meteora_pos_key = ctx.accounts.meteora_position.key();
+        let vault_seeds_settle: &[&[u8]] = &[
+            b"vault",
+            meteora_pos_key.as_ref(),
+            &[ctx.accounts.vault.bump],
+        ];
+        let signer_settle = &[vault_seeds_settle];
+        let out_decimals = read_mint_decimals(&ctx.accounts.output_mint.to_account_info())?;
+
+        if payout > 0 {
+            transfer_checked(
+                CpiContext::new_with_signer(
+                    ctx.accounts.output_token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.position_vault_output_ata.to_account_info(),
+                        mint: ctx.accounts.output_mint.to_account_info(),
+                        to: ctx.accounts.proposer_output_ata.to_account_info(),
+                        authority: ctx.accounts.vault.to_account_info(),
+                    },
+                    signer_settle,
+                ),
+                payout,
+                out_decimals,
+            )?;
+        }
+
+        if tax_payout > 0 {
+            let tax_ata = ctx.accounts.tax_reserve_output_ata
+                .as_ref()
+                .ok_or(CoreError::InvalidTaxReserveAta)?;
+            require!(
+                tax_ata.owner == ctx.accounts.config.tax_reserve,
+                CoreError::InvalidTaxReserveAta
+            );
+            transfer_checked(
+                CpiContext::new_with_signer(
+                    ctx.accounts.output_token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.position_vault_output_ata.to_account_info(),
+                        mint: ctx.accounts.output_mint.to_account_info(),
+                        to: tax_ata.to_account_info(),
+                        authority: ctx.accounts.vault.to_account_info(),
+                    },
+                    signer_settle,
+                ),
+                tax_payout,
+                out_decimals,
+            )?;
+        }
+
+        ctx.accounts.position_settle.settled = true;
+
+        msg!(
+            "settle_proposer (combined): payout={} (bps={}) tax={} (bps={}) of output={}",
+            payout, ctx.accounts.position_settle.payout_bps,
+            tax_payout, ctx.accounts.config.tax_bps,
+            output_balance,
+        );
+
+        // ---- INLINED FROM user_close (lib.rs:843-991) ----
+        let side = ctx.accounts.position.side;
+        let min_bin_id = ctx.accounts.position.min_bin_id;
+        let max_bin_id = ctx.accounts.position.max_bin_id;
+
+        let vault_seeds_close: &[&[u8]] = &[
+            b"vault",
+            meteora_pos_key.as_ref(),
+            &[ctx.accounts.vault.bump],
+        ];
+        let signer = &[vault_seeds_close];
+
+        let remaining = &[
+            ctx.accounts.bin_array_lower.to_account_info(),
+            ctx.accounts.bin_array_upper.to_account_info(),
+        ];
+        remove_liquidity_by_range2(
+            &[
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.lb_pair.to_account_info(),
+                ctx.accounts.bin_array_bitmap_ext.to_account_info(),
+                ctx.accounts.vault_token_x.to_account_info(),
+                ctx.accounts.vault_token_y.to_account_info(),
+                ctx.accounts.reserve_x.to_account_info(),
+                ctx.accounts.reserve_y.to_account_info(),
+                ctx.accounts.token_x_mint.to_account_info(),
+                ctx.accounts.token_y_mint.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.token_x_program.to_account_info(),
+                ctx.accounts.token_y_program.to_account_info(),
+                ctx.accounts.memo_program.to_account_info(),
+                ctx.accounts.event_authority.to_account_info(),
+                ctx.accounts.dlmm_program.to_account_info(),
+            ],
+            min_bin_id,
+            max_bin_id,
+            10_000,
+            RemainingAccountsInfo::none(),
+            signer,
+            remaining,
+        )?;
+
+        let remaining = &[
+            ctx.accounts.bin_array_lower.to_account_info(),
+            ctx.accounts.bin_array_upper.to_account_info(),
+        ];
+        claim_fee2(
+            &[
+                ctx.accounts.lb_pair.to_account_info(),
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.reserve_x.to_account_info(),
+                ctx.accounts.reserve_y.to_account_info(),
+                ctx.accounts.vault_token_x.to_account_info(),
+                ctx.accounts.vault_token_y.to_account_info(),
+                ctx.accounts.token_x_mint.to_account_info(),
+                ctx.accounts.token_y_mint.to_account_info(),
+                ctx.accounts.token_x_program.to_account_info(),
+                ctx.accounts.token_y_program.to_account_info(),
+                ctx.accounts.memo_program.to_account_info(),
+                ctx.accounts.event_authority.to_account_info(),
+                ctx.accounts.dlmm_program.to_account_info(),
+            ],
+            min_bin_id,
+            max_bin_id,
+            RemainingAccountsInfo::none(),
+            signer,
+            remaining,
+        )?;
+
+        close_position2(
+            &[
+                ctx.accounts.meteora_position.to_account_info(),
+                ctx.accounts.vault.to_account_info(),
+                ctx.accounts.bot.to_account_info(),
+                ctx.accounts.event_authority.to_account_info(),
+                ctx.accounts.dlmm_program.to_account_info(),
+            ],
+            signer,
+        )?;
+
+        let position_key = ctx.accounts.position.key();
+        let owner_key = ctx.accounts.user_vault.owner;
+
+        // ---- Residue routing — Realms-visible NTP destinations ----
+        // Replaces `execute_close_transfers` for the treasury path. CRANK
+        // residue → NTP's CRANK ATA. WSOL residue → close ATA → NTP lamports
+        // (auto-unwrap). Settle pre-paid proposer + tax in OUTPUT mint above.
+        //
+        // Y must be WSOL — the close-to-lamports trick only works for native
+        // mint accounts. The CRANK/SOL pool (the only one used by Path B) has
+        // Y = WSOL by Meteora's lex-ordering.
+        require!(
+            ctx.accounts.token_y_mint.key() == anchor_spl::token::spl_token::native_mint::ID,
+            CoreError::InvalidProgram
+        );
+
+        ctx.accounts.vault_token_x.reload()?;
+        ctx.accounts.vault_token_y.reload()?;
+        let vault_x_balance = ctx.accounts.vault_token_x.amount;
+        let vault_y_balance = ctx.accounts.vault_token_y.amount;
+        let fee = ctx.accounts.config.fee_bps as u128;
+
+        let x_decimals = read_mint_decimals(&ctx.accounts.token_x_mint.to_account_info())?;
+        let y_decimals = read_mint_decimals(&ctx.accounts.token_y_mint.to_account_info())?;
+
+        // Fee on converted side only (mirrors execute_close_transfers logic).
+        let (x_fee, y_fee) = match side {
+            Side::Buy => {
+                let f = (vault_x_balance as u128)
+                    .checked_mul(fee).ok_or(CoreError::Overflow)?
+                    .checked_div(10_000).ok_or(CoreError::Overflow)? as u64;
+                (f, 0u64)
+            }
+            Side::Sell => {
+                let f = (vault_y_balance as u128)
+                    .checked_mul(fee).ok_or(CoreError::Overflow)?
+                    .checked_div(10_000).ok_or(CoreError::Overflow)? as u64;
+                (0u64, f)
+            }
+        };
+
+        let x_out = vault_x_balance.checked_sub(x_fee).ok_or(CoreError::Overflow)?;
+        let y_out = vault_y_balance.checked_sub(y_fee).ok_or(CoreError::Overflow)?;
+
+        // Fee → fee_dest (preserve direction)
+        if x_fee > 0 {
+            memo_cpi(&ctx.accounts.memo_program, &ctx.accounts.vault.to_account_info(), signer)?;
+            transfer_checked(CpiContext::new_with_signer(
+                ctx.accounts.token_x_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault_token_x.to_account_info(),
+                    mint: ctx.accounts.token_x_mint.to_account_info(),
+                    to: ctx.accounts.fee_dest_token_x.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                }, signer,
+            ), x_fee, x_decimals)?;
+        }
+        if y_fee > 0 {
+            memo_cpi(&ctx.accounts.memo_program, &ctx.accounts.vault.to_account_info(), signer)?;
+            transfer_checked(CpiContext::new_with_signer(
+                ctx.accounts.token_y_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault_token_y.to_account_info(),
+                    mint: ctx.accounts.token_y_mint.to_account_info(),
+                    to: ctx.accounts.fee_dest_token_y.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                }, signer,
+            ), y_fee, y_decimals)?;
+        }
+
+        // Residue X (CRANK) → NTP's CRANK ATA
+        if x_out > 0 {
+            memo_cpi(&ctx.accounts.memo_program, &ctx.accounts.vault.to_account_info(), signer)?;
+            transfer_checked(CpiContext::new_with_signer(
+                ctx.accounts.token_x_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault_token_x.to_account_info(),
+                    mint: ctx.accounts.token_x_mint.to_account_info(),
+                    to: ctx.accounts.ntp_token_x_ata.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                }, signer,
+            ), x_out, x_decimals)?;
+        }
+
+        // Residue Y (WSOL) → close ATA → NTP lamports (auto-unwrap).
+        // The y_out balance + ATA rent flow as native lamports to NTP.
+        close_account(CpiContext::new_with_signer(
+            ctx.accounts.token_y_program.to_account_info(),
+            CloseAccount {
+                account: ctx.accounts.vault_token_y.to_account_info(),
+                destination: ctx.accounts.ntp_sol_account.to_account_info(),
+                authority: ctx.accounts.vault.to_account_info(),
+            }, signer,
+        ))?;
+
+        let close_harvested = match side { Side::Buy => x_out, Side::Sell => y_out };
+        ctx.accounts.config.total_harvested = ctx.accounts.config.total_harvested
+            .checked_add(close_harvested).ok_or(CoreError::Overflow)?;
+        ctx.accounts.config.total_positions = ctx.accounts.config.total_positions.saturating_sub(1);
+
+        // No gas deduction on Path B. Bot eats per-ix gas; bin-array + PDA rent
+        // round-trips bot via close_position2 + Anchor close = bot.
+
+        emit!(CloseEvent {
+            position: position_key,
+            owner: owner_key,
+            side,
+            token_x_out: x_out,
+            token_y_out: y_out,
+            x_fee,
+            y_fee,
+            bot_initiated: true,
+        });
+
+        msg!(
+            "treasury_close_combined: pos={} side={:?} out_x={} out_y={} fee_x={} fee_y={} → NTP",
+            position_key, side, x_out, y_out, x_fee, y_fee
+        );
+
+        // Manually close position / vault / position_settle → bot. Anchor's
+        // `close = X` is omitted on these fields to keep TreasuryCloseCombined's
+        // try_accounts under the 4 KB BPF stack ceiling. TradeAuth still uses
+        // Anchor's close = bot.
+        manual_close_to_bot(
+            &ctx.accounts.position.to_account_info(),
+            &ctx.accounts.bot.to_account_info(),
+        )?;
+        manual_close_to_bot(
+            &ctx.accounts.vault.to_account_info(),
+            &ctx.accounts.bot.to_account_info(),
+        )?;
+        manual_close_to_bot(
+            &ctx.accounts.position_settle.to_account_info(),
+            &ctx.accounts.bot.to_account_info(),
+        )?;
+
+        Ok(())
+    }
+}
+
+/// Close a PDA owned by this program by transferring lamports → dest and
+/// stamping the Anchor closed-account discriminator over the data prefix.
+/// Used in `treasury_close_combined` instead of `close = X` on the account
+/// context to free BPF stack space in `try_accounts`.
+fn manual_close_to_bot<'info>(
+    account: &AccountInfo<'info>,
+    dest: &AccountInfo<'info>,
+) -> Result<()> {
+    let lamports = account.lamports();
+    **dest.try_borrow_mut_lamports()? = dest
+        .lamports()
+        .checked_add(lamports)
+        .ok_or(CoreError::Overflow)?;
+    **account.try_borrow_mut_lamports()? = 0;
+    let mut data = account.try_borrow_mut_data()?;
+    if data.len() >= 8 {
+        data[..8].copy_from_slice(&[255u8; 8]);
+    }
+    Ok(())
 }
 
 /// Deduct gas reimbursement from user vault → caller (bot).
@@ -1879,6 +2790,119 @@ fn read_mint_decimals(mint_info: &AccountInfo) -> Result<u8> {
 }
 
 /// Zeros vault lamports entirely (garbage-collected at end of tx).
+/// Inline-settle helper for permissionless `close_position` and `user_close`.
+///
+/// When a treasury-matched position has a `PositionSettle` PDA recorded at open,
+/// this fires the same 25/25/50 split as `settle_proposer` / `treasury_close_combined`
+/// but without the governance-only caller check. Destinations are bound to the
+/// recorded proposer + Config.tax_reserve, so anyone calling can't redirect funds.
+///
+/// Must run AFTER liquidity-removal + claim_fee (output is in vault) and BEFORE
+/// `execute_close_transfers` (which drains the vault).
+///
+/// PositionSettle PDA close (rent → user_vault) is handled by Anchor's
+/// `close = user_vault` constraint at handler exit.
+fn run_inline_settle<'info>(
+    config: &Account<'info, Config>,
+    position_settle: &mut Account<'info, PositionSettle>,
+    side: Side,
+    vault_token_x: &mut InterfaceAccount<'info, ITokenAccount>,
+    vault_token_y: &mut InterfaceAccount<'info, ITokenAccount>,
+    proposer_output_ata: &InterfaceAccount<'info, ITokenAccount>,
+    tax_reserve_output_ata: Option<&InterfaceAccount<'info, ITokenAccount>>,
+    token_x_mint: &AccountInfo<'info>,
+    token_y_mint: &AccountInfo<'info>,
+    token_x_program: &AccountInfo<'info>,
+    token_y_program: &AccountInfo<'info>,
+    vault: &AccountInfo<'info>,
+    memo_program: &AccountInfo<'info>,
+    signer: &[&[&[u8]]],
+) -> Result<()> {
+    require!(!position_settle.settled, CoreError::AlreadySettled);
+
+    // Resolve output side based on position.side: Buy → tokenX, Sell → tokenY.
+    let (output_mint_info, output_token_program, output_vault_ata) = match side {
+        Side::Buy => (token_x_mint, token_x_program, vault_token_x),
+        Side::Sell => (token_y_mint, token_y_program, vault_token_y),
+    };
+    require!(
+        position_settle.output_mint == output_mint_info.key(),
+        CoreError::OutputMintMismatch
+    );
+    require!(
+        proposer_output_ata.owner == position_settle.proposer,
+        CoreError::InvalidProposer
+    );
+
+    output_vault_ata.reload()?;
+    let output_balance = output_vault_ata.amount;
+    let payout_bps = position_settle.payout_bps as u128;
+    let payout = (output_balance as u128)
+        .checked_mul(payout_bps).ok_or(CoreError::Overflow)?
+        .checked_div(10_000).ok_or(CoreError::Overflow)? as u64;
+
+    let cfg_tax_bps = config.tax_bps as u128;
+    let tax_payout: u64 = if config.tax_reserve != Pubkey::default() && cfg_tax_bps > 0 {
+        (output_balance as u128)
+            .checked_mul(cfg_tax_bps).ok_or(CoreError::Overflow)?
+            .checked_div(10_000).ok_or(CoreError::Overflow)? as u64
+    } else { 0 };
+
+    let decimals = read_mint_decimals(output_mint_info)?;
+
+    if payout > 0 {
+        memo_cpi(memo_program, vault, signer)?;
+        transfer_checked(
+            CpiContext::new_with_signer(
+                output_token_program.to_account_info(),
+                TransferChecked {
+                    from: output_vault_ata.to_account_info(),
+                    mint: output_mint_info.to_account_info(),
+                    to: proposer_output_ata.to_account_info(),
+                    authority: vault.to_account_info(),
+                },
+                signer,
+            ),
+            payout,
+            decimals,
+        )?;
+    }
+
+    if tax_payout > 0 {
+        let tax_ata = tax_reserve_output_ata.ok_or(CoreError::InvalidTaxReserveAta)?;
+        require!(
+            tax_ata.owner == config.tax_reserve,
+            CoreError::InvalidTaxReserveAta
+        );
+        memo_cpi(memo_program, vault, signer)?;
+        transfer_checked(
+            CpiContext::new_with_signer(
+                output_token_program.to_account_info(),
+                TransferChecked {
+                    from: output_vault_ata.to_account_info(),
+                    mint: output_mint_info.to_account_info(),
+                    to: tax_ata.to_account_info(),
+                    authority: vault.to_account_info(),
+                },
+                signer,
+            ),
+            tax_payout,
+            decimals,
+        )?;
+    }
+
+    position_settle.settled = true;
+
+    msg!(
+        "Inline settle: payout={} (bps={}) tax={} (bps={}) of output_balance={}",
+        payout, position_settle.payout_bps,
+        tax_payout, config.tax_bps,
+        output_balance,
+    );
+
+    Ok(())
+}
+
 /// Returns (x_fee, y_fee, x_to_recipient, y_to_recipient) for event emission.
 ///
 /// NOTE: The 0.3% performance fee is charged on the FULL vault balance
@@ -2219,6 +3243,38 @@ impl PositionSettle {
     pub const SIZE: usize = 8 + 32 + 32 + 2 + 1 + 1;
 }
 
+/// Marker PDA created by `authorize_treasury_*` (governance-gated). Consumed +
+/// closed by `treasury_*_combined` (bot-signed direct tx). One active auth per
+/// treasury vault — serializes governance trades and prevents reuse.
+///
+/// Seeds: [b"trade_auth", user_vault.as_ref()]
+#[account]
+pub struct TradeAuth {
+    pub bot: Pubkey,           // 32 — must match config.bot at creation; only this signer may consume
+    pub proposer: Pubkey,      // 32 — recorded for record_settle_meta payout assignment
+    pub lb_pair: Pubkey,       // 32 — pool the auth applies to
+    pub user_vault: Pubkey,    // 32 — treasury vault PDA (bound by seed)
+    pub action: u8,            // 1  — 0=Open, 1=Close
+    pub side: u8,              // 1  — Side enum (Sell=0, Buy=1) for opens; ignored for close
+    pub min_bin_id: i32,       // 4
+    pub max_bin_id: i32,       // 4
+    pub slippage: i32,         // 4
+    pub amount: u64,           // 8  — for opens: matchAmount
+    pub expires_at: i64,       // 8  — Clock::unix_timestamp + AUTH_TTL_SECS
+    pub bump: u8,              // 1
+}
+
+impl TradeAuth {
+    pub const SIZE: usize = 8 + 32*4 + 1*2 + 4*3 + 8*2 + 1;
+}
+
+/// Authorization TTL — 10 minutes from creation. After expiry the bot can't
+/// consume; the TradeAuth becomes orphan rent (~0.0017 SOL).
+pub const TRADE_AUTH_TTL_SECS: i64 = 600;
+
+pub const TRADE_AUTH_ACTION_OPEN: u8 = 0;
+pub const TRADE_AUTH_ACTION_CLOSE: u8 = 1;
+
 
 // ============ CONTEXTS ============
 
@@ -2463,6 +3519,21 @@ pub struct ClosePosition<'info> {
     #[account(constraint = memo_program.key() == SPL_MEMO_PROGRAM_ID @ CoreError::InvalidProgram)]
     pub memo_program: AccountInfo<'info>,
 
+    // --- Optional treasury-match settle accounts ---
+    // Pass these when closing a treasury-matched position to atomically settle
+    // the proposer's payout. Path A (user-only) closes pass None.
+    #[account(
+        mut,
+        seeds = [b"pos_settle", position.meteora_position.as_ref()],
+        bump,
+        close = user_vault,
+    )]
+    pub position_settle: Option<Box<Account<'info, PositionSettle>>>,
+    #[account(mut)]
+    pub proposer_output_ata: Option<Box<InterfaceAccount<'info, ITokenAccount>>>,
+    #[account(mut)]
+    pub tax_reserve_output_ata: Option<Box<InterfaceAccount<'info, ITokenAccount>>>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -2693,6 +3764,21 @@ pub struct UserClose<'info> {
     #[account(constraint = memo_program.key() == SPL_MEMO_PROGRAM_ID @ CoreError::InvalidProgram)]
     pub memo_program: AccountInfo<'info>,
 
+    // --- Optional treasury-match settle accounts ---
+    // Pass these when closing a treasury-matched position to atomically settle
+    // the proposer's payout. Path A (user-only) closes pass None.
+    #[account(
+        mut,
+        seeds = [b"pos_settle", position.meteora_position.as_ref()],
+        bump,
+        close = user_vault,
+    )]
+    pub position_settle: Option<Box<Account<'info, PositionSettle>>>,
+    #[account(mut)]
+    pub proposer_output_ata: Option<Box<InterfaceAccount<'info, ITokenAccount>>>,
+    #[account(mut)]
+    pub tax_reserve_output_ata: Option<Box<InterfaceAccount<'info, ITokenAccount>>>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -2862,6 +3948,96 @@ pub struct WithdrawToken<'info> {
     pub token_program: AccountInfo<'info>,
 }
 
+// ============ TREASURY TOKEN MOVEMENT CONTEXTS ============
+// Governance-only: caller is the user_vault.owner (NTP for the treasury vault),
+// signed via SPL Governance invoke_signed. Distinct from `withdraw_token` so the
+// addin whitelist can grant Path B proposals access without exposing the
+// dual-caller (bot|owner) Path A withdraw surface.
+
+#[derive(Accounts)]
+pub struct DepositTreasuryToken<'info> {
+    /// Must equal `user_vault.owner`. For the treasury vault that's the
+    /// Native Treasury PDA, signable only via SPL Governance executeTransaction.
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    /// CHECK: Token mint for decimals
+    pub token_mint: AccountInfo<'info>,
+
+    /// Source: caller-owned ATA (for treasury vault, this is NTP's direct ATA —
+    /// the one Realms displays).
+    #[account(mut, constraint = owner_token_account.owner == caller.key() @ CoreError::InvalidTokenOwner)]
+    pub owner_token_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// Destination: vault PDA's ATA.
+    #[account(mut, constraint = vault_token_account.owner == user_vault.key() @ CoreError::InvalidTokenOwner)]
+    pub vault_token_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// CHECK: Token program — must be SPL Token or Token-2022
+    #[account(constraint = *token_program.key == anchor_spl::token::ID || *token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawTreasuryToken<'info> {
+    /// Must equal `user_vault.owner`. For the treasury vault that's the
+    /// Native Treasury PDA, signable only via SPL Governance executeTransaction.
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+
+    /// CHECK: Token mint for decimals
+    pub token_mint: AccountInfo<'info>,
+
+    /// Source: vault PDA's ATA. Authority is the vault PDA (signed by seeds).
+    #[account(mut, constraint = vault_token_account.owner == user_vault.key() @ CoreError::InvalidTokenOwner)]
+    pub vault_token_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// Destination: caller-owned ATA (for treasury vault, this is NTP's direct
+    /// ATA — restores Realms-visible reserves).
+    #[account(mut, constraint = owner_token_account.owner == caller.key() @ CoreError::InvalidTokenOwner)]
+    pub owner_token_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// CHECK: Token program — must be SPL Token or Token-2022
+    #[account(constraint = *token_program.key == anchor_spl::token::ID || *token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct DrainTreasuryNativeToNtp<'info> {
+    /// Must equal `user_vault.owner` (NTP for the treasury vault). Signable
+    /// only via SPL Governance executeTransaction; the proposal-whitelist-addin
+    /// must list this ix on the registrar whitelist for the proposal to pass.
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Account<'info, UserVault>,
+}
+
 // ============ SOL WRAPPING CONTEXT ============
 
 #[derive(Accounts)]
@@ -2889,6 +4065,39 @@ pub struct WrapSolInVault<'info> {
     /// CHECK: SPL Token program (for sync_native — called separately after this ix)
     #[account(constraint = token_program.key() == anchor_spl::token::ID @ CoreError::InvalidProgram)]
     pub token_program: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CancelExpiredTradeAuth<'info> {
+    #[account(mut)]
+    pub bot: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"trade_auth", trade_auth.user_vault.as_ref()],
+        bump = trade_auth.bump,
+        close = bot,
+    )]
+    pub trade_auth: Box<Account<'info, TradeAuth>>,
+}
+
+#[derive(Accounts)]
+pub struct WrapCallerSol<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(
+        mut,
+        token::mint = anchor_spl::token::spl_token::native_mint::ID,
+        token::authority = caller,
+    )]
+    pub caller_wsol_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// CHECK: SPL Token program — must be legacy SPL Token (WSOL is legacy)
+    #[account(constraint = token_program.key() == anchor_spl::token::ID @ CoreError::InvalidProgram)]
+    pub token_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -3079,6 +4288,370 @@ pub struct CloseSettle<'info> {
 
     /// CHECK: Meteora position pubkey — PDA seed only
     pub meteora_position: AccountInfo<'info>,
+}
+
+// ============ TREASURY MARKER PATTERN CONTEXTS ============
+
+#[derive(Accounts)]
+pub struct AuthorizeTreasuryOpen<'info> {
+    /// Must equal `user_vault.owner`. For the treasury vault that's NTP,
+    /// signable only via SPL Governance executeTransaction.
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
+    /// CHECK: lb_pair pubkey — recorded into TradeAuth, validated at consume time
+    pub lb_pair: AccountInfo<'info>,
+
+    #[account(
+        init,
+        payer = caller,
+        space = TradeAuth::SIZE,
+        seeds = [b"trade_auth", user_vault.key().as_ref()],
+        bump,
+    )]
+    pub trade_auth: Box<Account<'info, TradeAuth>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct AuthorizeTreasuryClose<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
+    /// CHECK: lb_pair pubkey — recorded into TradeAuth
+    pub lb_pair: AccountInfo<'info>,
+
+    #[account(
+        init,
+        payer = caller,
+        space = TradeAuth::SIZE,
+        seeds = [b"trade_auth", user_vault.key().as_ref()],
+        bump,
+    )]
+    pub trade_auth: Box<Account<'info, TradeAuth>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Account context for `treasury_open_combined`. Superset of OpenPositionV2:
+/// + caller_token_account (vault.owner's direct ATA, source of deposit)
+/// + deposit_token_mint, deposit_token_program (Token-2022 for CRANK)
+/// + position_settle (init, mirrors RecordSettleMeta)
+/// + trade_auth (mut, close = bot)
+#[derive(Accounts)]
+pub struct TreasuryOpenCombined<'info> {
+    #[account(mut)]
+    pub bot: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    /// CHECK: Validated by Meteora CPI
+    #[account(mut)]
+    pub lb_pair: AccountInfo<'info>,
+
+    #[account(
+        init_if_needed,
+        payer = bot,
+        space = PositionCounter::SIZE,
+        seeds = [b"pos_counter", user_vault.key().as_ref(), lb_pair.key().as_ref()],
+        bump
+    )]
+    pub position_counter: Account<'info, PositionCounter>,
+
+    /// CHECK: PDA signed via invoke_signed
+    #[account(
+        mut,
+        seeds = [b"meteora_pos", user_vault.key().as_ref(), lb_pair.key().as_ref(), &position_counter.count.to_le_bytes()],
+        bump
+    )]
+    pub meteora_position: UncheckedAccount<'info>,
+
+    /// CHECK: Bitmap extension (pass DLMM program ID if none).
+    pub bin_array_bitmap_ext: AccountInfo<'info>,
+
+    /// CHECK: Pool reserve X
+    #[account(mut)]
+    pub reserve_x: AccountInfo<'info>,
+
+    /// CHECK: Pool reserve Y
+    #[account(mut)]
+    pub reserve_y: AccountInfo<'info>,
+
+    #[account(
+        init,
+        payer = bot,
+        space = Position::SIZE,
+        seeds = [b"position", meteora_position.key().as_ref()],
+        bump
+    )]
+    pub position: Box<Account<'info, Position>>,
+
+    #[account(
+        init,
+        payer = bot,
+        space = Vault::SIZE,
+        seeds = [b"vault", meteora_position.key().as_ref()],
+        bump
+    )]
+    pub vault: Box<Account<'info, Vault>>,
+
+    /// CHECK: User vault's deposit token ATA. Validated in handler.
+    #[account(mut)]
+    pub user_vault_deposit_ata: AccountInfo<'info>,
+
+    /// CHECK: Position vault's token X account. Validated in handler.
+    #[account(mut)]
+    pub vault_token_x: AccountInfo<'info>,
+
+    /// CHECK: Position vault's token Y account. Validated in handler.
+    #[account(mut)]
+    pub vault_token_y: AccountInfo<'info>,
+
+    /// CHECK: Token X program — SPL Token or Token-2022
+    #[account(constraint = *token_x_program.key == anchor_spl::token::ID || *token_x_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_x_program: AccountInfo<'info>,
+
+    /// CHECK: Token Y program — SPL Token or Token-2022
+    #[account(constraint = *token_y_program.key == anchor_spl::token::ID || *token_y_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_y_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+
+    /// CHECK: Bin array lower
+    #[account(mut)]
+    pub bin_array_lower: UncheckedAccount<'info>,
+
+    /// CHECK: Bin array upper
+    #[account(mut)]
+    pub bin_array_upper: UncheckedAccount<'info>,
+
+    /// CHECK: Meteora event authority
+    pub event_authority: UncheckedAccount<'info>,
+
+    /// CHECK: Meteora DLMM program — validated in handler body
+    pub dlmm_program: UncheckedAccount<'info>,
+
+    /// CHECK: Token X mint — passed through to Meteora CPI
+    pub token_x_mint: UncheckedAccount<'info>,
+
+    /// CHECK: Token Y mint — passed through to Meteora CPI
+    pub token_y_mint: UncheckedAccount<'info>,
+
+    // ---- Treasury-specific deposit accounts ----
+
+    /// Source: vault.owner's direct ATA (NTP's CRANK or WSOL ATA).
+    /// Bot must have been pre-approved as Token-2022 delegate over this ATA
+    /// via a one-time governance proposal (see Phase 7 of marker plan).
+    #[account(mut)]
+    pub caller_token_account: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// CHECK: Mint of the deposit token. Decimals read at runtime;
+    /// transfer_checked enforces mint match against caller_token_account.
+    pub deposit_token_mint: AccountInfo<'info>,
+
+    /// CHECK: Token program for deposit (must be SPL Token or Token-2022)
+    #[account(constraint = *deposit_token_program.key == anchor_spl::token::ID || *deposit_token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub deposit_token_program: AccountInfo<'info>,
+
+    // ---- PositionSettle (mirrors RecordSettleMeta) ----
+
+    #[account(
+        init,
+        payer = bot,
+        space = PositionSettle::SIZE,
+        seeds = [b"pos_settle", meteora_position.key().as_ref()],
+        bump,
+    )]
+    pub position_settle: Box<Account<'info, PositionSettle>>,
+
+    // ---- TradeAuth (consumed) ----
+
+    #[account(
+        mut,
+        seeds = [b"trade_auth", user_vault.key().as_ref()],
+        bump = trade_auth.bump,
+        close = bot,
+    )]
+    pub trade_auth: Box<Account<'info, TradeAuth>>,
+}
+
+/// Account context for `treasury_close_combined`. Superset of UserClose:
+/// + position_settle (mut, close = user_vault), output_mint, proposer_output_ata,
+///   tax_reserve_output_ata, output_token_program (mirrors SettleProposer)
+/// + trade_auth (mut, close = bot)
+#[derive(Accounts)]
+pub struct TreasuryCloseCombined<'info> {
+    #[account(mut)]
+    pub bot: Signer<'info>,
+
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+
+    #[account(
+        mut,
+        seeds = [b"user_vault", user_vault.owner.as_ref()],
+        bump = user_vault.bump,
+    )]
+    pub user_vault: Box<Account<'info, UserVault>>,
+
+    /// Closed manually in handler (lamports → bot, discriminator zeroed) to
+    /// avoid Anchor close = X stack pressure in try_accounts (4KB BPF ceiling).
+    #[account(
+        mut,
+        seeds = [b"position", position.meteora_position.as_ref()],
+        bump = position.bump,
+        constraint = position.user_vault == user_vault.key() @ CoreError::Unauthorized,
+    )]
+    pub position: Box<Account<'info, Position>>,
+
+    /// Closed manually in handler (see `position`).
+    #[account(
+        mut,
+        seeds = [b"vault", position.meteora_position.as_ref()],
+        bump = vault.bump
+    )]
+    pub vault: Box<Account<'info, Vault>>,
+
+    /// CHECK: Meteora position
+    #[account(mut, constraint = meteora_position.key() == position.meteora_position @ CoreError::InvalidPosition)]
+    pub meteora_position: AccountInfo<'info>,
+
+    /// CHECK: DLMM pool — bound by TradeAuth
+    #[account(mut, constraint = lb_pair.key() == position.lb_pair @ CoreError::InvalidPool)]
+    pub lb_pair: AccountInfo<'info>,
+
+    /// CHECK: Bitmap ext
+    pub bin_array_bitmap_ext: AccountInfo<'info>,
+
+    /// CHECK: Bin array lower
+    #[account(mut)]
+    pub bin_array_lower: AccountInfo<'info>,
+
+    /// CHECK: Bin array upper
+    #[account(mut)]
+    pub bin_array_upper: AccountInfo<'info>,
+
+    /// CHECK: Reserve X
+    #[account(mut)]
+    pub reserve_x: AccountInfo<'info>,
+
+    /// CHECK: Reserve Y
+    #[account(mut)]
+    pub reserve_y: AccountInfo<'info>,
+
+    /// CHECK: Token X mint
+    pub token_x_mint: UncheckedAccount<'info>,
+    /// CHECK: Token Y mint
+    pub token_y_mint: UncheckedAccount<'info>,
+
+    /// CHECK: Event authority
+    pub event_authority: AccountInfo<'info>,
+
+    /// CHECK: DLMM program
+    #[account(constraint = dlmm_program.key() == METEORA_DLMM_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub dlmm_program: AccountInfo<'info>,
+
+    #[account(mut, constraint = vault_token_x.owner == vault.key() @ CoreError::InvalidTokenOwner)]
+    pub vault_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(mut, constraint = vault_token_y.owner == vault.key() @ CoreError::InvalidTokenOwner)]
+    pub vault_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// NTP's direct token-X ATA (CRANK for CRANK/SOL pool). Residue X transfers
+    /// here on close — Realms-visible. Owner+mint constrained on-chain.
+    #[account(mut,
+        constraint = ntp_token_x_ata.owner == user_vault.owner @ CoreError::InvalidTokenOwner,
+        constraint = ntp_token_x_ata.mint == token_x_mint.key() @ CoreError::InvalidTokenOwner)]
+    pub ntp_token_x_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// CHECK: must equal user_vault.owner (NTP). Lamport destination for
+    /// WSOL ATA close — auto-unwraps WSOL balance into NTP's native SOL.
+    #[account(mut, constraint = ntp_sol_account.key() == user_vault.owner @ CoreError::Unauthorized)]
+    pub ntp_sol_account: AccountInfo<'info>,
+
+    /// CHECK: validated against Config.fee_dest in handler
+    pub fee_dest: AccountInfo<'info>,
+
+    #[account(mut, constraint = fee_dest_token_x.owner == fee_dest.key() @ CoreError::InvalidTokenOwner)]
+    pub fee_dest_token_x: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(mut, constraint = fee_dest_token_y.owner == fee_dest.key() @ CoreError::InvalidTokenOwner)]
+    pub fee_dest_token_y: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    /// CHECK: Token X program — SPL Token or Token-2022
+    #[account(constraint = *token_x_program.key == anchor_spl::token::ID || *token_x_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_x_program: AccountInfo<'info>,
+    /// CHECK: Token Y program
+    #[account(constraint = *token_y_program.key == anchor_spl::token::ID || *token_y_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub token_y_program: AccountInfo<'info>,
+
+    /// CHECK: SPL Memo program (required for Token-2022 V2 CPI)
+    #[account(constraint = memo_program.key() == SPL_MEMO_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub memo_program: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+
+    // ---- Settle accounts ----
+
+    /// Closed manually in handler (see `position`).
+    #[account(
+        mut,
+        seeds = [b"pos_settle", meteora_position.key().as_ref()],
+        bump = position_settle.bump,
+    )]
+    pub position_settle: Box<Account<'info, PositionSettle>>,
+
+    pub output_mint: Box<InterfaceAccount<'info, Mint>>,
+
+    #[account(mut, constraint = position_vault_output_ata.owner == vault.key() @ CoreError::InvalidTokenOwner)]
+    pub position_vault_output_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(mut)]
+    pub proposer_output_ata: Box<InterfaceAccount<'info, ITokenAccount>>,
+
+    #[account(mut)]
+    pub tax_reserve_output_ata: Option<Box<InterfaceAccount<'info, ITokenAccount>>>,
+
+    /// CHECK: Token program for the OUTPUT mint (may differ from token_x/y_program if needed)
+    #[account(constraint = *output_token_program.key == anchor_spl::token::ID || *output_token_program.key == TOKEN_2022_PROGRAM_ID @ CoreError::InvalidProgram)]
+    pub output_token_program: AccountInfo<'info>,
+
+    // ---- TradeAuth (consumed) ----
+
+    #[account(
+        mut,
+        seeds = [b"trade_auth", user_vault.key().as_ref()],
+        bump = trade_auth.bump,
+        close = bot,
+    )]
+    pub trade_auth: Box<Account<'info, TradeAuth>>,
 }
 
 // ============ ADMIN CONTEXTS ============
@@ -3284,4 +4857,22 @@ pub enum CoreError {
     PayoutAdminAlreadyInitialized,
     #[msg("Tax reserve ATA missing or owner mismatch")]
     InvalidTaxReserveAta,
+    #[msg("TradeAuth has expired")]
+    TradeAuthExpired,
+    #[msg("TradeAuth has not yet expired — cannot cancel")]
+    TradeAuthNotExpired,
+    #[msg("TradeAuth bot does not match Config.bot")]
+    TradeAuthBotMismatch,
+    #[msg("TradeAuth user_vault does not match passed vault")]
+    TradeAuthVaultMismatch,
+    #[msg("TradeAuth lb_pair does not match passed pool")]
+    TradeAuthPoolMismatch,
+    #[msg("TradeAuth action mismatch (open/close)")]
+    TradeAuthActionMismatch,
+    #[msg("TradeAuth source ATA must be vault.owner's direct ATA")]
+    TradeAuthSourceAtaMismatch,
+    #[msg("TradeAuth side byte invalid (must be 0=Sell or 1=Buy)")]
+    TradeAuthInvalidSide,
+    #[msg("position_settle was passed but proposer_output_ata is missing")]
+    MissingProposerAta,
 }

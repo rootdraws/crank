@@ -1,5 +1,14 @@
 # claude.md — crank.money codebase context
 
+## Communication style (binding)
+
+- **Lists over prose.** Default to bullets. Reserve sentences for genuine narrative.
+- **Information density.** Every line must carry a fact, address, number, or decision. Cut filler, hedges, recaps, and self-narration.
+- **No restating the question.** Skip preambles ("Great question…", "Let me check…"). Lead with the answer.
+- **No closing summaries.** Don't end with "so in short" or repeat what the bullets already said.
+- **Short sentences when sentences are needed.** One clause, one fact.
+- **Code/addresses in backticks; numbers with units.** Always.
+
 ## Rules
 
 - **Read full logs, don't grep.** Dump the window. Grepping for an expected keyword misses what's actually there.
@@ -21,7 +30,9 @@ Bin-farm wraps Meteora DLMM positions. User sets a range; bins act as limit orde
 
 **Custody:** each user gets a `UserVault` PDA seeded by `[b"user_vault", owner_wallet]`. Funds on-chain. Withdrawals enforced to `vault.owner` by seed derivation. Server wipe loses zero user funds.
 
-**Treasury matching (Path B):** spot leg copy-trades user buys into a parallel NTP-owned position via SPL Governance. The `proposal-whitelist-addin` returns voter weight 0 for any proposal whose inner ixs aren't on the whitelist — so a compromised bot cannot author a drain proposal. Whitelist: `treasury_open_position`, `treasury_user_close`, `record_settle_meta`, `settle_proposer`, `close_settle`, `harvest_bins`, `wrap_sol_in_vault`, `unwrap_wsol_in_vault`, SPL Memo. Council side ungated — used for emergency / admin operations, signer is the council-mint holder (currently FFwq, planned move to HW).
+**Treasury matching (Path B, marker pattern):** spot leg copy-trades user trades into a parallel NTP-owned position. **Marker pattern (shipped 2026-05-09, ~$1.74/fire):** governance proposal carries a single `authorize_treasury_open` / `authorize_treasury_close` ix that mints a `TradeAuth` PDA (seeds `[b"trade_auth", user_vault]`); bot then runs `treasury_open_combined` / `treasury_close_combined` as a direct CPI tx outside governance, consuming and closing the TradeAuth. The `proposal-whitelist-addin` returns voter weight 0 for any proposal whose inner ixs aren't on the whitelist — so a compromised bot cannot author a drain proposal. Whitelist: `authorize_treasury_open`, `authorize_treasury_close`, `record_settle_meta`, `settle_proposer`, `close_settle`, `harvest_bins`, `wrap_sol_in_vault`, `unwrap_wsol_in_vault`, `withdraw_treasury_token`, SPL Memo. Council side ungated — used for emergency / admin operations, signer is the council-mint holder (currently FFwq, planned move to HW).
+
+**Realms visibility:** treasury holdings live as CRANK in NTP's direct CRANK ATA + native SOL on NTP itself, both before trade and after close. `treasury_open_combined` drains NTP-direct into the per-position vault; `treasury_close_combined` routes all residue back: CRANK via `transfer_checked` → NTP CRANK ATA, WSOL via `close_account` → NTP (auto-unwraps to lamports). Vault PDA (`[b"vault", meteora_position]`) signs both.
 
 **Operating thesis:** crank is the execution layer for cross-venue funding-rate arb. Spot leg is the bin-farm DLMM. Perp leg (Hyperliquid) is in flight, not built. Protocol revenue routes on-chain via the Hopper program.
 
@@ -73,6 +84,7 @@ Council axis is ungated (used for emergency / admin operations). The lone counci
 - `Position` — `[b"position", meteora_position]`
 - `Vault` (per-position) — `[b"vault", meteora_position]`
 - `PositionSettle` — `[b"position_settle", position]`
+- `TradeAuth` (Path B marker) — `[b"trade_auth", user_vault]` — minted by governance via `authorize_treasury_open`/`authorize_treasury_close`, consumed + closed by bot's direct `treasury_*_combined` tx
 
 **hopper:**
 - `RoutingConfig` — `[b"routing_config"]` = `6VvNCC7kGYGGTAQCBamt7UoBRvxaenwprBcWkzjz7xZ9` (v2, in-place migrated from v1 via `expand_routing_config_v2`)
@@ -87,7 +99,11 @@ Council axis is ungated (used for emergency / admin operations). The lone counci
 
 **User-facing (Path A):** `create_vault`, `wrap_sol_in_vault`, `unwrap_wsol_in_vault`, `withdraw_sol`, `withdraw_token`, `open_position_v2` (takes `rent_lamports`), `harvest_bins`, `close_position`, `user_close`, `claim_fees`.
 
-**Treasury (Path B, governance-only):** `treasury_open_position`, `treasury_user_close`, `record_settle_meta`, `settle_proposer`, `close_settle`. `record_settle_meta` enforces `caller == user_vault.owner`, which on the treasury vault is the NTP — only signable via `invoke_signed` from a passed governance proposal. The addin gates which proposals can pass, so a compromised bot cannot author a drain.
+**Treasury (Path B):**
+- **Marker (governance-signed):** `authorize_treasury_open`, `authorize_treasury_close` mint a `TradeAuth` PDA bound to a specific user vault + side + amount. Whitelisted; only passable via the addin.
+- **Combined (bot direct CPI):** `treasury_open_combined`, `treasury_close_combined` consume the TradeAuth (single-use, closes on consume), perform the deposit / close, and route residue. Open drains NTP CRANK ATA + native SOL into per-position vault; close routes residue back to NTP-direct (CRANK ATA + native lamports via WSOL `close_account` auto-unwrap). Vault PDA (`[b"vault", meteora_position]`) signs token moves. **No gas/rent passthrough on Path B (shipped 2026-05-10):** bot fronts bin-array rent + per-PDA rent on open and recovers them on close (Meteora close → bot, manual close-to-bot on Position/Vault/PositionSettle). `_rent_lamports` arg retained for IDL stability; ignored on-chain.
+- **Settle (governance-signed):** `record_settle_meta`, `settle_proposer`, `close_settle`. `record_settle_meta` enforces `caller == user_vault.owner` (NTP) — only signable via `invoke_signed` from a passed governance proposal. Settle math: 25% proposer / 25% tax reserve / 50% treasury.
+- **Drain (governance-signed):** `withdraw_treasury_token` flows the treasury_user_vault's CRANK ATA back to NTP — used once during marker rollout to drain orphan inventory left by the pre-marker close path. `drain_treasury_native_to_ntp` sweeps native lamports from treasury user_vault back to NTP, leaving rent-exempt minimum behind — used once 2026-05-10 to recover 0.993 SOL of pre-existing operational float (proposal `8MUdJ9PM193TTSnduKCFTrVFTd6CTgUiDwHscgkdwH6H`).
 
 **Admin (FFwq-signed, one-shot first; payout-admin txs require NTP signer post-bootstrap):** `set_fee_bps`, `set_fee_dest` (retargets `Config.fee_dest`), `set_tax_config(tax_bps, tax_reserve)`, `init_payout_config(payout_bps, match_ratio_bps, payout_admin)` (one-shot), `update_payout_config` (signed by `payout_admin` = NTP), `set_payout_admin` (admin-side migration of payout_admin), `expand_config_v2` (one-shot V1→V2 realloc — uses `UncheckedAccount` since v2-typed deserializer can't read v1-sized account), `update_bot`, `update_keeper_tip_bps`, `update_priority_slots`, `update_gas_lamports`, `transfer_authority`/`accept_authority`, `pause`/`unpause`, `bot_pause`/`bot_unpause`, `propose_emergency_close`/`apply_emergency_close`.
 
@@ -190,7 +206,7 @@ README.MD                              public-facing entry point
 - **Anchor methods need BN, not BigInt.** `new BN(amount.toString())` for every arg.
 - **`getTransaction` lags confirmation.** Retry 3× with 2s delay.
 - **WSOL must always be unwrapped after use.** Any path touching WSOL needs `unwrap_wsol_in_vault` at the end (harvest, close, /withdraw SOL, /buy leftover). Recovery: `scripts/unwrap-stuck-wsol.ts`.
-- **Gas model:** bot is sole signer + fee payer. 9 user-facing instructions call `deduct_gas` pulling `config.gas_lamports` from vault PDA → bot. Capped on-chain at `MAX_GAS_LAMPORTS = 0.01 SOL`. `open_position_v2` also pulls `rent_lamports` (bot-computed, capped at 0.2 SOL). Closes refund Meteora rent to vault, not bot.
+- **Gas model:** bot is sole signer + fee payer. Path A: 9 user-facing instructions call `deduct_gas` pulling `config.gas_lamports` from user_vault PDA → bot, capped on-chain at `MAX_GAS_LAMPORTS = 0.01 SOL`; `open_position_v2` also pulls `rent_lamports` (bot-computed, capped at 0.2 SOL); Path A closes refund Meteora rent to user_vault, not bot. Path B: no gas/rent passthrough — bot fronts everything, recovers bin-array rent + Position/Vault/PositionSettle rent on close (Meteora rent → bot, manual close-to-bot on Anchor PDAs). Treasury user_vault holds zero SOL in steady state; all DAO SOL on NTP, Realms-visible.
 - **`harvest_bins` dust gate:** gas deducted only when `is_authorized_bot && had_yield`. Permissionless keepers get `keeper_tip_bps` from fees.
 - **fee_dest validation:** `harvest_bins`, `close_position`, `user_close` validate the passed `fee_dest` account against `Config.fee_dest` (or `Config.bot` if default). Mismatched fee_dest reverts `InvalidFeeDest`.
 - **Token-2022 transfer hooks unsupported.** CPI passes `empty_hooks()`. Bot rejects hook-bearing mints via `hasTransferHook()` in `/buy` + `/sell`.
@@ -200,6 +216,10 @@ README.MD                              public-facing entry point
 - **Solana CLI `program deploy` recovery seed phrase** is for the BUFFER signer, not your wallet. If a deploy fails mid-write, `solana program close <buffer> --bypass-warning --recipient <admin>` recovers the buffer's SOL; the seed is only needed to resume the same buffer (rarely worth it — fresh deploy is faster than seed recovery).
 - **SOL price from Pyth:** `fetchDexScreenerPrice(SOL_MINT)` routes to Pyth Hermes, not DexScreener. Other tokens use DexScreener with stablecoin-pair preference.
 - **`binIdToBinArrayIndex` uses `Math.trunc`.** Negative bin IDs otherwise mismatch on-chain PDAs.
+- **RPC propagation lag in multi-tx proposal flow.** Path B's tx1c (signOff + VWR-vote + castVote) simulated against an RPC node that hadn't yet ingested tx1b's `insertTransaction`. The addin's `expected_total_accounts = 1 + sum(transactions_count)` mismatched actual `remaining_accounts.len()` and threw addin error 0x1778 (`ProposalTransactionAccountsMismatch`). Fixed in `core-sdk/treasury-proposal.ts` by sending tx1c with `skipPreflight: true`. Same pattern applies to any flow where a later tx reads state written by an earlier same-second tx.
+- **Anchor `Account<'info, T>` deserialize-before-realloc** — already documented for v1→v2 expansions, but it bites again any time you grow a struct by adding fields. Use `UncheckedAccount` for the migration ix; revert to typed `Account` only after migration lands.
+- **Path B per-fire SOL leak (~0.002 SOL).** TradeAuth PDA rent is paid by bot at marker time; consume closes the PDA but rent goes to bot anyway, so net is roughly zero except for tx fees. Tracked but not optimized — not material at current volume.
+- **Anchor 0.30 optional accounts use compact form.** `Option<Account<...>>` accounts that are None are OMITTED from the keys array entirely — Anchor does NOT pad with the program ID placeholder (older convention). Symptoms when this is wrong: on-chain `AnchorError caused by account: system_program. InvalidProgramId. Left: <bin-farm program> Right: 11111…`. Diagnostic: `solana confirm <sig> -v` and count keys vs IDL. Anchor TS `.accounts({...})` is broken for ixs with optionals (passing `null` shifts indices; omitting throws "Account X not provided"). Hand-craft the keys array directly. See `packages/discord-bot/src/commands/close.ts` for the user_close pattern.
 
 ## Deployment
 
@@ -232,7 +252,7 @@ Wallet DB → `s3://crank-backups/` every minute (`flock`). Restore path verifie
 ## Security
 
 - **Single-key state (current):** bot keypair = upgrade authority = `Config.authority` = `RoutingConfig.admin` = FFwq. Single-key compromise = bot operations + program upgrades + admin txs. **This is a known interim state**; HW rotation + bot-keypair separation is the next milestone.
-- **Path B drain protection:** even with FFwq compromised, a Path B drain proposal cannot pass — the proposal-whitelist-addin returns voter weight 0 for any community-side proposal whose inner ixs aren't all on the registrar whitelist. The whitelist contains `treasury_open_position`, `treasury_user_close`, `record_settle_meta`, `settle_proposer`, `close_settle`, `harvest_bins`, `wrap_sol_in_vault`, `unwrap_wsol_in_vault`, SPL Memo. Council axis is ungated — emergency / admin operations require the council mint, currently held only by the operator's hot wallet. Once HW rotates, council mint moves to HW.
+- **Path B drain protection:** even with FFwq compromised, a Path B drain proposal cannot pass — the proposal-whitelist-addin returns voter weight 0 for any community-side proposal whose inner ixs aren't all on the registrar whitelist. Marker whitelist: `authorize_treasury_open`, `authorize_treasury_close`, `record_settle_meta`, `settle_proposer`, `close_settle`, `harvest_bins`, `wrap_sol_in_vault`, `unwrap_wsol_in_vault`, `withdraw_treasury_token`, SPL Memo. The marker ixs themselves bind a TradeAuth to a specific user vault + side + amount; the bot's direct `treasury_*_combined` tx that consumes the TradeAuth has on-chain constraints (`ntp_crank_ata.owner == user_vault.owner`, `ntp_sol_account == user_vault.owner`) preventing routing to attacker-controlled accounts. Council axis is ungated — emergency / admin operations require the council mint, currently held only by the operator's hot wallet. Once HW rotates, council mint moves to HW.
 - **`payout_admin` post-bootstrap is NTP.** Changes to payout/match params require a passed governance proposal. The `set_payout_admin` admin ix can rotate this back to a hot wallet in a 3-ix atomic tx (`set_payout_admin → update_payout_config → set_payout_admin`), gated by `Config.authority`.
 - Relay Bearer-gated, fail-closed (`RELAY_AUTH_TOKEN` required at `attach()`, `timingSafeEqual`). WS at `/ws` requires Bearer via `Authorization` header or `?token=` query.
 - Token-2022 transfer hooks rejected.
@@ -241,17 +261,19 @@ Wallet DB → `s3://crank-backups/` every minute (`flock`). Restore path verifie
 
 All `https://bot.crank.money/api/*` require Bearer except `/api/health`. Surviving routes: `/api/stats`, `/api/pools`, `/api/positions`, `/api/pending-harvests`, `/api/bot-wallet`, `/api/rovers`, `/api/feed`, `/api/protocol-pnl`. WebSocket at `/ws`. (`/api/fees` retired.)
 
-## State (2026-05-09)
+## State (2026-05-10)
 
-- **All three programs live on mainnet.** bin-farm v2 (1% fee, Path B treasury ixs, tax fields), hopper v2 (4-way splits 25/25/25/25, in-place migrated from v1), addin (`9Tpa3wZw…`) deployed mainnet with FFwq upgrade authority.
+- **All three programs live on mainnet.** bin-farm v2 (1% fee, Path B marker ixs, tax fields), hopper v2 (4-way splits 25/25/25/25, in-place migrated from v1), addin (`9Tpa3wZw…`) deployed mainnet with FFwq upgrade authority.
 - **Realm `crank.money` bootstrapped.** `setRealmAuthority` transferred to governance — irreversible.
 - **bin-farm Config:** authority=FFwq, fee_bps=100, tax_bps=2500, payout_bps=2500, payout_admin=NTP, fee_dest=HopperVault. Settle math is 25% proposer / 25% tax / 50% treasury.
-- **Treasury seeded:** 1M CRANK in NTP-owned bin-farm UserVault `DgSDbnE2…`.
-- **Bot:** restarted on droplet 2026-05-09 with new env (governance vars + NTP) and new code (Path B treasury runtime + Token-2022 keeper fix + hold-up retry). Geyser stream healthy, daily keeper running.
-- **bootstrap-verify passed:** end-to-end memo proposal lifecycle works (proposal `4AZ2N1B4…`).
+- **Path B marker pattern shipped + verified end-to-end.** Manual /sell → marker proposal → direct combined tx → close → residue restored. Test cycle: 1M CRANK → 990K mid-trade → 1M post-close, with WSOL residue auto-unwrapping back to NTP native lamports. Per-fire cost ~$1.74 (down from $5 multi-index).
+- **Treasury holdings (NTP-direct, Realms-visible):** 1M CRANK in NTP's CRANK ATA + native SOL on NTP itself. Orphan inventory from pre-marker testing (1M CRANK in `treasury_user_vault`'s ATA, invisible to Realms) drained back to NTP via one-shot `withdraw_treasury_token` proposal.
+- **Bot:** restarted on droplet 2026-05-09 with marker-pattern code (TradeAuth derivation, direct combined tx routing, NTP-direct destination derivation in `enqueueTreasuryClose`). Geyser stream healthy, daily keeper running.
+- **Stale proposal cleanup (2026-05-09):** 35 proposals from testing classified + refund attempts on all. All in terminal states (cancelled / completed / executingWithErrors / succeeded — no in-flight Voting). Deposits already refunded by governance, net no rent recoverable.
+- **Path B no-ghost-wallet rework (2026-05-10):** stripped gas + rent passthrough from `treasury_open_combined` / `treasury_close_combined`; bot now eats both at open and recovers via Meteora close + manual close-to-bot. Added `drain_treasury_native_to_ntp` (whitelisted) and used it once to sweep 0.993 SOL of pre-existing operational float user_vault → NTP. NTP now holds 1.472 SOL (Realms-visible); treasury user_vault holds rent-exempt minimum only. bin-farm redeploy `fi9xDf9not…NkZy`, whitelist update `294hQCiNb3…EjVx`, drain proposal `8MUdJ9PM193…dwH6H`.
 
 **Open / deferred:**
 - HW wallet rotation — DPr9NDe… has signed one no-op tx (gate passed). Full `transfer_authority` + `accept_authority` rotation across bin-farm + hopper not yet executed.
 - Bot-keypair separation — `Config.bot` is currently FFwq itself. Plan: generate dedicated bot keypair, update_bot to it, harden droplet so bot keypair is the ONLY thing on the box.
-- Path B real-trade verification — bootstrap-verify exercises the lifecycle but no real `/buy` has triggered a treasury match yet. End-to-end settle math (25/25/50 fan-out at user_close) verifiable on first real Path B fire.
 - Synthetic drain test (negative addin assertion) — manual via Realms UI, expect weight=0.
+- TradeAuth rent-payer optimization — bot pays + recovers ~0.002 SOL/fire via PDA close. Could route rent payer to NTP, but not material at current volume.

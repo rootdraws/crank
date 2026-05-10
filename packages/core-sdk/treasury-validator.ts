@@ -138,6 +138,93 @@ const ANY = (): AccountConstraint => ({ kind: 'any' });
  */
 export function buildWhitelist(): IxRule[] {
   return [
+    // ─── bin-farm: deposit_treasury_token (open ix #0, BEFORE open_position_v2) ──
+    // Flows working capital from NTP's direct (Realms-visible) ATA into the
+    // treasury vault's ATA so the treasury position can open against the
+    // protocol's canonical reserves. Caller = NTP (governance invoke_signed).
+    {
+      id: 'bin-farm.deposit_treasury_token',
+      program: BIN_FARM_PROGRAM_ID,
+      discriminator: anchorDisc('deposit_treasury_token'),
+      accounts: [
+        NATIVE_TREASURY(),      // 0: caller
+        ANY(),                  // 1: config
+        TREASURY_VAULT(),       // 2: user_vault (must be treasury)
+        ANY(),                  // 3: token_mint
+        ANY(),                  // 4: owner_token_account (NTP's ATA — on-chain checks owner == caller)
+        ANY(),                  // 5: vault_token_account (vault's ATA — on-chain checks owner == user_vault)
+        ANY(),                  // 6: token_program
+      ],
+    },
+
+    // ─── bin-farm: withdraw_treasury_token (close ix, after close_settle) ──
+    // Returns residual treasury working capital to NTP's direct ATA, restoring
+    // Realms-visible reserves. Caller = NTP. Same account shape as deposit
+    // (just direction-reversed transfer authority).
+    {
+      id: 'bin-farm.withdraw_treasury_token',
+      program: BIN_FARM_PROGRAM_ID,
+      discriminator: anchorDisc('withdraw_treasury_token'),
+      accounts: [
+        NATIVE_TREASURY(),      // 0: caller
+        ANY(),                  // 1: config
+        TREASURY_VAULT(),       // 2: user_vault (must be treasury)
+        ANY(),                  // 3: token_mint
+        ANY(),                  // 4: vault_token_account
+        ANY(),                  // 5: owner_token_account (NTP's ATA)
+        ANY(),                  // 6: token_program
+      ],
+    },
+
+    // ─── bin-farm: drain_treasury_native_to_ntp (one-shot SOL recovery) ──
+    // Sweeps native lamports from the treasury user_vault back to NTP, leaving
+    // rent-exempt minimum behind. Used to clean up operational SOL that
+    // pre-existed before Path B stopped using user_vault as a gas/rent float.
+    {
+      id: 'bin-farm.drain_treasury_native_to_ntp',
+      program: BIN_FARM_PROGRAM_ID,
+      discriminator: anchorDisc('drain_treasury_native_to_ntp'),
+      accounts: [
+        NATIVE_TREASURY(),      // 0: caller
+        TREASURY_VAULT(),       // 1: user_vault (must be treasury)
+      ],
+    },
+
+    // ─── bin-farm: authorize_treasury_open (marker pattern) ──
+    // Single-ix proposal payload that creates a TradeAuth PDA. The bot then
+    // consumes via `treasury_open_combined` direct tx (not governance-gated;
+    // gated instead by the on-chain TradeAuth which only governance can mint).
+    // Caller = NTP (governance invoke_signed). One active TradeAuth per
+    // treasury vault — init-once enforces this on-chain.
+    {
+      id: 'bin-farm.authorize_treasury_open',
+      program: BIN_FARM_PROGRAM_ID,
+      discriminator: anchorDisc('authorize_treasury_open'),
+      accounts: [
+        NATIVE_TREASURY(),      // 0: caller
+        ANY(),                  // 1: config
+        TREASURY_VAULT(),       // 2: user_vault (must be treasury)
+        POOL(),                 // 3: lb_pair
+        ANY(),                  // 4: trade_auth (PDA, init)
+        SYSTEM_PROG(),          // 5: system_program
+      ],
+    },
+
+    // ─── bin-farm: authorize_treasury_close (marker pattern) ──
+    {
+      id: 'bin-farm.authorize_treasury_close',
+      program: BIN_FARM_PROGRAM_ID,
+      discriminator: anchorDisc('authorize_treasury_close'),
+      accounts: [
+        NATIVE_TREASURY(),      // 0: caller
+        ANY(),                  // 1: config
+        TREASURY_VAULT(),       // 2: user_vault
+        POOL(),                 // 3: lb_pair
+        ANY(),                  // 4: trade_auth (PDA, init)
+        SYSTEM_PROG(),          // 5: system_program
+      ],
+    },
+
     // ─── bin-farm: open_position_v2 (treasury opens) ──
     // Matches `OpenPositionV2` struct in bin-farm/src/lib.rs (~line 1854).
     // Accounts: bot, user_vault (treasury), config, lb_pair, position_counter,
@@ -261,6 +348,17 @@ export function buildWhitelist(): IxRule[] {
       ],
     },
     {
+      id: 'bin-farm.wrap_caller_sol',
+      program: BIN_FARM_PROGRAM_ID,
+      discriminator: anchorDisc('wrap_caller_sol'),
+      accounts: [
+        ANY(),                  // caller (NTP signed via governance)
+        ANY(),                  // caller_wsol_ata (token::authority = caller — Anchor enforces)
+        ANY(),                  // token_program
+        ANY(),                  // system_program
+      ],
+    },
+    {
       id: 'bin-farm.unwrap_wsol_in_vault',
       program: BIN_FARM_PROGRAM_ID,
       discriminator: anchorDisc('unwrap_wsol_in_vault'),
@@ -335,6 +433,41 @@ export function buildWhitelist(): IxRule[] {
       program: SPL_MEMO_PROGRAM_ID,
       discriminator: Buffer.alloc(0),  // matches any data
       accounts: [],
+    },
+
+    // ─── spl-token-2022: approve_checked (NTP grants bot delegate over NTP CRANK ATA) ──
+    // One-shot governance proposal carrying this ix to authorize bot as delegate
+    // for CRANK transfers from NTP's direct ATA → vault ATA. Enables the future
+    // marker-pattern combined ix (deposit step) to be bot-signed instead of
+    // NTP-signed-via-governance, dropping per-trade governance overhead.
+    // SPL Token approve_checked = variant 13 (0x0D), single-byte disc.
+    // Accounts: [source (mut), mint, delegate, authority (signer)]
+    {
+      id: 'spl-token-2022.approve_checked.ntp-to-bot',
+      program: TOKEN_2022_PROGRAM_ID,
+      discriminator: Buffer.from([0x0D]),
+      accounts: [
+        ANY(),                  // 0: source (NTP_CRANK_ATA — owner==NTP enforced on-chain)
+        ANY(),                  // 1: mint (CRANK_MINT)
+        BOT(),                  // 2: delegate — must be bot
+        NATIVE_TREASURY(),      // 3: authority — NTP via invoke_signed
+      ],
+    },
+
+    // ─── spl-token (legacy): approve_checked (NTP grants bot delegate over NTP WSOL ATA) ──
+    // Same pattern as Token-2022 above, but legacy SPL Token program (WSOL is legacy).
+    // Required for /buy SOL Path B: bot uses delegate authority to pull WSOL from
+    // NTP's WSOL ATA → position vault inside treasury_open_combined.
+    {
+      id: 'spl-token.approve_checked.ntp-to-bot',
+      program: TOKEN_PROGRAM_ID,
+      discriminator: Buffer.from([0x0D]),
+      accounts: [
+        ANY(),                  // 0: source (NTP_WSOL_ATA — owner==NTP enforced on-chain)
+        ANY(),                  // 1: mint (WSOL = NATIVE_MINT)
+        BOT(),                  // 2: delegate — must be bot
+        NATIVE_TREASURY(),      // 3: authority — NTP via invoke_signed
+      ],
     },
   ];
 }

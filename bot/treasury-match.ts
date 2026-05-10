@@ -32,23 +32,45 @@ import {
 import {
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
-  TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { BN } from '@coral-xyz/anchor';
 import {
   getPositionCounterPDA,
   getMeteoraPositionPDA,
   getPositionPDA,
   getVaultPDA,
-  buildRecordSettleMetaIx,
-  buildSettleProposerIx,
-  buildCloseSettleIx,
-  composeOpenPayload,
-  composeClosePayload,
+  buildAuthorizeTreasuryOpenIx,
+  buildAuthorizeTreasuryCloseIx,
+  buildWrapCallerSolIx,
+  type TreasuryOpenCombinedArgs,
+  type TreasuryCloseCombinedArgs,
   NATIVE_MINT,
   CRANK_MINT,
 } from '@crankbot/core-sdk';
 import type { TreasuryRuntime } from './treasury-runtime';
+
+function formatTokenAmount(raw: bigint, mint: PublicKey): string {
+  const isSol = mint.equals(NATIVE_MINT);
+  const decimals = isSol ? 9 : 6;
+  const symbol = isSol ? 'SOL' : 'CRANK';
+  const value = Number(raw) / 10 ** decimals;
+  const formatted = value >= 1000
+    ? value.toLocaleString('en-US', { maximumFractionDigits: 0 })
+    : value.toLocaleString('en-US', { maximumFractionDigits: 4 });
+  return `${formatted} ${symbol}`;
+}
+
+function tokenSymbol(mint: PublicKey): string {
+  return mint.equals(NATIVE_MINT) ? 'SOL' : 'CRANK';
+}
+
+function shortWallet(wallet: PublicKey): string {
+  const s = wallet.toBase58();
+  return `${s.slice(0, 4)}…${s.slice(-4)}`;
+}
+
+function proposerLabel(handle: string | undefined, wallet: PublicKey): string {
+  return handle ? `@${handle}` : shortWallet(wallet);
+}
 
 // Discord-bot's BotContext (subset we actually need — keep coupling minimal).
 export interface MatchContext {
@@ -67,6 +89,10 @@ export interface OpenMatchArgs {
   /** User who triggered the open — payout recipient at close. */
   userId: string;
   proposerWallet: PublicKey;
+  /** Discord username (no @ prefix). Falls back to short wallet in proposal name when absent. */
+  proposerHandle?: string;
+  /** Pre-built proposal name (overrides default). Caller has price/mcap context, build the rich title there. */
+  proposalName?: string;
   /** The user's Path A position pda (used as link key in DB). */
   userPositionPda: PublicKey;
   /** 'Buy' or 'Sell' — same as user's side. Treasury matches in same direction. */
@@ -132,6 +158,11 @@ export async function enqueueOpenMatchIfPossible(args: OpenMatchArgs): Promise<b
     const treasuryDepositAta = getAssociatedTokenAddressSync(
       depositMint, treasury.treasuryUserVault, true, depositTokenProgram,
     );
+    // NTP's direct ATA — protocol's canonical (Realms-visible) reserve. Source
+    // for the deposit_treasury_token ix that flows working capital into vault.
+    const ntpDepositAta = getAssociatedTokenAddressSync(
+      depositMint, treasury.nativeTreasuryPda, true, depositTokenProgram,
+    );
     const posVaultTokenX = getAssociatedTokenAddressSync(
       args.cpi.tokenXMint, posVault, true, args.cpi.tokenXProgramId,
     );
@@ -140,34 +171,84 @@ export async function enqueueOpenMatchIfPossible(args: OpenMatchArgs): Promise<b
     );
 
     // 5. Setup tx — create any missing ATAs (idempotent). Bot pays rent.
-    //    Mirrors the Path A buildSetupTx pattern but for treasury-side ATAs.
+    //    NTP's ATA is created here so the bot-as-delegate transfer in
+    //    treasury_open_combined has a source.
     const setupSig = await runSetupTx(args.ctx, [
+      { ata: ntpDepositAta, owner: treasury.nativeTreasuryPda, mint: depositMint, tokenProgram: depositTokenProgram },
       { ata: treasuryDepositAta, owner: treasury.treasuryUserVault, mint: depositMint, tokenProgram: depositTokenProgram },
       { ata: posVaultTokenX, owner: posVault, mint: args.cpi.tokenXMint, tokenProgram: args.cpi.tokenXProgramId },
       { ata: posVaultTokenY, owner: posVault, mint: args.cpi.tokenYMint, tokenProgram: args.cpi.tokenYProgramId },
     ]);
     if (setupSig) console.log(`[treasury-match] setup tx ${setupSig}`);
 
-    // 6. Build treasury open_position_v2 ix via Anchor coreProgram.methods.
-    //    Same call as Path A's user open, but user_vault = treasury_user_vault.
-    const rentLamports = await estimateRentLamports(args.ctx.connection, counter);
-    const openIx = await buildTreasuryOpenIx(args, {
-      counterPda, meteoraPosition, position, posVault,
-      treasuryDepositAta, posVaultTokenX, posVaultTokenY,
-      matchAmount, rentLamports,
-    });
-
-    // 7. Compose with record_settle_meta. caller = NTP because the proposal
-    // executes via SPL Governance invoke_signed, which can only sign for the
-    // realm's owned PDAs (= NTP). Bot is NOT a valid caller after PR-2.
-    const innerIxs = composeOpenPayload(openIx, {
+    // 6. Marker pattern: 1-2 inner ixs.
+    //    - For SOL deposits: wrap only the gap between matchAmount and any
+    //      WSOL already sitting in NTP's WSOL ATA (leftover from a prior
+    //      consume failure). If existing balance already covers matchAmount,
+    //      skip the wrap entirely. Prevents accumulation of orphan WSOL when
+    //      consume fails — failures cost at most one wrap, recovered by the
+    //      next successful match.
+    //    - All sides: authorize_treasury_open mints TradeAuth that the bot
+    //      consumes via treasury_open_combined after proposal execute.
+    const sideByte = args.side === 'Buy' ? 1 : 0;
+    const innerIxs: TransactionInstruction[] = [];
+    if (depositMint.equals(NATIVE_MINT)) {
+      let existingWsol = 0n;
+      try {
+        const bal = await args.ctx.connection.getTokenAccountBalance(ntpDepositAta);
+        existingWsol = BigInt(bal.value.amount);
+      } catch { /* ATA freshly created in setupSig — balance 0 */ }
+      const wrapAmount = matchAmount > existingWsol ? matchAmount - existingWsol : 0n;
+      if (wrapAmount > 0n) {
+        innerIxs.push(buildWrapCallerSolIx({
+          caller: treasury.nativeTreasuryPda,
+          callerWsolAta: ntpDepositAta,
+          amount: wrapAmount,
+        }));
+      }
+    }
+    innerIxs.push(buildAuthorizeTreasuryOpenIx({
       caller: treasury.nativeTreasuryPda,
       treasuryVaultOwner: treasury.nativeTreasuryPda,
+      lbPair: args.lbPair,
+      side: sideByte as 0 | 1,
+      amount: matchAmount,
+      minBinId: args.minBinId,
+      maxBinId: args.maxBinId,
+      slippage: args.slippage,
+      proposer: args.proposerWallet,
+    }));
+
+    // 7. Combined-ix args for the post-execute direct tx.
+    const combinedOpenArgs: TreasuryOpenCombinedArgs = {
+      bot: args.ctx.botKeypair.publicKey,
+      treasuryVaultOwner: treasury.nativeTreasuryPda,
+      lbPair: args.cpi.lbPair,
+      positionCounter: counterPda,
       meteoraPosition,
+      binArrayBitmapExt: args.cpi.binArrayBitmapExt,
+      reserveX: args.cpi.reserveX,
+      reserveY: args.cpi.reserveY,
+      position,
+      vault: posVault,
+      userVaultDepositAta: treasuryDepositAta,
+      vaultTokenX: posVaultTokenX,
+      vaultTokenY: posVaultTokenY,
+      tokenXProgram: args.cpi.tokenXProgramId,
+      tokenYProgram: args.cpi.tokenYProgramId,
+      binArrayLower: args.cpi.binArrayLower,
+      binArrayUpper: args.cpi.binArrayUpper,
+      eventAuthority: args.cpi.eventAuthority,
+      dlmmProgram: args.cpi.dlmmProgram,
       tokenXMint: args.cpi.tokenXMint,
       tokenYMint: args.cpi.tokenYMint,
-      proposer: args.proposerWallet,
-    });
+      callerTokenAccount: ntpDepositAta,
+      depositTokenMint: depositMint,
+      depositTokenProgram,
+      // rent_lamports unused on-chain — bot fronts bin-array rent + recovers
+      // it via Meteora close + manual close-to-bot in treasury_close_combined.
+      rentLamports: 0n,
+    };
 
     // 8. Output mint = the OPPOSITE of deposit (sell deposits X → outputs Y).
     const outputMint = args.side === 'Buy' ? args.cpi.tokenXMint : args.cpi.tokenYMint;
@@ -176,6 +257,7 @@ export async function enqueueOpenMatchIfPossible(args: OpenMatchArgs): Promise<b
     treasury.orchestrator.enqueue({
       kind: 'open',
       innerIxs,
+      combinedOpenArgs,
       userPositionPda: args.userPositionPda.toBase58(),
       proposerUserId: args.userId,
       proposerWallet: args.proposerWallet.toBase58(),
@@ -187,10 +269,10 @@ export async function enqueueOpenMatchIfPossible(args: OpenMatchArgs): Promise<b
       maxBinId: args.maxBinId,
       matchedAmount: matchAmount,
       outputMint: outputMint.toBase58(),
-      // Read snapshot from on-chain Config — orchestrator persists this on the
-      // TreasuryPositionRecord so close-time math knows the rate at open.
       payoutBps: await readPayoutBps(args.ctx),
-      proposalName: `match-${args.side.toLowerCase()}-${meteoraPosition.toBase58().slice(0, 8)}`,
+      proposalName: args.proposalName ?? (args.side === 'Buy'
+        ? `Treasury buy: ${formatTokenAmount(matchAmount, depositMint)} → CRANK · by ${proposerLabel(args.proposerHandle, args.proposerWallet)}`
+        : `Treasury sell: ${formatTokenAmount(matchAmount, depositMint)} → SOL · by ${proposerLabel(args.proposerHandle, args.proposerWallet)}`),
     });
 
     console.log(`[treasury-match] enqueued ${args.side} match: ${matchAmount} of ${depositMint.toBase58().slice(0, 8)}… for user ${args.userId}`);
@@ -205,34 +287,58 @@ export async function enqueueOpenMatchIfPossible(args: OpenMatchArgs): Promise<b
 
 export interface CloseMatchArgs {
   ctx: MatchContext;
-  /**
-   * Optional: the user's Path A close ix to bundle atomically. v1 omits this
-   * (user's close runs as separate Path A tx); future versions can include it
-   * for atomic user+treasury close in one governance proposal.
-   */
-  userUserCloseIx?: TransactionInstruction;
   /** Treasury position pda (from walletService.getTreasuryPositionByUserPosition). */
   treasuryPositionPda: PublicKey;
   /** The treasury position's meteora_position pubkey. */
   treasuryMeteoraPosition: PublicKey;
-  /** The treasury position's user_close ix — caller builds via coreProgram.methods.userClose
-   *  with caller=bot, user_vault=treasury_user_vault. */
-  treasuryUserCloseIx: TransactionInstruction;
-  /** Per-position vault's ATA for the OUTPUT mint (read for settle_proposer). */
+  /** The treasury position's lb_pair (must match TradeAuth.lb_pair at consume time). */
+  lbPair: PublicKey;
+  /** Per-position vault's ATA for the OUTPUT mint. */
   positionVaultOutputAta: PublicKey;
   /** Proposer's ATA for the output mint. */
   proposerOutputAta: PublicKey;
   outputMint: PublicKey;
-  /** Token program for the output mint. Default Token. */
-  tokenProgram?: PublicKey;
+  /** Token program for the output mint (Token vs Token-2022). */
+  outputTokenProgram: PublicKey;
+  /** Tax reserve's ATA for output mint, or null when tax routing disabled. */
+  taxReserveOutputAta: PublicKey | null;
+  /** Pre-resolved Meteora CPI accounts for the position's lb_pair. */
+  cpi: {
+    binArrayBitmapExt: PublicKey;
+    binArrayLower: PublicKey;
+    binArrayUpper: PublicKey;
+    reserveX: PublicKey;
+    reserveY: PublicKey;
+    tokenXMint: PublicKey;
+    tokenYMint: PublicKey;
+    eventAuthority: PublicKey;
+    dlmmProgram: PublicKey;
+    tokenXProgramId: PublicKey;
+    tokenYProgramId: PublicKey;
+  };
+  /** Per-position vault's token X/Y ATAs and treasury vault's token X/Y ATAs. */
+  vaultTokenX: PublicKey;
+  vaultTokenY: PublicKey;
+  /** NTP's direct token-X ATA (CRANK ATA). Realms-visible residue destination. */
+  ntpTokenXAta: PublicKey;
+  /** NTP pubkey — passive lamport destination for WSOL ATA close on residue Y. */
+  ntpSolAccount: PublicKey;
+  feeDest: PublicKey;
+  feeDestTokenX: PublicKey;
+  feeDestTokenY: PublicKey;
   proposerUserId: string;
+  proposerWallet: PublicKey;
+  /** Discord username (no @ prefix). Falls back to short wallet in proposal name when absent. */
+  proposerHandle?: string;
+  /** Pre-built proposal name (overrides default). Caller has price/mcap context, build the rich title there. */
+  proposalName?: string;
   userPositionPda: string;
 }
 
 /**
- * Build the close payload (settle_proposer + treasury_user_close + close_settle
- * + user_user_close, in that order) and enqueue. Throws if Path B is disabled
- * (caller should fall back to the user-only close path).
+ * Marker-pattern close: enqueues a 1-ix proposal (`authorize_treasury_close`)
+ * that creates a TradeAuth. After execute, bot consumes via
+ * `treasury_close_combined` (settle_proposer + user_close + close_settle inlined).
  */
 export function enqueueCloseMatch(args: CloseMatchArgs): void {
   const treasury = args.ctx.treasury;
@@ -240,36 +346,53 @@ export function enqueueCloseMatch(args: CloseMatchArgs): void {
     throw new Error('Path B disabled — cannot close a treasury-matched position via this path');
   }
 
-  // caller = NTP for both settle ixs; PR-2 forces them through governance.
-  const settleArgs = {
+  const markerIx = buildAuthorizeTreasuryCloseIx({
     caller: treasury.nativeTreasuryPda,
     treasuryVaultOwner: treasury.nativeTreasuryPda,
+    lbPair: args.lbPair,
+    proposer: args.proposerWallet,
+  });
+  const innerIxs = [markerIx];
+
+  const combinedCloseArgs: TreasuryCloseCombinedArgs = {
+    bot: args.ctx.botKeypair.publicKey,
+    treasuryVaultOwner: treasury.nativeTreasuryPda,
     meteoraPosition: args.treasuryMeteoraPosition,
+    lbPair: args.lbPair,
+    binArrayBitmapExt: args.cpi.binArrayBitmapExt,
+    binArrayLower: args.cpi.binArrayLower,
+    binArrayUpper: args.cpi.binArrayUpper,
+    reserveX: args.cpi.reserveX,
+    reserveY: args.cpi.reserveY,
+    tokenXMint: args.cpi.tokenXMint,
+    tokenYMint: args.cpi.tokenYMint,
+    eventAuthority: args.cpi.eventAuthority,
+    dlmmProgram: args.cpi.dlmmProgram,
+    vaultTokenX: args.vaultTokenX,
+    vaultTokenY: args.vaultTokenY,
+    ntpTokenXAta: args.ntpTokenXAta,
+    ntpSolAccount: args.ntpSolAccount,
+    feeDest: args.feeDest,
+    feeDestTokenX: args.feeDestTokenX,
+    feeDestTokenY: args.feeDestTokenY,
+    tokenXProgram: args.cpi.tokenXProgramId,
+    tokenYProgram: args.cpi.tokenYProgramId,
+    outputMint: args.outputMint,
     positionVaultOutputAta: args.positionVaultOutputAta,
     proposerOutputAta: args.proposerOutputAta,
-    outputMint: args.outputMint,
-    tokenProgram: args.tokenProgram,
+    taxReserveOutputAta: args.taxReserveOutputAta,
+    outputTokenProgram: args.outputTokenProgram,
   };
-  const closeSettleArgs = {
-    caller: treasury.nativeTreasuryPda,
-    treasuryVaultOwner: treasury.nativeTreasuryPda,
-    meteoraPosition: args.treasuryMeteoraPosition,
-  };
-
-  const innerIxs = composeClosePayload(
-    settleArgs,
-    args.treasuryUserCloseIx,
-    closeSettleArgs,
-    args.userUserCloseIx,
-  );
 
   treasury.orchestrator.enqueue({
     kind: 'close',
     innerIxs,
+    combinedCloseArgs,
     userPositionPda: args.userPositionPda,
     treasuryPositionPda: args.treasuryPositionPda.toBase58(),
     proposerUserId: args.proposerUserId,
-    proposalName: `close-${args.treasuryMeteoraPosition.toBase58().slice(0, 8)}`,
+    proposerWallet: args.proposerWallet.toBase58(),
+    proposalName: args.proposalName ?? `Treasury close: position → ${tokenSymbol(args.outputMint)} · by ${proposerLabel(args.proposerHandle, args.proposerWallet)}`,
   });
 }
 
@@ -295,15 +418,16 @@ async function readPayoutBps(ctx: MatchContext): Promise<number> {
   try {
     const info = await ctx.connection.getAccountInfo(ctx.configPDA);
     if (!info) return 2000;
-    // Config layout: 8 disc + 32 authority + 32 pending_authority + 32 bot
+    // Config v2 layout (327B total):
+    //   8 disc + 32 authority + 32 pending_authority + 32 bot
     //   + 2 fee_bps + 2 pending_fee_bps + 8 fee_change_at
     //   + 8 total_positions + 8 total_volume + 1 paused + 1 bot_paused + 1 bump
     //   + 8 last_bot_harvest_slot + 2 keeper_tip_bps + 8 priority_slots + 8 total_harvested
     //   + 32 pending_emergency_close + 8 emergency_close_at
     //   + 8 last_bot_close_slot + 8 last_bot_sweep_slot
     //   + 8 gas_lamports + 32 fee_dest
-    //   = offset 220 → payout_bps (u16 LE)
-    const PAYOUT_BPS_OFFSET = 220;
+    //   = offset 257 → payout_bps (u16 LE)
+    const PAYOUT_BPS_OFFSET = 257;
     if (info.data.length < PAYOUT_BPS_OFFSET + 2) return 2000;
     return info.data.readUInt16LE(PAYOUT_BPS_OFFSET);
   } catch {
@@ -315,7 +439,7 @@ async function readMatchRatioBps(ctx: MatchContext): Promise<number> {
   try {
     const info = await ctx.connection.getAccountInfo(ctx.configPDA);
     if (!info) return 10000;
-    const MATCH_RATIO_OFFSET = 222; // payout_bps + 2
+    const MATCH_RATIO_OFFSET = 259; // payout_bps + 2 (Config v2)
     if (info.data.length < MATCH_RATIO_OFFSET + 2) return 10000;
     return info.data.readUInt16LE(MATCH_RATIO_OFFSET);
   } catch {
@@ -337,8 +461,10 @@ async function computeMatchAmount(args: OpenMatchArgs): Promise<bigint> {
   const depositTokenProgram = args.side === 'Buy' ? args.cpi.tokenYProgramId : args.cpi.tokenXProgramId;
 
   if (depositMint.equals(NATIVE_MINT)) {
-    // SOL path: cap at native lamports balance minus rent + buffer.
-    const lamports = await args.ctx.connection.getBalance(treasury.treasuryUserVault);
+    // SOL path: read NTP native lamports — that's the Realms-visible balance
+    // the marker proposal's wrap_caller_sol will draw from. Reserve covers
+    // TradeAuth rent (~0.002 SOL/fire), tx fees, and a safety buffer.
+    const lamports = await args.ctx.connection.getBalance(treasury.nativeTreasuryPda);
     const RESERVE_FOR_RENT_AND_GAS = 100_000_000n; // 0.1 SOL
     const available = lamports > Number(RESERVE_FOR_RENT_AND_GAS)
       ? BigInt(lamports) - RESERVE_FOR_RENT_AND_GAS
@@ -346,16 +472,19 @@ async function computeMatchAmount(args: OpenMatchArgs): Promise<bigint> {
     return desired < available ? desired : available;
   }
 
-  // Token path: read the treasury vault's ATA balance for the deposit mint.
-  const treasuryAta = getAssociatedTokenAddressSync(
-    depositMint, treasury.treasuryUserVault, true, depositTokenProgram,
+  // Token path: inventory lives in NTP's direct (Realms-visible) ATA — that's
+  // the source the proposal's deposit_treasury_token ix will read from. The
+  // vault's ATA is empty between trades by design (CRANK migrates back on
+  // close to keep Realms accurate), so reading it would underreport.
+  const ntpAta = getAssociatedTokenAddressSync(
+    depositMint, treasury.nativeTreasuryPda, true, depositTokenProgram,
   );
   try {
-    const bal = await args.ctx.connection.getTokenAccountBalance(treasuryAta);
+    const bal = await args.ctx.connection.getTokenAccountBalance(ntpAta);
     const available = BigInt(bal.value.amount);
     return desired < available ? desired : available;
   } catch {
-    return 0n; // ATA doesn't exist → no inventory yet
+    return 0n; // NTP ATA doesn't exist → no inventory yet
   }
 }
 
@@ -385,87 +514,6 @@ async function runSetupTx(
   return await sendAndConfirmTransaction(ctx.connection, tx, [ctx.botKeypair], {
     commitment: 'confirmed',
   });
-}
-
-async function estimateRentLamports(connection: Connection, counter: number): Promise<BN> {
-  // Conservative estimate matching Path A's `rentLamports` calculation in buy.ts.
-  // Position (~146B) + Vault (~41B) + MeteoraPositionV2 (~8328B) [+ Counter (~25B) if first].
-  const counterExists = counter > 0;
-  const [position, vault, meteoraPos, counterRent] = await Promise.all([
-    connection.getMinimumBalanceForRentExemption(8 + 138),
-    connection.getMinimumBalanceForRentExemption(8 + 33),
-    connection.getMinimumBalanceForRentExemption(8328),
-    counterExists ? Promise.resolve(0) : connection.getMinimumBalanceForRentExemption(8 + 17),
-  ]);
-  return new BN(position + vault + meteoraPos + counterRent);
-}
-
-async function buildTreasuryOpenIx(
-  args: OpenMatchArgs,
-  resolved: {
-    counterPda: PublicKey;
-    meteoraPosition: PublicKey;
-    position: PublicKey;
-    posVault: PublicKey;
-    treasuryDepositAta: PublicKey;
-    posVaultTokenX: PublicKey;
-    posVaultTokenY: PublicKey;
-    matchAmount: bigint;
-    rentLamports: BN;
-  },
-): Promise<TransactionInstruction> {
-  const treasury = args.ctx.treasury!;
-  const sideEnum = args.side === 'Buy' ? { buy: {} } : { sell: {} };
-
-  // Build via Anchor coreProgram.methods — same call signature as Path A.
-  // The user_vault is swapped to the treasury vault; everything else mirrors.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const methods = args.ctx.coreProgram.methods as any;
-  const ix: TransactionInstruction = await methods
-    .openPositionV2(
-      new BN(resolved.matchAmount.toString()),
-      args.minBinId,
-      args.maxBinId,
-      sideEnum,
-      args.slippage,
-      resolved.rentLamports,
-    )
-    .accounts({
-      bot: args.ctx.botKeypair.publicKey,
-      userVault: treasury.treasuryUserVault,
-      config: args.ctx.configPDA,
-      lbPair: args.cpi.lbPair,
-      positionCounter: resolved.counterPda,
-      meteoraPosition: resolved.meteoraPosition,
-      binArrayBitmapExt: args.cpi.binArrayBitmapExt,
-      reserveX: args.cpi.reserveX,
-      reserveY: args.cpi.reserveY,
-      position: resolved.position,
-      vault: resolved.posVault,
-      userVaultDepositAta: resolved.treasuryDepositAta,
-      vaultTokenX: resolved.posVaultTokenX,
-      vaultTokenY: resolved.posVaultTokenY,
-      tokenXProgram: args.cpi.tokenXProgramId,
-      tokenYProgram: args.cpi.tokenYProgramId,
-      systemProgram: new PublicKey('11111111111111111111111111111111'),
-      binArrayLower: args.cpi.binArrayLower,
-      binArrayUpper: args.cpi.binArrayUpper,
-      eventAuthority: args.cpi.eventAuthority,
-      dlmmProgram: args.cpi.dlmmProgram,
-      tokenXMint: args.cpi.tokenXMint,
-      tokenYMint: args.cpi.tokenYMint,
-    })
-    .instruction();
-
-  // Bitmap-ext writability flip — mirrors Path A's buy.ts:460-471.
-  // Meteora's AddLiquidityByStrategy2 requires it writable; IDL marks read-only.
-  if (!args.cpi.binArrayBitmapExt.equals(args.cpi.dlmmProgram)) {
-    for (const k of ix.keys) {
-      if (k.pubkey.equals(args.cpi.binArrayBitmapExt)) k.isWritable = true;
-    }
-  }
-
-  return ix;
 }
 
 // Re-export for buy.ts/sell.ts to use without a separate import path.
