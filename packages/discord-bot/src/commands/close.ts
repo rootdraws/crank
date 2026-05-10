@@ -1,6 +1,7 @@
 import { ChatInputCommandInteraction, TextChannel } from 'discord.js';
-import { PublicKey, VersionedTransaction, TransactionMessage, Transaction } from '@solana/web3.js';
-import { NATIVE_MINT, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { PublicKey, VersionedTransaction, TransactionMessage, Transaction, TransactionInstruction, SystemProgram } from '@solana/web3.js';
+import { NATIVE_MINT, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token';
+import { BIN_FARM_PROGRAM_ID, getPositionSettlePDA } from '@crankbot/core-sdk';
 import { address } from '@solana/kit';
 import {
   getUserCloseInstructionAsync,
@@ -12,7 +13,7 @@ import {
   signAndSend, signAndSendLegacy, binToPrice, fetchDexScreenerPrice,
   SPL_MEMO_PROGRAM_ID, METEORA_DLMM_PROGRAM_ID, loadPoolRegistry,
 } from '@crankbot/core-sdk';
-import { formatPositionClosed, formatFeedClosed, formatError, formatPositionsList, PositionDisplayData } from '../formatter';
+import { formatPositionClosed, formatFeedClosed, formatError, formatPositionsList, formatTreasuryProposalName, PositionDisplayData } from '../formatter';
 import type { BotContext } from '../index';
 
 export async function handleClose(interaction: ChatInputCommandInteraction, ctx: BotContext): Promise<void> {
@@ -273,8 +274,9 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
   const [configPDA] = getConfigPDA();
   const [positionPDA] = getPositionPDA(meteoraPosition);
   const [posVaultPDA] = getVaultPDA(meteoraPosition);
-  // Post-cleanup: fee_dest = bot keypair (Config.fee_dest falls back to Config.bot when default)
-  const feeDest = bot.publicKey;
+  // Use the resolved Config.fee_dest (HopperVault post-routing). On-chain handler
+  // reverts InvalidFeeDest (6045) if this doesn't match what Config.fee_dest is.
+  const feeDest = ctx.feeDest;
 
   const vaultTokenX = deriveATA(cpi.tokenXMint, posVaultPDA, cpi.tokenXProgramId, true);
   const vaultTokenY = deriveATA(cpi.tokenYMint, posVaultPDA, cpi.tokenYProgramId, true);
@@ -298,50 +300,72 @@ async function closePosition(userId: string, position: any, ctx: BotContext): Pr
     await signAndSendLegacy(setupTx, bot, ctx.connection);
   }
 
-  // Build instruction, fix bitmap extension writable, send manually
-  const closeIx = await ctx.coreProgram.methods
-    .userClose()
-    .accounts({
-      caller: bot.publicKey,
-      config: configPDA,
-      userVault: vaultPda,
-      position: positionPDA,
-      vault: posVaultPDA,
-      meteoraPosition,
-      lbPair: cpi.lbPair,
-      binArrayBitmapExt: cpi.binArrayBitmapExt,
-      binArrayLower: cpi.binArrayLower,
-      binArrayUpper: cpi.binArrayUpper,
-      reserveX: cpi.reserveX,
-      reserveY: cpi.reserveY,
-      tokenXMint: cpi.tokenXMint,
-      tokenYMint: cpi.tokenYMint,
-      eventAuthority: cpi.eventAuthority,
-      dlmmProgram: cpi.dlmmProgram,
-      vaultTokenX,
-      vaultTokenY,
-      userTokenX,
-      userTokenY,
-      feeDest,
-      feeDestTokenX,
-      feeDestTokenY,
-      tokenXProgram: cpi.tokenXProgramId,
-      tokenYProgram: cpi.tokenYProgramId,
-      memoProgram: SPL_MEMO_PROGRAM_ID,
-      systemProgram: new PublicKey('11111111111111111111111111111111'),
-    })
-    .instruction();
+  // Hand-craft the user_close ix. Anchor 0.30 represents optional accounts in
+  // the "compact" form: None optionals are OMITTED from the keys array entirely.
+  // system_program comes right after the last present account.
+  const USER_CLOSE_DISC = Buffer.from([126, 78, 180, 205, 96, 242, 20, 2]);
+  const [positionSettlePDA] = getPositionSettlePDA(meteoraPosition);
+  const positionSettleAcc = await ctx.connection.getAccountInfo(positionSettlePDA);
+  const hasSettle = positionSettleAcc !== null;
 
-  // Bitmap extension must be writable for Meteora CPI (IDL marks it read-only)
-  if (!cpi.binArrayBitmapExt.equals(METEORA_DLMM_PROGRAM_ID)) {
-    for (const key of closeIx.keys) {
-      if (key.pubkey.equals(cpi.binArrayBitmapExt)) {
-        key.isWritable = true;
-      }
-    }
+  const baseKeys = [
+    { pubkey: bot.publicKey,           isSigner: true,  isWritable: true  },
+    { pubkey: configPDA,               isSigner: false, isWritable: true  },
+    { pubkey: vaultPda,                isSigner: false, isWritable: true  },
+    { pubkey: positionPDA,             isSigner: false, isWritable: true  },
+    { pubkey: posVaultPDA,             isSigner: false, isWritable: true  },
+    { pubkey: meteoraPosition,         isSigner: false, isWritable: true  },
+    { pubkey: cpi.lbPair,              isSigner: false, isWritable: true  },
+    { pubkey: cpi.binArrayBitmapExt,   isSigner: false,
+      isWritable: !cpi.binArrayBitmapExt.equals(METEORA_DLMM_PROGRAM_ID) },
+    { pubkey: cpi.binArrayLower,       isSigner: false, isWritable: true  },
+    { pubkey: cpi.binArrayUpper,       isSigner: false, isWritable: true  },
+    { pubkey: cpi.reserveX,            isSigner: false, isWritable: true  },
+    { pubkey: cpi.reserveY,            isSigner: false, isWritable: true  },
+    { pubkey: cpi.tokenXMint,          isSigner: false, isWritable: false },
+    { pubkey: cpi.tokenYMint,          isSigner: false, isWritable: false },
+    { pubkey: cpi.eventAuthority,      isSigner: false, isWritable: false },
+    { pubkey: cpi.dlmmProgram,         isSigner: false, isWritable: false },
+    { pubkey: vaultTokenX,             isSigner: false, isWritable: true  },
+    { pubkey: vaultTokenY,             isSigner: false, isWritable: true  },
+    { pubkey: userTokenX,              isSigner: false, isWritable: true  },
+    { pubkey: userTokenY,              isSigner: false, isWritable: true  },
+    { pubkey: feeDest,                 isSigner: false, isWritable: false },
+    { pubkey: feeDestTokenX,           isSigner: false, isWritable: true  },
+    { pubkey: feeDestTokenY,           isSigner: false, isWritable: true  },
+    { pubkey: cpi.tokenXProgramId,     isSigner: false, isWritable: false },
+    { pubkey: cpi.tokenYProgramId,     isSigner: false, isWritable: false },
+    { pubkey: SPL_MEMO_PROGRAM_ID,     isSigner: false, isWritable: false },
+  ];
+  // Optional accounts: only include if present (Anchor compact form).
+  // When position_settle exists, include all three; otherwise omit all three.
+  if (hasSettle) {
+    throw new Error('Path A user_close on a Path B-matched position requires proposerOutputAta resolution — not implemented in close.ts');
   }
+  const closeIx = new TransactionInstruction({
+    programId: BIN_FARM_PROGRAM_ID,
+    keys: [
+      ...baseKeys,
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: USER_CLOSE_DISC,
+  });
 
-  const closeTx = new Transaction().add(...(await buildPriorityFeeIxs(ctx.connection, 1_400_000)), closeIx);
+  // Always re-create the vault's X/Y ATAs idempotently in the SAME tx as
+  // user_close. The previous /close in a /close all loop runs unwrap_wsol_in_vault
+  // which closes the WSOL ATA. The setupTx-and-loop pattern races RPC propagation:
+  // getMultipleAccountsInfo can return the pre-unwrap state, so buildSetupTx
+  // skips the create. Inline + idempotent removes the race entirely.
+  const closeTx = new Transaction().add(
+    ...(await buildPriorityFeeIxs(ctx.connection, 1_400_000)),
+    createAssociatedTokenAccountIdempotentInstruction(
+      bot.publicKey, userTokenX, vaultPda, cpi.tokenXMint, cpi.tokenXProgramId,
+    ),
+    createAssociatedTokenAccountIdempotentInstruction(
+      bot.publicKey, userTokenY, vaultPda, cpi.tokenYMint, cpi.tokenYProgramId,
+    ),
+    closeIx,
+  );
   closeTx.feePayer = bot.publicKey;
   const closeBh = await ctx.connection.getLatestBlockhash();
   closeTx.recentBlockhash = closeBh.blockhash;
@@ -408,23 +432,24 @@ async function enqueueTreasuryClose(
   const [configPDA] = getConfigPDA();
   const [treasuryPositionPDA] = getPositionPDA(treasuryMeteoraPosition);
   const [treasuryPosVaultPDA] = getVaultPDA(treasuryMeteoraPosition);
-  const feeDest = bot.publicKey;
+  // Resolved Config.fee_dest (HopperVault). Mismatch reverts InvalidFeeDest (6045).
+  const feeDest = ctx.feeDest;
 
-  // Treasury per-position vault ATAs
+  // Treasury per-position vault ATAs (sources of residue transfers)
   const tVaultTokenX = deriveATA(cpi.tokenXMint, treasuryPosVaultPDA, cpi.tokenXProgramId, true);
   const tVaultTokenY = deriveATA(cpi.tokenYMint, treasuryPosVaultPDA, cpi.tokenYProgramId, true);
-  // Treasury vault destination ATAs (where 80% flows)
-  const tUserTokenX = deriveATA(cpi.tokenXMint, treasuryVault, cpi.tokenXProgramId, true);
-  const tUserTokenY = deriveATA(cpi.tokenYMint, treasuryVault, cpi.tokenYProgramId, true);
+  // NTP-direct ATAs (Realms-visible residue destinations on close)
+  const ntp = treasury.nativeTreasuryPda;
+  const ntpTokenXAta = deriveATA(cpi.tokenXMint, ntp, cpi.tokenXProgramId, true);
   const feeDestTokenX = deriveATA(cpi.tokenXMint, feeDest, cpi.tokenXProgramId, true);
   const feeDestTokenY = deriveATA(cpi.tokenYMint, feeDest, cpi.tokenYProgramId, true);
 
-  // Pre-create treasury-side ATAs if missing
+  // Pre-create destinations if missing (NTP CRANK ATA + fee_dest ATAs).
+  // WSOL Y residue → close ATA → NTP lamports (no Y ATA needed at NTP).
   const setupTx = await buildSetupTx(
     ctx.connection, bot.publicKey,
     [
-      { ata: tUserTokenX, owner: treasuryVault, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
-      { ata: tUserTokenY, owner: treasuryVault, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
+      { ata: ntpTokenXAta, owner: ntp, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
       { ata: feeDestTokenX, owner: feeDest, mint: cpi.tokenXMint, tokenProgram: cpi.tokenXProgramId },
       { ata: feeDestTokenY, owner: feeDest, mint: cpi.tokenYMint, tokenProgram: cpi.tokenYProgramId },
     ],
@@ -452,47 +477,80 @@ async function enqueueTreasuryClose(
   // Per-position vault's ATA for the output mint (source of payout transfer)
   const positionVaultOutputAta = outputMint.equals(cpi.tokenXMint) ? tVaultTokenX : tVaultTokenY;
 
-  // Build treasury's user_close ix — caller=bot (Signer in outer tx),
-  // user_vault=treasury_user_vault. Mirrors the user close above with treasury
-  // accounts swapped in.
-  const treasuryUserCloseIx = await ctx.coreProgram.methods
-    .userClose()
-    .accounts({
-      caller: bot.publicKey,
-      config: configPDA,
-      userVault: treasuryVault,
-      position: treasuryPositionPDA,
-      vault: treasuryPosVaultPDA,
-      meteoraPosition: treasuryMeteoraPosition,
-      lbPair: cpi.lbPair,
-      binArrayBitmapExt: cpi.binArrayBitmapExt,
-      binArrayLower: cpi.binArrayLower,
-      binArrayUpper: cpi.binArrayUpper,
-      reserveX: cpi.reserveX,
-      reserveY: cpi.reserveY,
-      tokenXMint: cpi.tokenXMint,
-      tokenYMint: cpi.tokenYMint,
-      eventAuthority: cpi.eventAuthority,
-      dlmmProgram: cpi.dlmmProgram,
-      vaultTokenX: tVaultTokenX,
-      vaultTokenY: tVaultTokenY,
-      userTokenX: tUserTokenX,
-      userTokenY: tUserTokenY,
-      feeDest,
-      feeDestTokenX,
-      feeDestTokenY,
-      tokenXProgram: cpi.tokenXProgramId,
-      tokenYProgram: cpi.tokenYProgramId,
-      memoProgram: SPL_MEMO_PROGRAM_ID,
-      systemProgram: new PublicKey('11111111111111111111111111111111'),
-    })
-    .instruction();
-
-  // Bitmap-ext writability flip — same as user-side close.
-  if (!cpi.binArrayBitmapExt.equals(METEORA_DLMM_PROGRAM_ID)) {
-    for (const k of treasuryUserCloseIx.keys) {
-      if (k.pubkey.equals(cpi.binArrayBitmapExt)) k.isWritable = true;
+  // Resolve tax_reserve_output_ata if Config.tax_routing is enabled.
+  // Config v2 layout offset: tax_reserve = 295 (see treasury-match.ts comment).
+  let taxReserveOutputAta: PublicKey | null = null;
+  try {
+    const configInfo = await ctx.connection.getAccountInfo(configPDA);
+    if (configInfo) {
+      const TAX_RESERVE_OFFSET = 295;
+      if (configInfo.data.length >= TAX_RESERVE_OFFSET + 32) {
+        const taxReserveBytes = configInfo.data.subarray(TAX_RESERVE_OFFSET, TAX_RESERVE_OFFSET + 32);
+        const taxReserve = new PublicKey(taxReserveBytes);
+        if (!taxReserve.equals(new PublicKey('11111111111111111111111111111111'))) {
+          taxReserveOutputAta = getAssociatedTokenAddressSync(
+            outputMint, taxReserve, true, outputTokenProgram,
+          );
+          // Pre-create if missing
+          const taxAtaInfo = await ctx.connection.getAccountInfo(taxReserveOutputAta);
+          if (!taxAtaInfo) {
+            const { createAssociatedTokenAccountIdempotentInstruction } = await import('@solana/spl-token');
+            const ix2 = createAssociatedTokenAccountIdempotentInstruction(
+              bot.publicKey, taxReserveOutputAta, taxReserve, outputMint, outputTokenProgram,
+            );
+            const tx2 = new Transaction().add(ix2);
+            tx2.feePayer = bot.publicKey;
+            tx2.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+            tx2.sign(bot);
+            await ctx.connection.sendRawTransaction(tx2.serialize(), { skipPreflight: true });
+          }
+        }
+      }
     }
+  } catch (e) {
+    console.warn('[close] failed to resolve tax_reserve_output_ata:', (e as Error).message);
+  }
+
+  let proposerHandle: string | undefined;
+  try {
+    const snowflake = match.proposer_user_id.replace(/^discord:/, '');
+    const u = await ctx.client.users.fetch(snowflake);
+    proposerHandle = u.username;
+  } catch (e) {
+    console.warn('[close] failed to resolve proposer handle:', (e as Error).message);
+  }
+
+  // Build mcap-styled proposal name from the match record.
+  let proposalName: string | undefined;
+  try {
+    const pools = loadPoolRegistry();
+    const poolConfig = pools.find(p => p.address === match.lb_pair);
+    const binStep = poolConfig?.binStep ?? 10;
+    const decimalsX = poolConfig?.decimalsX ?? 9;
+    const decimalsY = poolConfig?.decimalsY ?? 6;
+    const rawLow = binToPrice(match.min_bin_id, binStep, decimalsX, decimalsY);
+    const rawHigh = binToPrice(match.max_bin_id, binStep, decimalsX, decimalsY);
+    let qUsd = 1.0;
+    if (poolConfig?.displayMode === 'mc' && poolConfig.mintY) {
+      const isStable = ['USDC', 'USDT'].includes((poolConfig.quoteToken ?? '').toUpperCase());
+      if (!isStable) {
+        const qData = await fetchDexScreenerPrice(poolConfig.mintY).catch(() => null);
+        qUsd = qData?.priceUsd ?? 1.0;
+      }
+    }
+    proposalName = formatTreasuryProposalName({
+      kind: 'close',
+      side: match.side,
+      priceLow: rawLow * qUsd,
+      priceHigh: rawHigh * qUsd,
+      amount: 0,
+      quoteSymbol: poolConfig?.quoteToken ?? 'SOL',
+      displayMode: poolConfig?.displayMode as 'price' | 'mc' | undefined,
+      supply: poolConfig?.supply,
+      proposerHandle,
+    });
+  } catch (e) {
+    console.warn('[close] failed to build rich proposal name:', (e as Error).message);
   }
 
   void import('../../../../bot/treasury-match').then(m =>
@@ -506,12 +564,36 @@ async function enqueueTreasuryClose(
       },
       treasuryPositionPda: new PublicKey(match.treasury_position_pda),
       treasuryMeteoraPosition,
-      treasuryUserCloseIx,
+      lbPair,
       positionVaultOutputAta,
       proposerOutputAta,
       outputMint,
-      tokenProgram: outputTokenProgram,
+      outputTokenProgram,
+      taxReserveOutputAta,
+      cpi: {
+        binArrayBitmapExt: cpi.binArrayBitmapExt,
+        binArrayLower: cpi.binArrayLower,
+        binArrayUpper: cpi.binArrayUpper,
+        reserveX: cpi.reserveX,
+        reserveY: cpi.reserveY,
+        tokenXMint: cpi.tokenXMint,
+        tokenYMint: cpi.tokenYMint,
+        eventAuthority: cpi.eventAuthority,
+        dlmmProgram: cpi.dlmmProgram,
+        tokenXProgramId: cpi.tokenXProgramId,
+        tokenYProgramId: cpi.tokenYProgramId,
+      },
+      vaultTokenX: tVaultTokenX,
+      vaultTokenY: tVaultTokenY,
+      ntpTokenXAta,
+      ntpSolAccount: ntp,
+      feeDest,
+      feeDestTokenX,
+      feeDestTokenY,
       proposerUserId: match.proposer_user_id,
+      proposerWallet,
+      proposerHandle,
+      proposalName,
       userPositionPda: match.user_position_pda,
     }),
   );

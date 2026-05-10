@@ -17,9 +17,9 @@ import {
   signAndSend, signAndSendLegacy, withUserLock,
   NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, KNOWN_TOKENS,
   loadPoolRegistry, routeCommand, isRouteError,
-  parseCommand, fetchDexScreenerPrice, hasTransferHook,
+  parseCommand, fetchDexScreenerPrice, fetchPumpSwapPriceUsd, hasTransferHook,
 } from '@crankbot/core-sdk';
-import { formatPositionOpened, formatPositionEphemeral, formatFeedOpened, formatError, formatErrorBig } from '../formatter';
+import { formatPositionOpened, formatPositionEphemeral, formatFeedOpened, formatError, formatErrorBig, formatTreasuryProposalName } from '../formatter';
 import type { BotContext } from '../index';
 import { fetchJupQuote, fetchDexScreenerPrice as fetchUsd } from '@crankbot/core-sdk';
 
@@ -121,7 +121,27 @@ export async function handleOpenPosition(
     // Fetch current price and quote token price for bin calculation
     let quoteTokenUsdPrice = 1.0;
 
-    if (refPool.priceSource === 'dexscreener') {
+    if (refPool.priceSource === 'pumpswap') {
+      if (!refPool.pumpswapPool) {
+        await interaction.editReply(formatError('pool config missing pumpswapPool address.', 'check curator.json'));
+        return;
+      }
+      const isStableQuote = ['USDC', 'USDT'].includes(refPool.quoteToken.toUpperCase());
+      const [tokenData, quoteData] = await Promise.all([
+        fetchPumpSwapPriceUsd(ctx.connection, refPool.pumpswapPool, refPool.mintX, refPool.supply),
+        isStableQuote ? Promise.resolve({ priceUsd: 1.0 }) : fetchDexScreenerPrice(refPool.mintY),
+      ]);
+      if (!tokenData) {
+        await interaction.editReply(formatError('could not fetch price from PumpSwap reserves.', 'try again in a moment'));
+        return;
+      }
+      if (!quoteData) {
+        await interaction.editReply(formatError(`could not fetch ${refPool.quoteToken} price.`, 'try again in a moment'));
+        return;
+      }
+      currentPrice = tokenData.priceUsd;
+      quoteTokenUsdPrice = quoteData.priceUsd;
+    } else if (refPool.priceSource === 'dexscreener') {
       const isStableQuote = ['USDC', 'USDT'].includes(refPool.quoteToken.toUpperCase());
       const [tokenData, quoteData] = await Promise.all([
         fetchDexScreenerPrice(refPool.mintX),
@@ -542,6 +562,18 @@ export async function handleOpenPosition(
                 },
                 userId,
                 proposerWallet,
+                proposerHandle: interaction.user.username,
+                proposalName: formatTreasuryProposalName({
+                  kind: 'open',
+                  side,
+                  priceLow,
+                  priceHigh,
+                  amount,
+                  quoteSymbol: side === 'Sell' ? token : quote,
+                  displayMode: selectedPool.displayMode as 'price' | 'mc' | undefined,
+                  supply: selectedPool.supply,
+                  proposerHandle: interaction.user.username,
+                }),
                 userPositionPda: positionPDA,
                 side,
                 lbPair: cpi.lbPair,

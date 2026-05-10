@@ -9,7 +9,6 @@
  * Daily sequence (runs once per UTC day):
  *   1. hopper_sweep             — drain HopperVault SOL via on-chain 40/40/20 routing
  *   2. refresh_supplies         — refresh in-memory CRANK supply for /buy math
- *   3. daily_stats_post         — post protocol-wide volume summary to #crank-stats
  *
  * The bot checks hourly (Idle) or every 30s (during daily processing).
  * Returns 'Idle' or 'Processing' to the orchestrator for adaptive interval.
@@ -24,6 +23,7 @@ import {
 import { Program } from '@coral-xyz/anchor';
 import { logger } from './logger';
 import { withRetry as sharedWithRetry } from './retry';
+import { sweepAbandonedTreasuryPositions, type RescueDeps } from './treasury-rescue';
 
 const KEEPER_RETRY_BASE_MS = 2000;
 function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
@@ -60,6 +60,8 @@ interface KeeperConfig {
   coreProgram: Program;
   botKeypair: Keypair;
   coreProgramId: PublicKey;
+  configPDA: PublicKey;
+  feeDest: PublicKey;
   hopperProgram?: Program | null;
   hopperProgramId?: PublicKey | null;
   walletService: any;
@@ -76,6 +78,8 @@ export class MonkeKeeper {
   private botKeypair: Keypair;
   private walletService: any;
   private coreProgramId: PublicKey;
+  private configPDA: PublicKey;
+  private feeDest: PublicKey;
   // Track last successful run (UTC day number + timestamp) for daily gating
   private lastRunDay: number = 0;
   private lastRunTimestamp: number = 0;
@@ -96,6 +100,8 @@ export class MonkeKeeper {
     this.botKeypair = config.botKeypair;
     this.walletService = config.walletService;
     this.coreProgramId = config.coreProgramId;
+    this.configPDA = config.configPDA;
+    this.feeDest = config.feeDest;
     this.getWatchedPools = config.getWatchedPools;
   }
 
@@ -136,8 +142,10 @@ export class MonkeKeeper {
     // Step 2: Refresh in-memory pool supplies from on-chain mint state.
     await this.crankRefreshSupplies();
 
-    // Step 3: Post a daily volume summary to #crank-stats.
-    await this.crankDailyStatsPost();
+    // Step 3: Sweep abandoned Path B treasury matches — close + settle inline
+    //         so the proposer's 25% pays out without a follow-up gov proposal.
+    //         Live mode gated by TREASURY_AUTO_SWEEP_ABANDONED=1; otherwise logs candidates.
+    await this.crankAbandonedTreasurySweep();
 
     this.lastRunDay = today;
     this.lastRunTimestamp = Date.now();
@@ -221,52 +229,27 @@ export class MonkeKeeper {
   }
 
   /**
-   * Post a protocol-wide stats summary to `#crank-stats` (or the feed channel
-   * if `DISCORD_STATS_CHANNEL_ID` isn't set). Best-effort — skips silently if
-   * Discord isn't wired or there's no data yet.
+   * Sweep abandoned Path B treasury matches. "Abandoned" = user closed Path A
+   * but the matched treasury position never settled (gov proposal failed,
+   * bot crash, etc.). We crank close_position with optional settle accounts
+   * populated; the on-chain handler atomically pays proposer + tax cuts.
+   *
+   * Live by default only when TREASURY_AUTO_SWEEP_ABANDONED=1. Otherwise
+   * logs candidates so you can monitor before turning it on.
    */
-  private async crankDailyStatsPost(): Promise<void> {
+  private async crankAbandonedTreasurySweep(): Promise<void> {
     try {
-      const channelId = process.env.DISCORD_STATS_CHANNEL_ID || process.env.DISCORD_FEED_CHANNEL_ID;
-      if (!channelId || !this.discordClient || !this.walletService) {
-        logger.info(`  [keeper] stats post skipped — channel=${!!channelId} client=${!!this.discordClient} ws=${!!this.walletService}`);
-        return;
-      }
-
-      const now = Date.now();
-      const ws = this.walletService;
-      const d1 = ws.getTotalVolumeUsd(now - 24 * 60 * 60 * 1000);
-      const d7 = ws.getTotalVolumeUsd(now - 7 * 24 * 60 * 60 * 1000);
-      const all = ws.getTotalVolumeUsd(0);
-      const activeUsers = ws.getActiveUserCount();
-      const fills = ws.getTotalHarvestCount();
-      const open = ws.getTotalOpenPositions();
-
-      // Skip the post on truly empty days — no reason to spam an idle channel.
-      if (d1 === 0 && fills === 0) {
-        logger.info(`  [keeper] stats post skipped — zero activity`);
-        return;
-      }
-
-      const fmtUsd = (n: number) => n >= 1000 ? n.toLocaleString('en-US', { maximumFractionDigits: 0 }) : n >= 1 ? n.toFixed(2) : n.toFixed(4);
-      const lines = [
-        '**crank.money — daily stats**',
-        `\`24h \` · $${fmtUsd(d1)}`,
-        `\`7d  \` · $${fmtUsd(d7)}`,
-        `\`all \` · $${fmtUsd(all)}`,
-        '',
-        `\`users\` · ${activeUsers} active`,
-        `\`fills\` · ${fills}`,
-        `\`open \` · ${open}`,
-      ];
-
-      const channel = await this.discordClient.channels.fetch(channelId);
-      if (channel?.isTextBased()) {
-        await channel.send({ content: lines.join('\n'), allowedMentions: { parse: [] } });
-        logger.info(`  [keeper] ✓ stats posted to #${channel.name ?? channelId.slice(0, 8)}`);
-      }
+      const deps: RescueDeps = {
+        connection: this.connection,
+        coreProgram: this.coreProgram,
+        botKeypair: this.botKeypair,
+        configPDA: this.configPDA,
+        feeDest: this.feeDest,
+        walletService: this.walletService,
+      };
+      await sweepAbandonedTreasuryPositions(deps);
     } catch (e: any) {
-      logger.warn(`  [keeper] stats post failed: ${e.message?.slice(0, 120)}`);
+      logger.warn(`[keeper] abandoned-sweep error: ${e.message?.slice(0, 200)}`);
     }
   }
 

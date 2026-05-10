@@ -362,6 +362,8 @@ class HarvestBot {
       coreProgram: this.coreProgram,
       botKeypair,
       coreProgramId: CORE_PROGRAM_ID,
+      configPDA,
+      feeDest: this.feeDest,
       hopperProgram: this.hopperProgram,
       hopperProgramId: this.hopperProgramId,
       walletService: null, // set after discord bot starts
@@ -535,6 +537,7 @@ class HarvestBot {
           coreProgramId: CORE_PROGRAM_ID,
           botKeypair,
           configPDA,
+          feeDest: this.feeDest,
         });
         this.executor.on('harvestExecuted', (data: any) => {
           discordBot.notifier.onHarvestExecuted(data);
@@ -543,6 +546,9 @@ class HarvestBot {
           discordBot.notifier.onPositionClosed(data);
         });
         await discordBot.start();
+        // Path B treasury runtime: no-op when GOVERNANCE_REALM_NAME is unset,
+        // logs + skips Path B (Path A continues) on init failure.
+        await discordBot.initTreasury();
         this.executor.setWalletService(discordBot.walletService);
         this.keeper.setWalletService(discordBot.walletService);
         this.keeper.setDiscordClient(discordBot.client);

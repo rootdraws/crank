@@ -87,7 +87,36 @@ function trimZero(n: number, digits: number): string {
   return s.replace(/\.?0+$/, '');
 }
 
-function formatMcapCompact(mcap: number): string {
+// Treasury proposal title (Path B markers). Mirrors feed wording with
+// "crank.money treasury" as the subject. Used as Realms proposal `name`.
+export function formatTreasuryProposalName(params: {
+  kind: 'open' | 'close';
+  side: 'Buy' | 'Sell';
+  priceLow: number;
+  priceHigh: number;
+  amount: number;
+  quoteSymbol: string;
+  displayMode?: 'price' | 'mc';
+  supply?: number;
+  proposerHandle?: string;
+}): string {
+  const { kind, side, priceLow, priceHigh, amount, quoteSymbol, displayMode, supply, proposerHandle } = params;
+
+  const rangePhrase = displayMode === 'mc' && supply
+    ? `between ${formatMcapCompact(priceLow * supply)} and ${formatMcapCompact(priceHigh * supply)} market cap`
+    : `between $${formatPrice(priceLow)} and $${formatPrice(priceHigh)}`;
+
+  const verbPhrase = kind === 'open'
+    ? `is a matched ${side === 'Buy' ? 'buyer' : 'seller'}`
+    : `closing matched ${side === 'Buy' ? 'buy' : 'sell'}`;
+
+  const amountPart = kind === 'open' ? ` - ${formatAmount(amount)} ${quoteSymbol}` : '';
+  const handlePart = proposerHandle ? ` | @${proposerHandle}` : '';
+
+  return `crank.money ${verbPhrase} ${rangePhrase}${amountPart}${handlePart}`;
+}
+
+export function formatMcapCompact(mcap: number): string {
   if (mcap >= 1_000_000_000) return `${trimZero(mcap / 1_000_000_000, 1)}b`;
   if (mcap >= 1_000_000) return `${trimZero(mcap / 1_000_000, 1)}m`;
   if (mcap >= 1_000) return `${trimZero(mcap / 1_000, 1)}k`;
